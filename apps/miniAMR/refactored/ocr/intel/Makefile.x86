@@ -75,7 +75,7 @@ SRCS := block.c  chksum.c  comm.c  clone.c  init.c  move.c  parent.c  plot.c  st
 # Additional CFLAGS. By default, it includes
 # all OCR required includes and apps/libs/<target>/include
 # TG_ARCH is also defined for Fsim
-CFLAGS := -Wall -fms-extensions -DBUILD_OCR_VERSION -DENABLE_EXTENSION_LABELING -DRELAX_DATABLOCK_SEASONINGx -DNANNY_ON_STEROIDSx -DNANNY_FUNC_NAMES -lefence -g -O0
+CFLAGS := -Wall -Wno-array-bounds -fms-extensions -DBUILD_OCR_VERSION -DENABLE_EXTENSION_LABELING -DRELAX_DATABLOCK_SEASONINGx -DNANNY_ON_STEROIDSx -DNANNY_FUNC_NAMES -lefence -g -O0
 CFLAGS += -DENABLE_EXTENSION_CHANNEL_EVT
 CFLAGS += -DENABLE_EXTENSION_AFFINITY
 CFLAGS += -DOCR_ASSERT

@@ -1,15 +1,15 @@
-#include <stdlib.h>
+#include <complex.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <math.h>
-#include <complex.h>
+#include <stdlib.h>
 
 // needed if using -std=c99
 #ifndef M_PI
 #define M_PI 3.141592653589793223846f
 #endif
 
-#include "common.h"
+#include "../datagen-tsml/src/common.h"
 
 #define RGB(r,g,b) ( ( (r) << 16 ) | ( (g) << 8 ) | ( (b) << 0 ) )
 #define MAX(a,b) (((a)>(b))?(a):(b))

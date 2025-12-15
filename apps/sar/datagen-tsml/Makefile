@@ -1,11 +1,12 @@
-FFTW_INC=-I/usr/include
-FFTW_LIB=-L/usr/lib64 -lfftw3f
+OCR_INSTALL ?=
+OCR_TYPE ?= x86
 
 SOURCES = \
 	src/fir_filter.c \
 	src/gen_rand.c \
 	src/main.c \
-	src/inputs.c
+	src/inputs.c \
+	src/fftw3.c
 
 CC=gcc
 CFLAGS= -g -std=gnu99  -DRAG_ADD_ERROR=1 -fopenmp
@@ -17,8 +18,14 @@ all: datagen ../utils/viewData
 ../utils/viewData: ../utils/viewData.c
 	$(MAKE) -C ../utils viewData
 
+../utils/dataImage: ../utils/dataImage.c
+	$(MAKE) -C ../utils dataImage
+
+../utils/dataImageAsm: ../utils/dataImageAsm.c
+	$(MAKE) -C ../utils dataImageAsm
+
 datagen: $(SOURCES)
-	$(CC) $(CFLAGS) -o $@ -O $(FFTW_INC) $(SOURCES) $(FFTW_LIB) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ -O $(SOURCES) $(LDFLAGS)
 
 run:	all
 	$(MAKE) -C ./tiny   run
@@ -33,7 +40,7 @@ clean:
 	$(MAKE) -C ./medium clean
 	$(MAKE) -C ./large  clean
 
-install:
+install: all ../utils/dataImage ../utils/dataImageAsm
 	$(MAKE) -C ./tiny   install
 	$(MAKE) -C ./small  install
 	$(MAKE) -C ./medium install

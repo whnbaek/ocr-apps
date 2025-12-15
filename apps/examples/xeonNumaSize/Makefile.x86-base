@@ -51,7 +51,7 @@ TARGET := xeonNumaSize
 REQ_LIBS :=
 
 # Space separated list of source files
-SRCS := xeonNumaSize.c
+SRCS := numaHelpers.c actions.c utils.c xeonNumaSize.c myOcrHelpers.c
 
 # Additional CFLAGS. By default, it includes
 # all OCR required includes and $(APPS_LIBS_INSTALL)/include

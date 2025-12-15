@@ -1,3 +1,4 @@
+#include <extensions/ocr-affinity.h>
 #include <ocr.h>
 
 #include "hpgmg.h"

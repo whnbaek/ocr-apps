@@ -34,6 +34,8 @@ See README file for more information
 #include "extensions/ocr-affinity.h"
 #include "stdio.h"
 #include "macros.h"
+
+#include <stdlib.h>
 /* macros.h is the "macros" library
  * it provides 8 macros for using structures for parameters and dependencies
  */

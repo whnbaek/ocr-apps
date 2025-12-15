@@ -5,8 +5,8 @@
 void conj_grad(u64 n, u64 blk, ocrGuid_t a, ocrGuid_t x, ocrGuid_t cont, u32 dep)
 {
     ocrGuid_t p,pp,r; void* ptr;
-    ocrDbCreate(&r,&ptr,sizeof(double)*n,DB_PROP_NO_ACQUIRE,NULL_GUID,NO_ALLOC);
-    ocrDbCreate(&p,&ptr,sizeof(double)*n,DB_PROP_NO_ACQUIRE,NULL_GUID,NO_ALLOC);
+    ocrDbCreate(&r,&ptr,sizeof(double)*n,DB_PROP_NO_ACQUIRE,NULL_HINT,NO_ALLOC);
+    ocrDbCreate(&p,&ptr,sizeof(double)*n,DB_PROP_NO_ACQUIRE,NULL_HINT,NO_ALLOC);
 
     ocrGuid_t rho,q,z,al,nal;
     ocrGuid_t first=square(n,&rho);                  // rho=x^2

@@ -63,9 +63,9 @@ look for legal moves
 
     u64 nummoves = paramv[0];
     u64 oldmove = paramv[1];
-    ocrGuid_t triangleTemplate = paramv[2];
-    ocrGuid_t incrementTemplate = paramv[3];
-    ocrGuid_t counterDb = paramv[4];
+    ocrGuid_t triangleTemplate = (ocrGuid_t){.guid = paramv[2]};
+    ocrGuid_t incrementTemplate = (ocrGuid_t){.guid = paramv[3]};
+    ocrGuid_t counterDb = (ocrGuid_t){.guid = paramv[4]};
     u64 * oldboard = depv[0].ptr;
     u64 * board = depv[1].ptr;
     u64 * pmoves = depv[2].ptr;
@@ -101,17 +101,17 @@ look for legal moves
         }
 */
         ocrGuid_t incrementEdt;
-        ocrEdtCreate(&incrementEdt, incrementTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL);
+        ocrEdtCreate(&incrementEdt, incrementTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
         ocrAddDependence(counterDb, incrementEdt, 0, DB_MODE_EW);
         return NULL_GUID;
     } else {
-        u64 triangleParamv[5] = {nummoves, 0, triangleTemplate, incrementTemplate, counterDb};
+        u64 triangleParamv[5] = {nummoves, 0, triangleTemplate.guid, incrementTemplate.guid, counterDb.guid};
         ocrEventCreate(&once, OCR_EVENT_ONCE_T, true);
         for(i=0;i<MOVESIZE;i++) {
             if(board[pmoves[3*i]] && board[pmoves[3*i+1]] && (!board[pmoves[3*i+2]])) { //legal move
-                ocrDbCreate(&newboardDb, (void**) &newboard, sizeof(u64)*BOARDSIZE, 0, NULL_GUID, NO_ALLOC);
+                ocrDbCreate(&newboardDb, (void**) &newboard, sizeof(u64)*BOARDSIZE, 0, NULL_HINT, NO_ALLOC);
                 triangleParamv[1] = i;
-                ocrEdtCreate(&triangleEdt, triangleTemplate, EDT_PARAM_DEF, triangleParamv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL);
+                ocrEdtCreate(&triangleEdt, triangleTemplate, EDT_PARAM_DEF, triangleParamv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
                 ocrAddDependence(once, triangleEdt, 0, DB_MODE_CONST);
                 ocrAddDependence(newboardDb, triangleEdt, 1, DB_MODE_RW);
                 ocrAddDependence(depv[2].guid, triangleEdt, 2, DB_MODE_CONST);
@@ -202,14 +202,17 @@ launch triangleEdt
     ocrEdtTemplateCreate(&triangleTemplate, triangleTask, 5, 3);
     ocrEdtTemplateCreate(&incrementTemplate, incrementTask, 0, 1);
     oldmove = -1;
-    u64 triangleParamv[5] = {nummoves, oldmove, triangleTemplate, incrementTemplate, depv[0].guid};
+    u64 triangleParamv[5] = {nummoves, oldmove, triangleTemplate.guid, incrementTemplate.guid, depv[0].guid.guid};
 //create triangleEdt as a FINISH Edt
-    ocrEdtCreate(&triangleEdt, triangleTemplate, EDT_PARAM_DEF, triangleParamv, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_GUID, &triangleOutputEvent);
-//create and launch wrapup
+    ocrEdtCreate(&triangleEdt, triangleTemplate, EDT_PARAM_DEF, triangleParamv,
+                 EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_HINT,
+                 &triangleOutputEvent);
+    // create and launch wrapup
     ocrGuid_t wrapupTemplate;
     ocrGuid_t wrapupEdt;
     ocrEdtTemplateCreate(&wrapupTemplate, wrapupTask, 0, 2);
-    ocrEdtCreate(&wrapupEdt, wrapupTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL);
+    ocrEdtCreate(&wrapupEdt, wrapupTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
+                 NULL, EDT_PROP_NONE, NULL_HINT, NULL);
     ocrDbRelease(depv[0].guid);
     ocrAddDependence(depv[0].guid, wrapupEdt, 0, DB_MODE_CONST);
     ocrAddDependence(triangleOutputEvent, wrapupEdt, 1, DB_MODE_RW);
@@ -227,15 +230,19 @@ ocrGuid_t mainEdt(){
     u64 *oldboard, *board, *pmoves;
 ocrPrintf("triangle puzzle BOTTOM %d \n", BOTTOM);
 
-    ocrDbCreate(&counterDb, (void**) &counter, sizeof(u64), 0, NULL_GUID, NO_ALLOC);
-    ocrDbCreate(&oldboardDb, (void**) &oldboard, sizeof(u64)*BOARDSIZE, 0, NULL_GUID, NO_ALLOC);
-    ocrDbCreate(&boardDb, (void**) &board, sizeof(u64)*BOARDSIZE, 0, NULL_GUID, NO_ALLOC);
-    ocrDbCreate(&pmovesDb, (void**) &pmoves, sizeof(u64)*MOVESIZE*3, 0, NULL_GUID, NO_ALLOC);
-    ocrEdtTemplateCreate(&realmainTemplate, realmainTask, 0, 4);
-    ocrEdtCreate(&realmain, realmainTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL);
-    ocrAddDependence(counterDb, realmain, 0, DB_MODE_RW);
-    ocrAddDependence(oldboardDb, realmain, 1, DB_MODE_RW);
-    ocrAddDependence(boardDb, realmain, 2, DB_MODE_RW);
-    ocrAddDependence(pmovesDb, realmain, 3, DB_MODE_CONST);
-    return NULL_GUID;
+ocrDbCreate(&counterDb, (void **)&counter, sizeof(u64), 0, NULL_HINT, NO_ALLOC);
+ocrDbCreate(&oldboardDb, (void **)&oldboard, sizeof(u64) * BOARDSIZE, 0,
+            NULL_HINT, NO_ALLOC);
+ocrDbCreate(&boardDb, (void **)&board, sizeof(u64) * BOARDSIZE, 0, NULL_HINT,
+            NO_ALLOC);
+ocrDbCreate(&pmovesDb, (void **)&pmoves, sizeof(u64) * MOVESIZE * 3, 0,
+            NULL_HINT, NO_ALLOC);
+ocrEdtTemplateCreate(&realmainTemplate, realmainTask, 0, 4);
+ocrEdtCreate(&realmain, realmainTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
+             NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+ocrAddDependence(counterDb, realmain, 0, DB_MODE_RW);
+ocrAddDependence(oldboardDb, realmain, 1, DB_MODE_RW);
+ocrAddDependence(boardDb, realmain, 2, DB_MODE_RW);
+ocrAddDependence(pmovesDb, realmain, 3, DB_MODE_CONST);
+return NULL_GUID;
 }

@@ -55,7 +55,7 @@ TARGET := cg
 REQ_LIBS :=
 
 # Space separated list of source files
-CODE_type ?= 2
+CODE_TYPE ?= 2
 ifeq ($(CODE_TYPE), 1)
 SRCS := cgShim.c gsLib.c
 else ifeq ($(CODE_TYPE), 2)

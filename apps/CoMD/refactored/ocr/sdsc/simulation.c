@@ -136,7 +136,7 @@ void destroy_simulation(void* s, void* l)
   for(b = 0; b < sim->bxs.boxes_num; ++b)
     ocrDbDestroy(list[b]);
   ocrDbDestroy(sim->bxs.list);
-  if(sim->pot.eam.f.values != NULL_GUID) {
+  if(!ocrGuidIsNull(sim->pot.eam.f.values)) {
     ocrDbDestroy(sim->pot.eam.phi.values);
     ocrDbDestroy(sim->pot.eam.rho.values);
     ocrDbDestroy(sim->pot.eam.f.values);

@@ -22,7 +22,7 @@ double time()
 void timer_init(timerdb_t** timerdb, ocrGuid_t* guid, classdb_t* class, u8 on)
 {
     ocrDbCreate(guid, (void**)timerdb, sizeof(timerdb_t)+sizeof(double)*(2+(on ? class->niter:0)),
-                0, NULL_GUID, NO_ALLOC);
+                0, NULL_HINT, NO_ALLOC);
     (*timerdb)->tp = -1;
 }
 
@@ -53,7 +53,7 @@ void print_results(classdb_t* class, double t, double mops)
 
 void class_init(classdb_t** class, ocrGuid_t* guid, char c, u32 b)
 {
-    ocrDbCreate(guid, (void**)class, sizeof(classdb_t), 0, NULL_GUID, NO_ALLOC);
+    ocrDbCreate(guid, (void**)class, sizeof(classdb_t), 0, NULL_HINT, NO_ALLOC);
     (*class)->c=c;
     (*class)->blk=b;
     (*class)->on=1;
@@ -124,7 +124,7 @@ static const uint64_t i246m1 = 0x00003FFFFFFFFFFF;
 
 void rand_init(randdb_t** randdb, ocrGuid_t* guid)
 {
-    ocrDbCreate(guid, (void**)randdb, sizeof(randdb_t), 0, NULL_GUID, NO_ALLOC);
+    ocrDbCreate(guid, (void**)randdb, sizeof(randdb_t), 0, NULL_HINT, NO_ALLOC);
     (*randdb)->tran = 314159265.0;
     (*randdb)->amult = 1220703125;
 }

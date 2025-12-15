@@ -43,7 +43,7 @@ static inline u64 mk_seed(u32 id, u32 call_site)
 void init_atoms(ocrGuid_t* list, u32 boxes_num, box** bxs_ptr)
 {
   for(u32 b = 0; b<boxes_num; ++b) {
-    ocrDbCreate(list+b, (void**)bxs_ptr+b, sizeof(box), 0, NULL_GUID, NO_ALLOC);
+    ocrDbCreate(list+b, (void**)bxs_ptr+b, sizeof(box), 0, NULL_HINT, NO_ALLOC);
     bxs_ptr[b]->atoms = 0;
   }
 }

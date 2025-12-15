@@ -23,7 +23,7 @@ WORKLOAD_BUILD_ROOT   ?= ./build
 WORKLOAD_INSTALL_ROOT ?= ./install
 
 # DATA
-DATA             = /opt/share/xstack_app_input/sar/tiny/x86
+DATA             = ../../datasets/tiny/x86
 
 # If 0, the workload has no input file
 # If 1+, this is the index in the argument

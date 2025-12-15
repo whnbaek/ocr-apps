@@ -26,8 +26,6 @@ typedef enum {
    Operation_ConsensusOfSiblingSet,     // Reply to child prong of what the consensus was, as figured out by the parent.
 } DataExchangeOpcode_t;
 
-   DataExchangeOpcode_t  serviceOpcode;           // What general action is the parent to perform.  E.g.  dataExchange__CheckSum
-
 typedef struct DbCommHeader_t DbCommHeader_t;
 
 //#include "control.h"

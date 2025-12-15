@@ -14,7 +14,7 @@ ocrGuid_t add_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 #ifndef TG_ARCH
     for(i=0;i<size;i++)
-        fprintf(out,"%llu\n",data[i]);
+        fprintf(out,"%lu\n",data[i]);
 #else
     fwrite(data,10,sizeof(u64),out);
 #endif
@@ -36,7 +36,7 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     if ( argc !=  4 ) {
         ocrPrintf("Usage: ./basicIO offset size fileName \n");
         ocrShutdown();
-        return 1;
+        return ERROR_GUID;
     }
 
     offset = atoi(ocrGetArgv(programArg, 1));
@@ -57,9 +57,9 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     // Its has been created for demo purpose
     //Create datablock to hold a block of 'size' elements
     u64 *inputarr;
-    ocrDbCreate(&dataGuid, (void**)&inputarr, sizeof(u64)*size,0,NULL_GUID, NO_ALLOC);
+    ocrDbCreate(&dataGuid, (void**)&inputarr, sizeof(u64)*size,0,NULL_HINT, NO_ALLOC);
 #ifndef TG_ARCH
-    while(fscanf(in,"%llu\n",&inputarr[i++])!=EOF);
+    while(fscanf(in,"%lu\n",&inputarr[i++])!=EOF);
 #else
     fread(inputarr, sizeof(u64),size , in);
 
@@ -70,7 +70,7 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrEdtTemplateCreate(&addEdtTemplateGuid, add_edt, 2 /*paramc*/, 1 /*depc*/);
     ocrGuid_t add_edt_guid;
     // Create the EDT not specifying the dependence vector at creation
-    ocrEdtCreate(&add_edt_guid, addEdtTemplateGuid, EDT_PARAM_DEF, nparamv,1,NULL ,EDT_PROP_FINISH , NULL_GUID, NULL);
+    ocrEdtCreate(&add_edt_guid, addEdtTemplateGuid, EDT_PARAM_DEF, nparamv,1,NULL ,EDT_PROP_FINISH , NULL_HINT, NULL);
 
     ocrGuid_t triggerEventGuid;
     ocrEventCreate(&triggerEventGuid, OCR_EVENT_STICKY_T, true);

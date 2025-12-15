@@ -562,7 +562,7 @@ printf("backgroundReflSpacing = %f\n",backgroundReflSpacing);
     {
         if (y && y[i]) fftwf_free(y[i]);
         if (Xr && Xr[i]) fftwf_free(Xr[i]);
-        if (plan_backward[i]) fftwf_destroy_plan(plan_backward[i]);
+        fftwf_destroy_plan(plan_backward[i]);
     }
 
     if (y) free(y);

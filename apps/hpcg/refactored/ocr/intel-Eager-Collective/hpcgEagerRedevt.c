@@ -1544,7 +1544,7 @@ if(pbPTR->debug > 0) PRINTF("CG%d T%d P%d finishing \n", myrank, timestep, phase
 #ifdef NO_REDUCTION
         ocrEventSatisfy(rpPTR->returnEVT, myDataDBK);
 #else
-        ocrEventReductionSatisfySlot(redEvtGuid, myDataPTR, myrank);
+    ocrEventCollectiveSatisfySlot(redEvtGuid, myDataPTR, myrank);
 #endif
 
     ocrAddDependence(myDataDBK, hpcgEDT, SLOT(hpcg,myDataBlock), DB_MODE_RW);
@@ -1597,7 +1597,8 @@ for(i=0;i<pbPTR->maxIter;i++)
                 ocrEventCreate(&dummyEVT, OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG);
                 ocrAddDependenceSlot(pbPTR->redEvtTimerGuid, myrank, dummyEVT, 0, DB_MODE_RO);
             }
-            ocrEventReductionSatisfySlot(pbPTR->redEvtTimerGuid, myDataPTR, myrank);
+            ocrEventCollectiveSatisfySlot(pbPTR->redEvtTimerGuid, myDataPTR,
+                                          myrank);
             // ocrDbDestroy(returnDBK);
 #ifdef USE_PROFILER
             RETURN_PROFILE(NULL_GUID);
@@ -1700,7 +1701,7 @@ if(pbPTR->debug > 0) PRINTF("CG%d T%d P%d local rtz %e \n", myrank, timestep, ph
 #ifdef NO_REDUCTION
         ocrEventSatisfy(rpPTR->returnEVT, myDataDBK);
 #else
-        ocrEventReductionSatisfySlot(redEvtGuid, myDataPTR, myrank);
+    ocrEventCollectiveSatisfySlot(redEvtGuid, myDataPTR, myrank);
 #endif
 
 #ifdef USE_PROFILER
@@ -1812,7 +1813,7 @@ if(pbPTR->debug > 0) PRINTF("CG%d T%d P%d finish \n", myrank, timestep, phase);
 #ifdef NO_REDUCTION
         ocrEventSatisfy(rpPTR->returnEVT, myDataDBK);
 #else
-        ocrEventReductionSatisfySlot(redEvtGuid, myDataPTR, myrank);
+    ocrEventCollectiveSatisfySlot(redEvtGuid, myDataPTR, myrank);
 #endif
 
 #ifdef USE_PROFILER
@@ -1878,7 +1879,7 @@ if(pbPTR->debug > 0) PRINTF("CG%d T%d P%d finish \n", myrank, timestep, phase);
 #ifdef NO_REDUCTION
         ocrEventSatisfy(rpPTR->returnEVT, myDataDBK);
 #else
-        ocrEventReductionSatisfySlot(redEvtGuid, myDataPTR, myrank);
+    ocrEventCollectiveSatisfySlot(redEvtGuid, myDataPTR, myrank);
 #endif
 
 if(pbPTR->debug > 0) PRINTF("CG%d T%d P%d finish \n", myrank, timestep, phase);
@@ -2042,29 +2043,35 @@ if(sbPTR->debug > 0)
     ocrAffinityCount(AFFINITY_PD, &affinityCount);
 
     ocrEventParams_t params;
-    params.EVENT_REDUCTION.maxGen        = 1;
-    params.EVENT_REDUCTION.nbContribs    = sbPTR->npx * sbPTR->npy * sbPTR->npz;
+    params.EVENT_COLLECTIVE.maxGen = 1;
+    params.EVENT_COLLECTIVE.nbContribs = sbPTR->npx * sbPTR->npy * sbPTR->npz;
     // Assume static and homogeneous distribution
-    params.EVENT_REDUCTION.nbContribsPd  = params.EVENT_REDUCTION.nbContribs / affinityCount;
-    params.EVENT_REDUCTION.nbDatum       = 1;
-    params.EVENT_REDUCTION.arity         = 2;
-    params.EVENT_REDUCTION.op            = REDOP_F8_ADD;
-    params.EVENT_REDUCTION.type          = COL_ALLREDUCE;
-    params.EVENT_REDUCTION.reuseDbPerGen = true;
-    ocrEventCreateParams(&sbPTR->redEvtGuid, OCR_EVENT_REDUCTION_T, GUID_PROP_IS_LABELED, &params);
+    params.EVENT_COLLECTIVE.nbContribsPd =
+        params.EVENT_COLLECTIVE.nbContribs / affinityCount;
+    params.EVENT_COLLECTIVE.nbDatum = 1;
+    params.EVENT_COLLECTIVE.arity = 2;
+    params.EVENT_COLLECTIVE.op = REDOP_F8_ADD;
+    params.EVENT_COLLECTIVE.type = COL_ALLREDUCE;
+    params.EVENT_COLLECTIVE.reuseDbPerGen = true;
+    ocrEventCreateParams(&sbPTR->redEvtGuid, OCR_EVENT_COLLECTIVE_T,
+                         GUID_PROP_IS_LABELED, &params);
 
     //Reduction timer event
     ocrEventParams_t paramsTimerEvt;
-    paramsTimerEvt.EVENT_REDUCTION.maxGen        = 1;
-    paramsTimerEvt.EVENT_REDUCTION.nbContribs    = sbPTR->npx * sbPTR->npy * sbPTR->npz;
+    paramsTimerEvt.EVENT_COLLECTIVE.maxGen = 1;
+    paramsTimerEvt.EVENT_COLLECTIVE.nbContribs =
+        sbPTR->npx * sbPTR->npy * sbPTR->npz;
     // Assume static and homogeneous distribution
-    paramsTimerEvt.EVENT_REDUCTION.nbContribsPd  = paramsTimerEvt.EVENT_REDUCTION.nbContribs / affinityCount;
-    paramsTimerEvt.EVENT_REDUCTION.nbDatum       = 1;
-    paramsTimerEvt.EVENT_REDUCTION.arity         = 2;
-    paramsTimerEvt.EVENT_REDUCTION.op            = REDOP_F8_ADD;
-    paramsTimerEvt.EVENT_REDUCTION.type          = COL_ALLREDUCE; // should be COL_REDUCE - not supported
-    paramsTimerEvt.EVENT_REDUCTION.reuseDbPerGen = true;
-    ocrEventCreateParams(&sbPTR->redEvtTimerGuid, OCR_EVENT_REDUCTION_T, GUID_PROP_IS_LABELED, &paramsTimerEvt);
+    paramsTimerEvt.EVENT_COLLECTIVE.nbContribsPd =
+        paramsTimerEvt.EVENT_COLLECTIVE.nbContribs / affinityCount;
+    paramsTimerEvt.EVENT_COLLECTIVE.nbDatum = 1;
+    paramsTimerEvt.EVENT_COLLECTIVE.arity = 2;
+    paramsTimerEvt.EVENT_COLLECTIVE.op = REDOP_F8_ADD;
+    paramsTimerEvt.EVENT_COLLECTIVE.type =
+        COL_ALLREDUCE; // should be COL_REDUCE - not supported
+    paramsTimerEvt.EVENT_COLLECTIVE.reuseDbPerGen = true;
+    ocrEventCreateParams(&sbPTR->redEvtTimerGuid, OCR_EVENT_COLLECTIVE_T,
+                         GUID_PROP_IS_LABELED, &paramsTimerEvt);
 
     //RE: not sure we need the channel
     ocrEventParams_t paramsChan;
@@ -2501,7 +2508,7 @@ Passes the shared blocks to realMain
 
     ocrGuidRangeCreate(&(sbPTR->haloRangeGUID), 26*nrank, GUID_USER_EVENT_STICKY);
     ocrGuid_t rangeGuid;
-    ocrGuidRangeCreate(&rangeGuid, 2, GUID_USER_EVENT_REDUCTION);
+    ocrGuidRangeCreate(&rangeGuid, 2, GUID_USER_EVENT_COLLECTIVE);
     ocrGuidFromIndex(&(sbPTR->redEvtGuid), rangeGuid, 0);
     ocrGuidFromIndex(&(sbPTR->redEvtTimerGuid), rangeGuid, 1);
 

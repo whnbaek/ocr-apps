@@ -114,7 +114,7 @@ static ocrGuid_t lj_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   simulation* sim = (simulation*)depv[0].ptr;
   ocrGuid_t res; real_t* res_ptr;
-  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
   *res_ptr = lj_force_box_same((box*)depv[1].ptr, sim->pot.lj.sigma, sim->pot.lj.epsilon, sim->pot.cutoff);
   u32 dep = 1;
   u32 plane = sim->bxs.grid[0]*sim->bxs.grid[1];
@@ -186,7 +186,7 @@ static ocrGuid_t lj_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     *res_ptr += lj_force_box((box*)depv[1].ptr, (box*)depv[++dep].ptr, sim->bxs.shift[faces(bg,bbg,sim->bxs.grid)], sim->pot.lj.sigma, sim->pot.lj.epsilon, sim->pot.cutoff);
     ++bbg[0]; if(bbg[0] == sim->bxs.grid[0]) bbg[0] = 0;
   }
-  ocrAddDependence(res, paramv[0], 1+paramv[1], DB_MODE_CONST);
+  ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, 1+paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;
 }
@@ -199,7 +199,7 @@ static ocrGuid_t lj_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
     sim->e_potential += *(real_t*)depv[b].ptr;
     ocrDbDestroy(depv[b].guid);
   }
-  ocrEventSatisfy(paramv[0], NULL_GUID);
+  ocrEventSatisfy(*(ocrGuid_t *)paramv, NULL_GUID);
 
   return NULL_GUID;
 }
@@ -207,9 +207,9 @@ static ocrGuid_t lj_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
 static inline void spawn_pair(ocrGuid_t sim, ocrGuid_t tmp, ocrGuid_t red, ocrGuid_t* list, u32 b, u32 grid[3], u32 plane)
 {
   u64 paramv[2];
-  paramv[0] = red; paramv[1] = b;
+  paramv[0] = red.guid; paramv[1] = b;
   ocrGuid_t edt;
-  ocrEdtCreate(&edt, tmp, 2, paramv, 28, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 2, paramv, 28, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_RW);
   ocrAddDependence(list[b], edt, 1, DB_MODE_CONST);
 
@@ -293,7 +293,7 @@ void fork_lj_force(ocrGuid_t sim, simulation* sim_ptr, ocrGuid_t cont, ocrGuid_t
   u32 pairs = sim_ptr->bxs.boxes_num;
   ocrGuid_t tmp,red;
   ocrEdtTemplateCreate(&tmp, lj_red_edt, 1, pairs+1);
-  ocrEdtCreate(&red, tmp, 1, &f, pairs+1, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&red, tmp, 1, (u64 *)&f, pairs+1, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(sim, red, 0, DB_MODE_RW);
   ocrEdtTemplateDestroy(tmp);
 
