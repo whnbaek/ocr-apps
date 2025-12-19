@@ -336,10 +336,15 @@ void reductionRecvUp(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK, 
 
     u32 i;
     ocrGuid_t reductionEDT;
-    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, EDT_PARAM_DEF, NULL, ARITY+2, NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+    /* Pass phase=1 as EDT parameter to avoid race condition with shared DB
+     * state */
+    u64 phaseParam = 1;
+    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, ARITY + 2,
+                 NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
     ocrAddDependence(mydataDBK, reductionEDT, SLOT(reduction,mydata), DB_MODE_RW);
-    for(i=0;i<ARITY;i++) ocrAddDependence(rpPTR->recvUpEVT[i], reductionEDT, SLOTARRAY(reduction,yourdata,i), DB_MODE_RO);
-    rpPTR->phase = 1;
+    for (i = 0; i < ARITY; i++)
+      ocrAddDependence(rpPTR->recvUpEVT[i], reductionEDT,
+                       SLOTARRAY(reduction, yourdata, i), DB_MODE_RO);
     ocrDbRelease(reductionPrivateDBK);
     ocrAddDependence(reductionPrivateDBK, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
     return;
@@ -349,9 +354,13 @@ void reductionRecvDown(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK
 
     u32 i;
     ocrGuid_t reductionEDT;
-    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, EDT_PARAM_DEF, NULL, 2, NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
-    ocrAddDependence(rpPTR->recvDownEVT, reductionEDT, SLOT(reduction,mydata), DB_MODE_RO);
-    rpPTR->phase = 2;
+    /* Pass phase=2 as EDT parameter to avoid race condition with shared DB
+     * state */
+    u64 phaseParam = 2;
+    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, 2, NULL,
+                 EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+    ocrAddDependence(rpPTR->recvDownEVT, reductionEDT, SLOT(reduction, mydata),
+                     DB_MODE_RO);
     ocrDbRelease(reductionPrivateDBK);
     ocrAddDependence(reductionPrivateDBK, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
     return;
@@ -384,30 +393,36 @@ void reductionSendDown(reductionPrivate_t * rpPTR, void * data) {
  */
 ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
 
-    /*
-    depv
-    0: private block
-    1: mydata
-    2 to ARITY+1: the datablocks from your children
-    going down, yourdata[0] is the result to send back and down
-    */
+  /*
+  depv
+  0: private block
+  1: mydata
+  2 to ARITY+1: the datablocks from your children
+  going down, yourdata[0] is the result to send back and down
 
-    DEPVDEF(reduction);
-    ocrGuid_t rpDBK = DEPV(reduction,reductionPrivate,guid);
-    reductionPrivate_t * rpPTR = DEPV(reduction,reductionPrivate,ptr);
+  paramv[0]: phase (0=initial, 1=received up, 2=received down)
+             This is passed as parameter to avoid race condition with shared DB.
+  */
 
-    u64 nrank = rpPTR->nrank;
-    u64 myrank = rpPTR->myrank;
-    u64 ndata = rpPTR->ndata;
+  DEPVDEF(reduction);
+  ocrGuid_t rpDBK = DEPV(reduction, reductionPrivate, guid);
+  reductionPrivate_t *rpPTR = DEPV(reduction, reductionPrivate, ptr);
 
-    ocrGuid_t returnEVT = rpPTR->returnEVT;
+  /* Get phase from parameter instead of shared DB to avoid race condition */
+  u64 phase = (paramc > 0 && paramv != NULL) ? paramv[0] : 0;
 
-    if(nrank == 1) { // nothing to do
-        if(!ocrGuidIsNull(rpPTR->returnEVT)) {
-            ocrEventSatisfy(rpPTR->returnEVT, DEPV(reduction,mydata,guid));
-        }
-        return NULL_GUID;
+  u64 nrank = rpPTR->nrank;
+  u64 myrank = rpPTR->myrank;
+  u64 ndata = rpPTR->ndata;
+
+  ocrGuid_t returnEVT = rpPTR->returnEVT;
+
+  if (nrank == 1) { // nothing to do
+    if (!ocrGuidIsNull(rpPTR->returnEVT)) {
+      ocrEventSatisfy(rpPTR->returnEVT, DEPV(reduction, mydata, guid));
     }
+    return NULL_GUID;
+  }
 
     void ** yourdataPTR, **mydataPTR;
     mydataPTR = DEPV(reduction,mydata,ptr);
@@ -429,8 +444,10 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
         }
 
 //create clone to continue after channel events are installed
-
-        ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, EDT_PARAM_DEF, NULL, 2, NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+        /* Pass phase=0 as EDT parameter */
+        u64 phaseParam = 0;
+        ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, 2,
+                     NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
         ocrAddDependence(DEPV(reduction,mydata,guid), reductionEDT, SLOT(reduction,mydata), DB_MODE_RW);
 
         ocrGuid_t SendOutputEVT = NULL_GUID;
@@ -494,7 +511,7 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
 
     ocrGuid_t reductionPrivateDBK = DEPV(reduction,reductionPrivate,guid);
 
-    switch (rpPTR->phase) {
+    switch (phase) {
     case 0: //first real call, figure out what to do
         switch(rpPTR->type) {
         case BROADCAST:
@@ -539,7 +556,7 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
         } else {
             if(rpPTR->type == ALLREDUCE)
                 reductionSendDown(rpPTR, mydataPTR);
-            rpPTR->phase = 0;
+            /* Phase is now passed as parameter, no need to reset in DB */
             ocrDbRelease(reductionPrivateDBK);
             ocrDbRelease(DEPV(reduction,mydata,guid));
             ocrEventSatisfy(returnEVT, DEPV(reduction,mydata,guid));
@@ -549,7 +566,7 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
     case 2: //I have received down
         if(!ocrGuidIsNull(rpPTR->sendDownEVT[0]))
             reductionSendDown(rpPTR,mydataPTR);
-        rpPTR->phase = 0;
+        /* Phase is now passed as parameter, no need to reset in DB */
         ocrDbRelease(reductionPrivateDBK);
         ocrDbRelease(DEPV(reduction,mydata,guid));
         ocrEventSatisfy(returnEVT, DEPV(reduction,mydata,guid));
@@ -565,13 +582,15 @@ void reductionLaunch(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK, 
     ocrGuid_t reductionEDT, localDBK;
     void * localPTR;
     if(rpPTR->new) {
-        ocrEdtTemplateCreate(&(rpPTR->reductionTML), reductionEdt, 0, EDT_PARAM_UNK);
-        if(rpPTR->type != BROADCAST) {
-            rpPTR->size =  rpPTR->ndata*reductionsizeof(rpPTR->reductionOperator);
-            }
-          else {
-              rpPTR->size = rpPTR->ndata;
-            }
+      /* Template now takes 1 parameter (phase) to avoid race condition with
+       * shared DB */
+      ocrEdtTemplateCreate(&(rpPTR->reductionTML), reductionEdt, 1,
+                           EDT_PARAM_UNK);
+      if (rpPTR->type != BROADCAST) {
+        rpPTR->size = rpPTR->ndata * reductionsizeof(rpPTR->reductionOperator);
+      } else {
+        rpPTR->size = rpPTR->ndata;
+      }
 
         ocrHintInit(&rpPTR->myAffinity,OCR_HINT_EDT_T);
 #ifdef ENABLE_EXTENSION_AFFINITY
@@ -581,7 +600,10 @@ void reductionLaunch(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK, 
 #endif
     }
 
-    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, EDT_PARAM_DEF, NULL, 2, NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+    /* Pass phase=0 as EDT parameter to avoid race condition */
+    u64 phaseParam = 0;
+    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, 2, NULL,
+                 EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
     ocrDbCreate(&(localDBK), (void**) &localPTR, rpPTR->ndata*reductionsizeof(rpPTR->reductionOperator), 0, NULL_HINT, NO_ALLOC);
 #ifndef TG_ARCH
         memcpy(localPTR, mydataPTR, rpPTR->size);

@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <time.h>
 
+#include <sys/time.h>
+
 #ifndef TG_ARCH
 
 // Uncomment the below two lines to include EDT profiling information
@@ -37,7 +39,7 @@ ocrGuid_t lapacke_dpotrf_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     u64 *func_args = paramv;
     u32 k = (u32) func_args[0];
     u32 tileSize = (u32) func_args[1];
-    ocrGuid_t out_lkji_kkkp1_event_guid = (ocrGuid_t) func_args[2];
+    ocrGuid_t out_lkji_kkkp1_event_guid = (ocrGuid_t){.guid = func_args[2]};
 
     double* aBlock = (double*) (depv[0].ptr);
 
@@ -69,9 +71,9 @@ ocrGuid_t cblas_dtrsm_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     u32 k = (u32) func_args[0];
     u32 j = (u32) func_args[1];
     u32 tileSize = (u32) func_args[2];
-    ocrGuid_t out_lkji_jkkp1_event_guid = (ocrGuid_t) func_args[3];
+    ocrGuid_t out_lkji_jkkp1_event_guid = (ocrGuid_t){.guid = func_args[3]};
 
-//    ocrPrintf("RUNNING trisolve (%d, %d)\n", k, j);
+    //    ocrPrintf("RUNNING trisolve (%d, %d)\n", k, j);
 
     double* aBlock = (double*) (depv[0].ptr);
     double* liBlock = (double*) (depv[1].ptr);
@@ -98,9 +100,9 @@ ocrGuid_t cblas_dsyrk_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     u32 j = (u32) func_args[1];
     u32 i = (u32) func_args[2];
     u32 tileSize = (u32) func_args[3];
-    ocrGuid_t out_lkji_jjkp1_event_guid = (ocrGuid_t) func_args[4];
+    ocrGuid_t out_lkji_jjkp1_event_guid = (ocrGuid_t){.guid = func_args[4]};
 
-//    ocrPrintf("RUNNING update_diagonal (%d, %d, %d)\n", k, j, i);
+    //    ocrPrintf("RUNNING update_diagonal (%d, %d, %d)\n", k, j, i);
 
     double* aBlock = (double*) (depv[0].ptr);
     double* l2Block = (double*) (depv[1].ptr);
@@ -123,9 +125,9 @@ ocrGuid_t cblas_dgemm_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     u32 j = (u32) func_args[1];
     u32 i = (u32) func_args[2];
     u32 tileSize = (u32) func_args[3];
-    ocrGuid_t out_lkji_jikp1_event_guid = (ocrGuid_t) func_args[4];
+    ocrGuid_t out_lkji_jikp1_event_guid = (ocrGuid_t){.guid = func_args[4]};
 
-//    ocrPrintf("RUNNING update_nondiagonal (%d, %d, %d)\n", k, j, i);
+    //    ocrPrintf("RUNNING update_nondiagonal (%d, %d, %d)\n", k, j, i);
 
     double* aBlock = (double*) (depv[0].ptr);
     double* l1Block = (double*) (depv[1].ptr);
@@ -238,10 +240,10 @@ inline static void lapacke_dpotrf_task_prescriber (ocrGuid_t edtTemp, u32 k,
     u64 func_args[3];
     func_args[0] = k;
     func_args[1] = tileSize;
-    func_args[2] = (u64)(lkji_event_guids[k][k][k+1]);
+    func_args[2] = (u64)(lkji_event_guids[k][k][k + 1].guid);
 
-    ocrGuid_t affinity = NULL_GUID;
-    ocrEdtCreate(&seq_cholesky_task_guid, edtTemp, 3, func_args, 1, NULL, PROPERTIES, affinity, NULL);
+    ocrEdtCreate(&seq_cholesky_task_guid, edtTemp, 3, func_args, 1, NULL,
+                 PROPERTIES, NULL_HINT, NULL);
 
     ocrAddDependence(lkji_event_guids[k][k][k], seq_cholesky_task_guid, 0, DB_MODE_RW);
 }
@@ -254,11 +256,10 @@ inline static void cblas_dtrsm_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
     func_args[0] = k;
     func_args[1] = j;
     func_args[2] = tileSize;
-    func_args[3] = (u64)(lkji_event_guids[j][k][k+1]);
+    func_args[3] = (u64)(lkji_event_guids[j][k][k + 1].guid);
 
-
-    ocrGuid_t affinity = NULL_GUID;
-    ocrEdtCreate(&cblas_dtrsm_task_guid, edtTemp, 4, func_args, 2, NULL, PROPERTIES, affinity, NULL);
+    ocrEdtCreate(&cblas_dtrsm_task_guid, edtTemp, 4, func_args, 2, NULL,
+                 PROPERTIES, NULL_HINT, NULL);
 
     ocrAddDependence(lkji_event_guids[j][k][k], cblas_dtrsm_task_guid, 0, DB_MODE_RW);
     ocrAddDependence(lkji_event_guids[k][k][k+1], cblas_dtrsm_task_guid, 1, DB_MODE_RW);
@@ -273,10 +274,10 @@ inline static void cblas_dgemm_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
     func_args[1] = j;
     func_args[2] = i;
     func_args[3] = tileSize;
-    func_args[4] = (u64)(lkji_event_guids[j][i][k+1]);
+    func_args[4] = (u64)(lkji_event_guids[j][i][k + 1].guid);
 
-    ocrGuid_t affinity = NULL_GUID;
-    ocrEdtCreate(&cblas_dgemm_task_guid, edtTemp, 5, func_args, 3, NULL, PROPERTIES, affinity, NULL);
+    ocrEdtCreate(&cblas_dgemm_task_guid, edtTemp, 5, func_args, 3, NULL,
+                 PROPERTIES, NULL_HINT, NULL);
 
     ocrAddDependence(lkji_event_guids[j][i][k], cblas_dgemm_task_guid, 0, DB_MODE_RW);
     ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dgemm_task_guid, 1, DB_MODE_RW);
@@ -293,10 +294,10 @@ inline static void cblas_dsyrk_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
     func_args[1] = j;
     func_args[2] = i;
     func_args[3] = tileSize;
-    func_args[4] = (u64)(lkji_event_guids[j][j][k+1]);
+    func_args[4] = (u64)(lkji_event_guids[j][j][k + 1].guid);
 
-    ocrGuid_t affinity = NULL_GUID;
-    ocrEdtCreate(&cblas_dsyrk_task_guid, edtTemp, 5, func_args, 2, NULL, PROPERTIES, affinity, NULL);
+    ocrEdtCreate(&cblas_dsyrk_task_guid, edtTemp, 5, func_args, 2, NULL,
+                 PROPERTIES, NULL_HINT, NULL);
 
     ocrAddDependence(lkji_event_guids[j][j][k], cblas_dsyrk_task_guid, 0, DB_MODE_RW);
     ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dsyrk_task_guid, 1, DB_MODE_RW);
@@ -312,8 +313,9 @@ inline static void wrap_up_task_prescriber ( ocrGuid_t edtTemp, u32 numTiles, u3
     func_args[1]=(u32)tileSize;
     func_args[2]=(u32)outSelLevel;
 
-    ocrGuid_t affinity = NULL_GUID;
-    ocrEdtCreate(&wrap_up_task_guid, edtTemp, 3, func_args, (numTiles+1)*numTiles/2, NULL, PROPERTIES, affinity, NULL);
+    ocrEdtCreate(&wrap_up_task_guid, edtTemp, 3, func_args,
+                 (numTiles + 1) * numTiles / 2, NULL, PROPERTIES, NULL_HINT,
+                 NULL);
 
     u32 index = 0;
     for ( i = 0; i < numTiles; ++i ) {
@@ -331,22 +333,22 @@ inline static ocrGuid_t*** allocateCreateEvents ( u32 numTiles ) {
     void* lkji_event_guids_db = NULL;
     ocrGuid_t lkji_event_guids_db_guid;
 
-    ocrDbCreate(&lkji_event_guids_db_guid, &lkji_event_guids_db, sizeof(ocrGuid_t **)*numTiles,
-                FLAGS, NULL_GUID, NO_ALLOC);
+    ocrDbCreate(&lkji_event_guids_db_guid, &lkji_event_guids_db,
+                sizeof(ocrGuid_t **) * numTiles, FLAGS, NULL_HINT, NO_ALLOC);
 
     lkji_event_guids = (ocrGuid_t ***) (lkji_event_guids_db);
     for( i = 0 ; i < numTiles ; ++i ) {
-        ocrDbCreate(&lkji_event_guids_db_guid, (void *)&lkji_event_guids[i],
-                    sizeof(ocrGuid_t *)*(i+1),
-                    FLAGS, NULL_GUID, NO_ALLOC);
-        for( j = 0 ; j <= i ; ++j ) {
-            ocrDbCreate(&lkji_event_guids_db_guid, (void *)&lkji_event_guids[i][j],
-                        sizeof(ocrGuid_t)*(numTiles+1),
-                        FLAGS, NULL_GUID, NO_ALLOC);
-            for( k = 0 ; k <= numTiles ; ++k ) {
-                ocrEventCreate(&(lkji_event_guids[i][j][k]), OCR_EVENT_STICKY_T, TRUE);
-            }
+      ocrDbCreate(&lkji_event_guids_db_guid, (void *)&lkji_event_guids[i],
+                  sizeof(ocrGuid_t *) * (i + 1), FLAGS, NULL_HINT, NO_ALLOC);
+      for (j = 0; j <= i; ++j) {
+        ocrDbCreate(&lkji_event_guids_db_guid, (void *)&lkji_event_guids[i][j],
+                    sizeof(ocrGuid_t) * (numTiles + 1), FLAGS, NULL_HINT,
+                    NO_ALLOC);
+        for (k = 0; k <= numTiles; ++k) {
+          ocrEventCreate(&(lkji_event_guids[i][j][k]), OCR_EVENT_STICKY_T,
+                         TRUE);
         }
+      }
     }
 
     return lkji_event_guids;
@@ -386,29 +388,29 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize, double** matr
 
     for( i = 0 ; i < numTiles ; ++i ) {
         for( j = 0 ; j <= i ; ++j ) {
-            ocrGuid_t db_guid;
-            ocrGuid_t db_affinity = NULL_GUID;
-            void* temp_db;
-            ocrGuid_t tmpdb_guid;
-            ocrDbCreate(&db_guid, &temp_db, sizeof(double)*tileSize*tileSize,
-                        FLAGS, db_affinity, NO_ALLOC);
+          ocrGuid_t db_guid;
+          void *temp_db;
+          ocrGuid_t tmpdb_guid;
+          ocrDbCreate(&db_guid, &temp_db, sizeof(double) * tileSize * tileSize,
+                      FLAGS, NULL_HINT, NO_ALLOC);
 
-            double* temp = (double*) temp_db;
-            double** temp2D;
+          double *temp = (double *)temp_db;
+          double **temp2D;
 
-            ocrDbCreate(&tmpdb_guid, (void *)&temp2D, sizeof(double*)*tileSize,
-                        FLAGS, NULL_GUID, NO_ALLOC);
+          ocrDbCreate(&tmpdb_guid, (void *)&temp2D, sizeof(double *) * tileSize,
+                      FLAGS, NULL_HINT, NO_ALLOC);
 
-            for( index = 0; index < tileSize; ++index )
-                temp2D [index] = &(temp[index*tileSize]);
+          for (index = 0; index < tileSize; ++index)
+            temp2D[index] = &(temp[index * tileSize]);
 
-            // Split the matrix u32o tiles and write it u32o the item space at time 0.
-            // The tiles are indexed by tile indices (which are tag values).
-            for( A_i = i*tileSize, T_i = 0 ; T_i < tileSize; ++A_i, ++T_i ) {
-                for( A_j = j*tileSize, T_j = 0 ; T_j < tileSize; ++A_j, ++T_j ) {
-                    temp2D[ T_i ][ T_j ] = matrix[ A_i ][ A_j ];
-                }
+          // Split the matrix u32o tiles and write it u32o the item space at
+          // time 0. The tiles are indexed by tile indices (which are tag
+          // values).
+          for (A_i = i * tileSize, T_i = 0; T_i < tileSize; ++A_i, ++T_i) {
+            for (A_j = j * tileSize, T_j = 0; T_j < tileSize; ++A_j, ++T_j) {
+              temp2D[T_i][T_j] = matrix[A_i][A_j];
             }
+          }
             ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
             ocrDbDestroy(tmpdb_guid);
         }

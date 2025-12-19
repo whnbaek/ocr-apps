@@ -1,12 +1,10 @@
 OCR_INPUT_HOME=../../../apps
 PROG=ocr_mkl_cholesky
-SUFFIX=.exe
-CFLAGS= -O2 -g -mkl
-CLIBS= -L/opt/intel/mkl/lib/intel64 -lmkl_intel_lp64 -lmkl_core -lm
-OCR_FLAGS=-I${OCR_INSTALL}/include -L${OCR_INSTALL}/lib -locr_$(OCR_TYPE)
+BUILD_DIR=build/x86
+INSTALL_DIR=install/x86
+CFLAGS= -O3 -g -I${OCR_INSTALL}/include -DOCR_TYPE_H=x86.h
+CLIBS= -L${OCR_INSTALL}/lib -locr_$(OCR_TYPE) -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lm -fopenmp
 OCR_INPUT=${OCR_INPUT_HOME}/cholesky/datasets
-CC=icc
-CPP=icc
 
 ifndef OCR_TYPE
 $(error OCR_TYPE not set)
@@ -36,23 +34,36 @@ TILE_SIZE=5
 INPUT_FILE=m_${MATRIX_SIZE}.in
 OUTPUT_FILE=cholesky_out_${MATRIX_SIZE}.txt
 
-compile:
-	$(CC) -g $(CFLAGS) $(OCR_FLAGS) -I. $(PROG).c -o $(PROG)$(SUFFIX) $(CLIBS)
 
-compile.omp.task:
-	$(CC) -fopenmp $(CFLAGS) $(PROG).omp.task.c -o $(PROG).omp.task$(SUFFIX)
+compile: $(BUILD_DIR)
+	$(CC) -g $(CFLAGS) -I. $(PROG).c -o $(BUILD_DIR)/$(PROG) $(CLIBS)
 
-compile_pp:
-	$(CPP) $(CFLAGS) $(OCR_FLAGS) -I. $(PROG).cpp -o $(PROG)$(SUFFIX)
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+
+compile.omp.task: $(BUILD_DIR)
+	$(CC) -fopenmp $(CFLAGS) $(PROG).omp.task.c -o $(BUILD_DIR)/$(PROG).omp.task
+
+
+compile_pp: $(BUILD_DIR)
+	$(CPP) $(CFLAGS) -I. $(PROG).cpp -o $(BUILD_DIR)/$(PROG) $(CLIBS)
+
 
 run:
-	./$(PROG)$(SUFFIX) $(OCR_RUN_FLAGS) ${MATRIX_SIZE} ${TILE_SIZE} ${OCR_INPUT}/${INPUT_FILE}
+	$(BUILD_DIR)/$(PROG) $(OCR_RUN_FLAGS) ${MATRIX_SIZE} ${TILE_SIZE} ${OCR_INPUT}/${INPUT_FILE}
+
 
 run.omp.task:
-	./$(PROG).omp.task$(SUFFIX) ${MATRIX_SIZE} ${TILE_SIZE} ${OCR_INPUT}/${INPUT_FILE}
+	$(BUILD_DIR)/$(PROG).omp.task ${MATRIX_SIZE} ${TILE_SIZE} ${OCR_INPUT}/${INPUT_FILE}
+
 
 clean:
-	-rm -Rf *.o $(PROG)$(SUFFIX) $(PROG).out *.csv
+	-rm -Rf *.o $(BUILD_DIR) $(INSTALL_DIR) $(PROG).out *.csv
+
+install: compile
+	mkdir -p $(INSTALL_DIR)
+	cp $(BUILD_DIR)/$(PROG) $(INSTALL_DIR)/
 
 verify:
 	diff -b ${OCR_INPUT}/$(OUTPUT_FILE) $(PROG).out

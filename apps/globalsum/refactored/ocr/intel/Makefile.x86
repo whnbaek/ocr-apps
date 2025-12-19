@@ -47,15 +47,22 @@ ENABLE_VISUALIZER ?= no
 
 include ${APPS_ROOT}/makefiles/make-pre.inc
 
+# Space separated list of source files
+CODE_TYPE ?= 2
+
 # Name of the application to build
-TARGET := cg
+ifeq ($(CODE_TYPE), 1)
+TARGET := cgShim
+else ifeq ($(CODE_TYPE), 2)
+TARGET := cgNoShim
+else ifeq ($(CODE_TYPE), 3)
+TARGET := pcg
+endif
 
 # Space separated list of directory names in apps/libs/src
 # that need to be built. These will be built for ARCH
 REQ_LIBS :=
 
-# Space separated list of source files
-CODE_TYPE ?= 2
 ifeq ($(CODE_TYPE), 1)
 SRCS := cgShim.c gsLib.c
 else ifeq ($(CODE_TYPE), 2)
@@ -80,11 +87,11 @@ LDFLAGS := -lpthread
 #   - debug:   Build the debug version of the application
 #   - install: Build and install
 #   - run:     Run the application
-all:	CFLAGS += -O0 -g
+all:	CFLAGS += -O3
 all:	TARGETS := all
 all:	default
 
-debug:	CFLAGS += -O0
+debug:	CFLAGS += -O0 -g
 debug:	TARGETS := debug
 debug:	default
 

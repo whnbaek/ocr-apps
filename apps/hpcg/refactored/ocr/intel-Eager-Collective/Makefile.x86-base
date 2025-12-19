@@ -95,7 +95,7 @@ LDFLAGS := -ltimer -lpthread -lm
 #   - debug:   Build the debug version of the application
 #   - install: Build and install
 #   - run:     Run the application
-all:	CFLAGS += -g -O2
+all:	CFLAGS += -g -O3
 all:	TARGETS := all
 all:	default
 
