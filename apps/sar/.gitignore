@@ -49,6 +49,7 @@ omp/sscp
 omp/sscp.dbg
 datagen-tsml/datagen
 datagen-huge/datagen
+datagen-huge/mpidatagen
 datagen-huge/huge/Radar.txt
 datagen-huge/test/Radar.txt
 datagen-tsml/large/Radar.txt
@@ -83,3 +84,4 @@ ocr/large/Detects.txt
 ocr/medium/Detects.txt
 ocr/small/Detects.txt
 ocr/tiny/Detects.txt
+datasets

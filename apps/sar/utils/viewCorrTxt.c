@@ -1,13 +1,12 @@
-#include <stdlib.h>
+#include <complex.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <math.h>
-#include <complex.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include "ocr.h"
 #include "common.h"
 
-struct Inputs in;					// Inputs
 struct detects *Y;					// Detects list
 struct point **corr_map;			// Correlation map
 struct DigSpotVars dig_spot;		// Digital spotlight variables

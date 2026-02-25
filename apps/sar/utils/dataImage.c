@@ -1,13 +1,10 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <math.h>
 #include <complex.h>
 
-#include "ocr.h"
 #include "common.h"
 
-struct Inputs in;			// Inputs
 struct point **corr_map;		// Correlation map
 struct DigSpotVars dig_spot;		// Digital spotlight variables
 struct complexData **curImage;		// Current image

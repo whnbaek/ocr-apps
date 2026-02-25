@@ -96,7 +96,11 @@ LDFLAGS := -lpthread -lm -lreduction -ltimer
 #   - debug:   Build the debug version of the application
 #   - install: Build and install
 #   - run:     Run the application
-all:	CFLAGS += -O3 -AVX2 -ipo -ansi-alias -opt-subscript-in-range -parallel
+ifeq ($(CC), icc)
+CFLAGS += -AVX2 -ipo -ansi-alias -opt-subscript-in-range -parallel -restrict
+endif
+
+all:	CFLAGS += -O3
 all:	TARGETS := all
 all:	default
 

@@ -69,7 +69,7 @@ depv
         mydata->data = sum;  //local sum
 //Create clone
         paramv[2] = 1;
-        ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+        ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
         ocrDbRelease(depv[0].guid);
         ocrAddDependence(depv[0].guid, cgEdt, 0, DB_MODE_RW);
         ocrAddDependence(SB->rootEvent, cgEdt, 1, DB_MODE_RW);
@@ -78,7 +78,7 @@ depv
         ocrDbRelease(depv[3].guid);
         ocrAddDependence(depv[3].guid, cgEdt, 3, DB_MODE_RW);
 //launch global sum
-        ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+        ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
         ocrDbRelease(depv[1].guid);
         ocrAddDependence(depv[1].guid, gsEdt, 0, DB_MODE_RW);
         ocrAddDependence(depv[2].guid, gsEdt, 1, DB_MODE_RW);
@@ -102,7 +102,7 @@ depv
         mydata->data = sum;
 //Create clone
         paramv[2] = 2;
-        ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+        ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
         ocrDbRelease(depv[0].guid);
         ocrAddDependence(depv[0].guid, cgEdt, 0, DB_MODE_RW);
         ocrAddDependence(SB->rootEvent, cgEdt, 1, DB_MODE_RW);
@@ -111,7 +111,7 @@ depv
         ocrDbRelease(depv[3].guid);
         ocrAddDependence(depv[3].guid, cgEdt, 3, DB_MODE_RW);
 //launch global sum
-        ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+        ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
         ocrDbRelease(depv[1].guid);
         ocrAddDependence(depv[1].guid, gsEdt, 0, DB_MODE_RW);
         ocrAddDependence(depv[2].guid, gsEdt, 1, DB_MODE_RW);
@@ -133,7 +133,7 @@ depv
             mydata->data = sum;
 //Create clone
             paramv[2]=3;
-            ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+            ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
             ocrDbRelease(depv[0].guid);
             ocrAddDependence(depv[0].guid, cgEdt, 0, DB_MODE_RW);
             ocrAddDependence(SB->rootEvent, cgEdt, 1, DB_MODE_RW);
@@ -142,7 +142,7 @@ depv
             ocrDbRelease(depv[3].guid);
             ocrAddDependence(depv[3].guid, cgEdt, 3, DB_MODE_RW);
 //launch global sum
-            ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+            ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
             ocrDbRelease(depv[1].guid);
             ocrAddDependence(depv[1].guid, gsEdt, 0, DB_MODE_RW);
             ocrAddDependence(depv[2].guid, gsEdt, 1, DB_MODE_RW);
@@ -165,7 +165,7 @@ depv
 //create clone
             paramv[2]=1;
             paramv[1]++;
-            ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+            ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
             ocrDbRelease(depv[0].guid);
             ocrAddDependence(depv[0].guid, cgEdt, 0, DB_MODE_RW);
             ocrAddDependence(SB->rootEvent, cgEdt, 1, DB_MODE_RW);
@@ -174,7 +174,7 @@ depv
             ocrDbRelease(depv[3].guid);
             ocrAddDependence(depv[3].guid, cgEdt, 3, DB_MODE_RW);
 //launch global sum for pAp
-            ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+            ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
             ocrDbRelease(depv[1].guid);
             ocrAddDependence(depv[1].guid, gsEdt, 0, DB_MODE_RW);
             ocrAddDependence(depv[2].guid, gsEdt, 1, DB_MODE_RW);
@@ -197,8 +197,8 @@ computeInit is launched by the initialization phase of the GS library
 //create and launch cgTask
     ocrGuid_t cgEdt, cgBlock, dummy;
     u64 paramvout[3] = {mynode, 0, 0};
-    ocrDbCreate(&(cgBlock), (void**) &dummy, sizeof(cgBlock_t), 0, NULL_GUID, NO_ALLOC);
-    ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramvout, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+    ocrDbCreate(&(cgBlock), (void**) &dummy, sizeof(cgBlock_t), 0, NULL_HINT, NO_ALLOC);
+    ocrEdtCreate(&cgEdt, uSB->cgTemplate, EDT_PARAM_DEF, paramvout, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
     ocrAddDependence(depv[0].guid, cgEdt, 0, DB_MODE_RW);
     ocrAddDependence(depv[1].guid, cgEdt, 1, DB_MODE_RW);
     ocrAddDependence(depv[2].guid, cgEdt, 2, DB_MODE_RW);
@@ -222,10 +222,10 @@ realMain launches the GS initialization
     SB->userBlock = depv[0].guid;   //passed through GSiEDT to computeInitEdt
     ocrGuid_t gsBlock, GSi, sticky, dummy;
     ocrEdtTemplateCreate(&(SB->GSiTemplate), GSiEdt, 3, 2);  //needed both to launch GSiEDT and inside for cloning REQUIRED
-    ocrDbCreate(&(gsBlock), (void**) &dummy, sizeof(gsBlock_t), 0, NULL_GUID, NO_ALLOC); //needed for GSiEDT   REQUIRED
+    ocrDbCreate(&(gsBlock), (void**) &dummy, sizeof(gsBlock_t), 0, NULL_HINT, NO_ALLOC); //needed for GSiEDT   REQUIRED
 //create and luanch GSiEdt
-    u64 GSparamvout[3] = {0, NULL_GUID, NULL_GUID};  //REQUIRED
-    ocrEdtCreate(&GSi, SB->GSiTemplate, EDT_PARAM_DEF, GSparamvout, EDT_PARAM_DEF, NULL_GUID, EDT_PROP_NONE, NULL_GUID, NULL_GUID);  //REQUIRED
+    u64 GSparamvout[3] = {0, NULL_GUID.guid, NULL_GUID.guid};  //REQUIRED
+    ocrEdtCreate(&GSi, SB->GSiTemplate, EDT_PARAM_DEF, GSparamvout, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);  //REQUIRED
     ocrDbRelease(depv[1].guid);
     ocrAddDependence(depv[1].guid, GSi, 0, DB_MODE_RW);  //REQUIRED
     ocrAddDependence(gsBlock, GSi, 1, DB_MODE_RW);  //REQUIRED
@@ -251,10 +251,10 @@ launches realmain (wrapup waits until realmain is done)
     ocrPrintf("Rows per worker %d \n", M);
     ocrEdtTemplateCreate(&wrapupTemplate, wrapupEdt, 0, 1);
     ocrEdtTemplateCreate(&realMainTemplate, realMainEdt, 0, 2);
-    ocrEdtCreate(&realMain, realMainTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_GUID, &output);
-    ocrDbCreate(&GSsharedBlock, (void **) &dummy, sizeof(GSsharedBlock_t), 0, NULL_GUID, NO_ALLOC);
-    ocrDbCreate(&userSharedBlock, (void **) &dummy, sizeof(userSharedBlock_t), 0, NULL_GUID, NO_ALLOC);
-    ocrEdtCreate(&wrapup, wrapupTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_GUID, NULL_GUID);
+    ocrEdtCreate(&realMain, realMainTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_HINT, &output);
+    ocrDbCreate(&GSsharedBlock, (void **) &dummy, sizeof(GSsharedBlock_t), 0, NULL_HINT, NO_ALLOC);
+    ocrDbCreate(&userSharedBlock, (void **) &dummy, sizeof(userSharedBlock_t), 0, NULL_HINT, NO_ALLOC);
+    ocrEdtCreate(&wrapup, wrapupTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_HINT, NULL);
     ocrAddDependence(output, wrapup, 0, DB_MODE_RW);
     ocrAddDependence(userSharedBlock, realMain, 0, DB_MODE_RW);
     ocrAddDependence(GSsharedBlock, realMain, 1, DB_MODE_RW);

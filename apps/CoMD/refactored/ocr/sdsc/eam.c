@@ -128,7 +128,7 @@ static u8 eam_init_setfl(potential* pot, const char* pot_dir, char* pot_name)
   ocrGuid_t buffer;
   real_t* buffer_ptr;
 
-  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(n_rho+3), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(n_rho+3), 0, NULL_HINT, NO_ALLOC);
   for(u32 i=0; i<n_rho; ++i)
 #ifdef TG_ARCH
   {
@@ -142,7 +142,7 @@ static u8 eam_init_setfl(potential* pot, const char* pot_dir, char* pot_name)
 #endif
   init_interpolator(&pot->eam.f, n_rho, 0.0, d_rho, buffer, buffer_ptr);
 
-  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
   for(u32 i=0; i<nr; ++i)
 #ifdef TG_ARCH
   {
@@ -156,7 +156,7 @@ static u8 eam_init_setfl(potential* pot, const char* pot_dir, char* pot_name)
 #endif
   init_interpolator(&pot->eam.rho, nr, 0.0, dr, buffer, buffer_ptr);
 
-  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
   for(u32 i=0; i<nr; ++i)
 #ifdef TG_ARCH
   {
@@ -253,7 +253,7 @@ static u8 eam_init_funcfl(potential* pot, const char* pot_dir, char* pot_name)
   ocrGuid_t buffer;
   real_t* buffer_ptr;
 
-  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(n_rho+3), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(n_rho+3), 0, NULL_HINT, NO_ALLOC);
 #ifdef TG_ARCH
   for(u32 i=0; i<n_rho; i+=5)
   {
@@ -270,7 +270,7 @@ static u8 eam_init_funcfl(potential* pot, const char* pot_dir, char* pot_name)
 #endif
   init_interpolator(&pot->eam.f, n_rho, 0.0, d_rho, buffer, buffer_ptr);
 
-  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
 #ifdef TG_ARCH
   for(u32 i=0; i<nr; i+=5)
   {
@@ -292,7 +292,7 @@ static u8 eam_init_funcfl(potential* pot, const char* pot_dir, char* pot_name)
   buffer_ptr[0] = buffer_ptr[1] + (buffer_ptr[1] - buffer_ptr[2]);
   init_interpolator(&pot->eam.phi, nr, 0.0, dr, buffer, buffer_ptr);
 
-  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
 #ifdef TG_ARCH
   for(u32 i=0; i<nr; i+=5)
   {
@@ -429,7 +429,7 @@ ocrGuid_t eam_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   simulation* sim = (simulation*)depv[0].ptr;
   ocrGuid_t res; real_t* res_ptr;
-  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
   *res_ptr = eam_force_box_same((box*)depv[1].ptr, sim->pot.cutoff, &sim->pot.eam.phi, (real_t*)depv[depc-2].ptr, &sim->pot.eam.rho, (real_t*)depv[depc-1].ptr);
 
   u32 dep=1;
@@ -504,7 +504,7 @@ ocrGuid_t eam_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ++bbg[0]; if(bbg[0] == sim->bxs.grid[0]) bbg[0] = 0;
   }
 
-  ocrAddDependence(res, paramv[0], 1+paramv[1], DB_MODE_CONST);
+  ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, 1+paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;
 }
@@ -515,7 +515,7 @@ ocrGuid_t rho_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   simulation* sim = (simulation*)depv[0].ptr;
   box* a = (box*)depv[1].ptr;
   ocrGuid_t res; real_t* res_ptr;
-  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
   *res_ptr = 0;
   for(u32 aa = 0; aa < a->atoms; ++aa) {
     real_t fembed;
@@ -523,7 +523,7 @@ ocrGuid_t rho_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     a->U[aa] += fembed;
     *res_ptr += fembed;
   }
-  ocrAddDependence(res, paramv[0], paramv[1], DB_MODE_CONST);
+  ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, 1+paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;
 }
@@ -665,7 +665,7 @@ static inline void spawn_pair_rho(ocrGuid_t sim, ocrGuid_t values, ocrGuid_t tmp
 {
   u64 bb = b;
   ocrGuid_t edt;
-  ocrEdtCreate(&edt, tmp, 1, &bb, 29, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 1, &bb, 29, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
   ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
 
@@ -775,7 +775,7 @@ static ocrGuid_t eam_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
 
   ocrGuid_t tmp, red;
   ocrEdtTemplateCreate(&tmp, rho_red_edt, 0, sim->bxs.boxes_num+2);
-  ocrEdtCreate(&red, tmp, 0, NULL, sim->bxs.boxes_num+2, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&red, tmp, 0, NULL, sim->bxs.boxes_num+2, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(depv[0].guid, red, 0, DB_MODE_RW);
   ocrAddDependence(sim->bxs.list, red, sim->bxs.boxes_num+1, DB_MODE_RW);
   ocrEdtTemplateDestroy(tmp);
@@ -784,8 +784,8 @@ static ocrGuid_t eam_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
   ocrGuid_t edt;
   ocrEdtTemplateCreate(&tmp, rho_edt, 2, 3);
   for(u32 b = 0; b < sim->bxs.boxes_num; ++b) {
-    u64 paramv[2]; paramv[0]=red; paramv[1]=b+1;
-    ocrEdtCreate(&edt, tmp, 2, paramv, 3, NULL, 0, NULL_GUID, NULL);
+    u64 paramv[2]; paramv[0]=red.guid; paramv[1]=b+1;
+    ocrEdtCreate(&edt, tmp, 2, paramv, 3, NULL, 0, NULL_HINT, NULL);
     ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
     ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
     ocrAddDependence(sim->pot.eam.f.values, edt, 2, DB_MODE_RW);
@@ -797,9 +797,9 @@ static ocrGuid_t eam_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
 
 static inline void spawn_pair(ocrGuid_t sim, eam_potential* eam, ocrGuid_t tmp, ocrGuid_t red, ocrGuid_t* list, u32 b, u32 grid[3], u32 plane)
 {
-  u64 paramv[2]; paramv[0]=red; paramv[1]=b;
+  u64 paramv[2]; paramv[0]=red.guid; paramv[1]=b;
   ocrGuid_t edt;
-  ocrEdtCreate(&edt, tmp, 2, paramv, 30, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 2, paramv, 30, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_RW);
   ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
 
@@ -884,7 +884,7 @@ void fork_eam_force(ocrGuid_t sim, simulation* sim_ptr, ocrGuid_t cont, ocrGuid_
 
   ocrGuid_t tmp,red,fin;
   ocrEdtTemplateCreate(&tmp, eam_red_edt, 0, pairs+2);
-  ocrEdtCreate(&red, tmp, 0, NULL, pairs+2, NULL, EDT_PROP_FINISH, NULL_GUID, &fin);
+  ocrEdtCreate(&red, tmp, 0, NULL, pairs+2, NULL, EDT_PROP_FINISH, NULL_HINT, &fin);
   ocrAddDependence(fin, cont, CONT_DEPC, DB_MODE_CONST);
   ocrAddDependence(sim, red, 0, DB_MODE_RW);
   ocrAddDependence(sim_ptr->bxs.list, red, pairs+1, DB_MODE_RW);

@@ -31,38 +31,38 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   u64 argc = ocrGetArgc(depv[0].ptr);
   ocrGuid_t args;
   char** argv;
-  ocrDbCreate(&args, (void**)&argv, sizeof(char*)*argc, 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&args, (void**)&argv, sizeof(char*)*argc, 0, NULL_HINT, NO_ALLOC);
   for(u32 a = 0; a < argc; ++a)
     argv[a] = ocrGetArgv(depv[0].ptr,a);
 
   ocrGuid_t timer_i;
   timer* timer_p;
-  ocrDbCreate(&timer_i, (void**)&timer_p, sizeof(timer)*number_of_timers, 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&timer_i, (void**)&timer_p, sizeof(timer)*number_of_timers, 0, NULL_HINT, NO_ALLOC);
   profile_start(total_timer, timer_p);
   timestamp("Starting Initialization\n");
 
   ocrGuid_t cmd_i;
   command* cmd_p;
-  ocrDbCreate(&cmd_i, (void**)&cmd_p, sizeof(command), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&cmd_i, (void**)&cmd_p, sizeof(command), 0, NULL_HINT, NO_ALLOC);
   parse_command(argc, argv, cmd_p);
   ocrDbDestroy(args);
 
   ocrGuid_t sim_i;
   simulation* sim_p;
-  ocrDbCreate(&sim_i, (void**)&sim_p, sizeof(simulation), 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&sim_i, (void**)&sim_p, sizeof(simulation), 0, NULL_HINT, NO_ALLOC);
   ocrGuid_t* list;
   u32 insane = init_simulation(cmd_p, sim_p, timer_p, &list);
   ocrDbDestroy(cmd_i);
   if(insane) {
     ocrShutdown();
-    return insane;
+    return ERROR_GUID;
   }
 
   profile_start(compute_force_timer, timer_p);
 
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, main_edt2, 0, 4);
-  ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(timer_i, edt, 0, DB_MODE_RW);
   ocrAddDependence(sim_i, edt, 1, DB_MODE_CONST);
   ocrAddDependence(sim_p->bxs.list, edt, 2, DB_MODE_CONST);
@@ -80,7 +80,7 @@ ocrGuid_t main_edt2(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, main_edt3, 0, 3);
-  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
   fork_kinetic_energy(depv[1].guid, edt, 2, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.boxes_num);
@@ -104,7 +104,7 @@ ocrGuid_t main_edt3(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, top_edt, 0, 3);
-  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(sim->bxs.list, edt, 2, DB_MODE_CONST);
@@ -120,7 +120,7 @@ ocrGuid_t top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, bot_edt, 0, 3);
-  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, NULL);
   profile_start(timestep_timer, depv[0].ptr);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
@@ -141,7 +141,7 @@ ocrGuid_t bot_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   else
     ocrEdtTemplateCreate(&tmp, end_edt, 0, 3);
 
-  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_GUID, NULL);
+  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(sim->bxs.list, edt, 2, DB_MODE_CONST);

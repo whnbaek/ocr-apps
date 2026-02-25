@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <math.h>
 #include <numa.h>
+#define __USE_GNU
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,8 +47,12 @@ typedef struct {
     u64 curOffset;  // Atomic! Offset for next memory allocation.
 } ocrAllocatorQuick_CacheLineHints_t;
 /** Only instance in this program of this structure. */
-extern ocrAllocatorQuick_CacheLineHints_t ocrQuickCacheLineHints;
-
+ocrAllocatorQuick_CacheLineHints_t ocrQuickCacheLineHints = {
+    0,    // offset
+    4096, // largeSize
+    4096, // cacheSize
+    0     // curOffset (atomic)
+};
 
 /** Structure to hold results from each tasks tests. */
 typedef struct {

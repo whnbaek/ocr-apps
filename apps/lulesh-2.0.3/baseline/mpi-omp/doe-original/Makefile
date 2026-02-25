@@ -5,6 +5,10 @@ SHELL = /bin/sh
 
 LULESH_EXEC = lulesh2.0
 
+# Build and install directories
+BUILDDIR = ./build/x86
+INSTALLDIR = ./install/x86
+
 MPI_INC = /opt/local/include/openmpi
 MPI_LIB = /opt/local/lib
 
@@ -18,7 +22,7 @@ SOURCES2.0 = \
 	lulesh-viz.cc \
 	lulesh-util.cc \
 	lulesh-init.cc
-OBJECTS2.0 = $(SOURCES2.0:.cc=.o)
+OBJECTS2.0 = $(addprefix $(BUILDDIR)/,$(SOURCES2.0:.cc=.o))
 
 #Default build suggestions with OpenMP for g++
 CXXFLAGS = -g -O3 -fopenmp -I. -Wall
@@ -42,19 +46,28 @@ LDFLAGS = -g -O3 -fopenmp
 #CXXFLAGS = -g -DVIZ_MESH -I${SILO_INCDIR} -Wall -Wno-pragmas
 #LDFLAGS = -g -L${SILO_LIBDIR} -Wl,-rpath -Wl,${SILO_LIBDIR} -lsiloh5 -lhdf5
 
-.cc.o: lulesh.h
+# Create build directory if it doesn't exist
+$(BUILDDIR):
+	@mkdir -p $(BUILDDIR)
+
+# Pattern rule for building object files in build directory
+$(BUILDDIR)/%.o: %.cc lulesh.h | $(BUILDDIR)
 	@echo "Building $<"
-	$(CXX) -c $(CXXFLAGS) -o $@  $<
+	$(CXX) -c $(CXXFLAGS) -o $@ $<
 
-all: $(LULESH_EXEC)
+all: $(BUILDDIR)/$(LULESH_EXEC)
 
-lulesh2.0: $(OBJECTS2.0)
+$(BUILDDIR)/$(LULESH_EXEC): $(OBJECTS2.0)
 	@echo "Linking"
 	$(CXX) $(OBJECTS2.0) $(LDFLAGS) -lm -o $@
 
+install: $(BUILDDIR)/$(LULESH_EXEC)
+	@mkdir -p $(INSTALLDIR)
+	@echo "Installing $(LULESH_EXEC) to $(INSTALLDIR)"
+	cp $(BUILDDIR)/$(LULESH_EXEC) $(INSTALLDIR)/
+
 clean:
-	/bin/rm -f *.o *~ $(OBJECTS) $(LULESH_EXEC)
-	/bin/rm -rf *.dSYM
+	/bin/rm -rf $(BUILDDIR) *~ $(INSTALLDIR)
 
 tar: clean
 	cd .. ; tar cvf lulesh-2.0.tar LULESH-2.0 ; mv lulesh-2.0.tar LULESH-2.0

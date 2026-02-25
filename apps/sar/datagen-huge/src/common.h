@@ -3,11 +3,12 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
-#include <time.h>
 #include <stdio.h>
-#include <fftw3.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#include "fftw3.h"
 
 typedef struct _TargetBoundingBox
 {

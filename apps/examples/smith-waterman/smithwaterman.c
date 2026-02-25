@@ -143,6 +143,28 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     s32 n_tiles_width = (s32) dbparamv[3];
     s8* string_1 = (s8* ) &dbparamv[dbparamv[4]];
     s8* string_2 = (s8* ) &dbparamv[dbparamv[5]];
+    s32 string1_length = (s32) dbparamv[6];
+    s32 string2_length = (s32) dbparamv[7];
+
+    /* Calculate effective tile dimensions for edge tiles */
+    s32 effective_tile_width = tile_width;
+    s32 effective_tile_height = tile_height;
+    
+    /* For the rightmost column of tiles, width may be smaller */
+    if (j == n_tiles_width) {
+        s32 remaining_width = string1_length - (j-1)*tile_width;
+        if (remaining_width < tile_width && remaining_width > 0) {
+            effective_tile_width = remaining_width;
+        }
+    }
+    
+    /* For the bottom row of tiles, height may be smaller */
+    if (i == n_tiles_height) {
+        s32 remaining_height = string2_length - (i-1)*tile_height;
+        if (remaining_height < tile_height && remaining_height > 0) {
+            effective_tile_height = remaining_height;
+        }
+    }
 
     s32  * curr_tile_tmp;
     ocrGuid_t db_curr_tile_tmp, db_curr_tile;
@@ -162,18 +184,18 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     curr_tile[0][0] = diagonal_tile_bottom_right[0];
 
     /* Set local_tile[i+1][0] (left column) from the right column of the left tile */
-    for ( index = 1; index < tile_height+1; ++index ) {
+    for ( index = 1; index < effective_tile_height+1; ++index ) {
         curr_tile[index][0] = left_tile_right_column[index-1];
     }
 
     /* Set local_tile[0][j+1] (top row) from the bottom row of the above tile */
-    for ( index = 1; index < tile_width+1; ++index ) {
+    for ( index = 1; index < effective_tile_width+1; ++index ) {
         curr_tile[0][index] = above_tile_bottom_row[index-1];
     }
 
     /* Run a smith-waterman on the local tile */
-    for ( ii = 1; ii < tile_height+1; ++ii ) {
-        for ( jj = 1; jj < tile_width+1; ++jj ) {
+    for ( ii = 1; ii < effective_tile_height+1; ++ii ) {
+        for ( jj = 1; jj < effective_tile_width+1; ++jj ) {
             s8 char_from_1 = string_1[(j-1)*tile_width+(jj-1)];
             s8 char_from_2 = string_2[(i-1)*tile_height+(ii-1)];
 
@@ -196,7 +218,7 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
 
     /* Satisfy the bottom right event of local tile with the data block allocated above */
     s32* curr_bottom_right = (s32*)db_guid_i_j_br_data;
-    curr_bottom_right[0] = curr_tile[tile_height][tile_width];
+    curr_bottom_right[0] = curr_tile[effective_tile_height][effective_tile_width];
 
     ocrDbRelease(db_guid_i_j_br); // For now, no auto-release it seems...
 
@@ -210,8 +232,8 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
 
     /* Satisfy the right column event of local tile with the data block allocated above */
     s32* curr_right_column = (s32*)db_guid_i_j_rc_data;
-    for ( index = 0; index < tile_height; ++index ) {
-        curr_right_column[index] = curr_tile[index+1][tile_width];
+    for ( index = 0; index < effective_tile_height; ++index ) {
+        curr_right_column[index] = curr_tile[index+1][effective_tile_width];
     }
     ocrDbRelease(db_guid_i_j_rc);
     ocrGuid_t right_column_event_guid = smithWatermanParamvIn->right_column_event_guid;
@@ -224,8 +246,8 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
 
     /* Satisfy the bottom row event of local tile with the data block allocated above */
     s32* curr_bottom_row = (s32*)db_guid_i_j_brow_data;
-    for ( index = 0; index < tile_width; ++index ) {
-        curr_bottom_row[index] = curr_tile[tile_height][index+1];
+    for ( index = 0; index < effective_tile_width; ++index ) {
+        curr_bottom_row[index] = curr_tile[effective_tile_height][index+1];
     }
     ocrDbRelease(db_guid_i_j_brow);
     ocrGuid_t bottom_row_event_guid = smithWatermanParamvIn->bottom_row_event_guid;
@@ -239,15 +261,15 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     ocrDbDestroy(depv[2].guid);
     /* If this is the last tile (bottom right most tile), finish */
     if ( i == n_tiles_height && j == n_tiles_width ) {
-        ocrPrintf("score: %d\n", curr_bottom_row[tile_width-1]);
+        ocrPrintf("score: %d\\n", curr_bottom_row[effective_tile_width-1]);
         u32 score = smithWatermanParamvIn->score;
-        VERIFY(curr_bottom_row[tile_width-1] == score, "Expected score: %d\n", score);
+        VERIFY(curr_bottom_row[effective_tile_width-1] == score, "Expected score: %d\\n", score);
         ocrShutdown();
     }
     return NULL_GUID;
 }
 
-static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s32 n_tiles_height, s32 tile_width, s32 tile_height ) {
+static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s32 n_tiles_height, s32 tile_width, s32 tile_height, s32 string1_len, s32 string2_len ) {
     s32 i, j;
     /* Create a datablock for the bottom right element for tile[0][0] */
     ocrGuid_t db_guid_0_0_br;
@@ -262,12 +284,21 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
     /* Create datablocks for the bottom right elements and bottom rows for tiles[0][j]
      * and Satisfy the bottom row event for tile[0][j] with the respective datablock */
     for ( j = 1; j < n_tiles_width + 1; ++j ) {
+        /* Calculate effective width for this column of tiles */
+        s32 effective_width = tile_width;
+        if (j == n_tiles_width) {
+            s32 remaining = string1_len - (j-1)*tile_width;
+            if (remaining < tile_width && remaining > 0) {
+                effective_width = remaining;
+            }
+        }
+        
         ocrGuid_t db_guid_0_j_brow;
         void* db_guid_0_j_brow_data;
         ocrDbCreate( &db_guid_0_j_brow, &db_guid_0_j_brow_data, sizeof(s32)*tile_width, DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
         allocated = (s32*)db_guid_0_j_brow_data;
-        for( i = 0; i < tile_width ; ++i ) {
+        for( i = 0; i < effective_width ; ++i ) {
             allocated[i] = GAP_PENALTY*((j-1)*tile_width+i+1);
         }
         ocrDbRelease(db_guid_0_j_brow);
@@ -277,7 +308,8 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
         void* db_guid_0_j_br_data;
         ocrDbCreate( &db_guid_0_j_br, &db_guid_0_j_br_data, sizeof(s32), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
         allocated = (s32*)db_guid_0_j_br_data;
-        allocated[0] = GAP_PENALTY*(j*tile_width); //sagnak: needed to handle tilesize 2
+        /* Use actual position for edge tile */
+        allocated[0] = GAP_PENALTY*((j-1)*tile_width + effective_width);
 
         ocrDbRelease(db_guid_0_j_br);
         ocrEventSatisfy(tile_matrix[0][j].bottom_right_event_guid, db_guid_0_j_br);
@@ -286,11 +318,20 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
     /* Create datablocks for the right columns for tiles[i][0]
      * and Satisfy the right column event for tile[i][0] with the respective datablock */
     for ( i = 1; i < n_tiles_height + 1; ++i ) {
+        /* Calculate effective height for this row of tiles */
+        s32 effective_height = tile_height;
+        if (i == n_tiles_height) {
+            s32 remaining = string2_len - (i-1)*tile_height;
+            if (remaining < tile_height && remaining > 0) {
+                effective_height = remaining;
+            }
+        }
+        
         ocrGuid_t db_guid_i_0_rc;
         void* db_guid_i_0_rc_data;
         ocrDbCreate( &db_guid_i_0_rc, &db_guid_i_0_rc_data, sizeof(s32)*tile_height, DB_PROP_NONE, NULL_HINT, NO_ALLOC );
         allocated = (s32*)db_guid_i_0_rc_data;
-        for ( j = 0; j < tile_height ; ++j ) {
+        for ( j = 0; j < effective_height ; ++j ) {
             allocated[j] = GAP_PENALTY*((i-1)*tile_height+j+1);
         }
         ocrDbRelease(db_guid_i_0_rc);
@@ -301,14 +342,15 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
         ocrDbCreate( &db_guid_i_0_br, &db_guid_i_0_br_data, sizeof(s32), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
         allocated = (s32*)db_guid_i_0_br_data;
-        allocated[0] = GAP_PENALTY*(i*tile_height); //sagnak: needed to handle tilesize 2
+        /* Use actual position for edge tile */
+        allocated[0] = GAP_PENALTY*((i-1)*tile_height + effective_height);
 
         ocrDbRelease(db_guid_i_0_br);
         ocrEventSatisfy(tile_matrix[i][0].bottom_right_event_guid, db_guid_i_0_br);
     }
 }
 
-static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_tiles_height, s32* p_n_tiles_width, s32* p_tile_width, s32* p_tile_height, s8** p_string_1, s8** p_string_2, u32 *check_score) {
+static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_tiles_height, s32* p_n_tiles_width, s32* p_tile_width, s32* p_tile_height, s8** p_string_1, s8** p_string_2, u32 *check_score, s32* p_string1_len, s32* p_string2_len) {
     u64 argc = ocrGetArgc(marshalled);
 
     if(argc < 6) {
@@ -346,19 +388,22 @@ static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_ti
 
     *p_string_1 = read_file(file_name_1, &n_char_in_file_1);
     if(*p_string_1 == NULL) return 1;
-    ocrPrintf("Size of input string 1 is %d\n", n_char_in_file_1 );
+    ocrPrintf("Size of input string 1 is %d\\n", n_char_in_file_1 );
+    *p_string1_len = (s32)n_char_in_file_1;
 
     *p_string_2 = read_file(file_name_2, &n_char_in_file_2);
     if(*p_string_2 == NULL) return 1;
-    ocrPrintf("Size of input string 2 is %d\n", n_char_in_file_2 );
+    ocrPrintf("Size of input string 2 is %d\\n", n_char_in_file_2 );
+    *p_string2_len = (s32)n_char_in_file_2;
 
     *check_score = atoi((char *)read_file(file_name_score, &n_char_in_file_score));
     ocrPrintf("Score to get it %u\n", *check_score);
     ocrPrintf("Tile width is %d\n", *p_tile_width);
     ocrPrintf("Tile height is %d\n", *p_tile_height);
 
-    *p_n_tiles_width = n_char_in_file_1 / *p_tile_width;
-    *p_n_tiles_height = n_char_in_file_2 / *p_tile_height;
+    /* Use ceiling division to handle partial tiles at edges */
+    *p_n_tiles_width = (n_char_in_file_1 + *p_tile_width - 1) / *p_tile_width;
+    *p_n_tiles_height = (n_char_in_file_2 + *p_tile_height - 1) / *p_tile_height;
 
     ocrPrintf("Imported %d x %d tiles.\n", *p_n_tiles_width, *p_n_tiles_height);
 
@@ -377,10 +422,12 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     s8* string_1;
     s8* string_2;
     u32 check_score;
+    s32 string1_len;
+    s32 string2_len;
 
     smithWatermanPRM_t smithWatermanParamv;
 
-    if(ioHandling(depv[0].ptr, &n_tiles_height, &n_tiles_width, &tile_width, &tile_height, &string_1, &string_2, &check_score))
+    if(ioHandling(depv[0].ptr, &n_tiles_height, &n_tiles_width, &tile_width, &tile_height, &string_1, &string_2, &check_score, &string1_len, &string2_len))
     {
         ocrShutdown();
         return NULL_GUID;
@@ -402,21 +449,22 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         }
     }
 
-    ocrPrintf("Allocated tile matrix\n");
+    ocrPrintf("Allocated tile matrix\\n");
 
-    initialize_border_values(tile_matrix, n_tiles_width, n_tiles_height, tile_width, tile_height);
+    initialize_border_values(tile_matrix, n_tiles_width, n_tiles_height, tile_width, tile_height, string1_len, string2_len);
     ocrGuid_t smith_waterman_task_template_guid;
     ocrEdtTemplateCreate(&smith_waterman_task_template_guid, smith_waterman_task, PRMNUM(smithWaterman) /*paramc*/, 4 /*depc*/);
 
     // Common information to all tasks
-    u64 string1Length = tile_width * n_tiles_width;
-    u64 string2Length = tile_height * n_tiles_height;
+    // Use actual string lengths for proper edge tile handling
+    u64 string1Length = (u64)string1_len;
+    u64 string2Length = (u64)string2_len;
     // Computing size of the strings in u64
     u64 string1Size = sizeof(s8) * string1Length;
     string1Size = ((string1Size%(sizeof(u64))) ? (string1Size/sizeof(u64))+1 : (string1Size/sizeof(u64)));
     u64 string2Size = sizeof(s8) * string2Length;
     string2Size = ((string2Size%(sizeof(u64))) ? (string2Size/sizeof(u64))+1 : (string2Size/sizeof(u64)));
-    u64 dbHeaderSize = 6;
+    u64 dbHeaderSize = 8;  /* Added 2 more for actual string lengths */
     u64 dbSize = (dbHeaderSize + string1Size + string2Size)*sizeof(u64);
     // Computing DB's offsets for strings in the u64
     u64 string1Offset = dbHeaderSize;
@@ -430,6 +478,8 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     params[3]=(u64) n_tiles_width;
     params[4]=string1Offset;
     params[5]=string2Offset;
+    params[6]=string1Length;  /* Actual string 1 length for edge handling */
+    params[7]=string2Length;  /* Actual string 2 length for edge handling */
 
     i = 0; // Writing string 1 in DB
     s8 * string1Ptr = (s8*) &params[string1Offset];

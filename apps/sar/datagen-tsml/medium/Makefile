@@ -6,7 +6,7 @@
 # NOTES: The code expects Targets.txt and Parameters.txt to be
 # located in the working directory.
 
-INSTALL_DIR = /opt/share/xstack_app_input/sar/medium
+INSTALL_DIR = ../../datasets/medium
 
 RM=rm -f
 CP=cp -f
@@ -16,7 +16,7 @@ TG_AS=../../../../../tg/tg/install/bin/xstg-linux-elf-as
 
 all:	Radar.txt
 
-Radar.txt:	Parameters.txt Targets.txt Makefile
+Radar.txt:	Parameters.txt Targets.txt
 	../datagen Data.bin PlatformPosition.bin PulseTransmissionTime.bin Radar.txt
 	../../utils/viewData 1 500.0 <Data.bin >ref.bmp
 	../../utils/viewData 2 250.0 <Data.bin >cur.bmp
@@ -27,29 +27,52 @@ clean:
 	$(RM)	Data.bin PlatformPosition.bin PulseTransmissionTime.bin Radar.txt \
 		ref.bmp cur.bmp
 
-install:
-	$(MKDIR) $(INSTALL_DIR) $(INSTALL_DIR)/x86 $(INSTALL_DIR)/tg
+install: all
+	$(MKDIR) $(INSTALL_DIR) $(INSTALL_DIR)/x86
 	$(CP)	Data.bin PlatformPosition.bin PulseTransmissionTime.bin \
 		Parameters.txt Targets.txt Radar.txt \
 		$(INSTALL_DIR)
-	(cd ../../ocr/medium;../../utils/dataImage    1 <$(INSTALL_DIR)/Data.bin >$(INSTALL_DIR)/x86/Data.c)
-	(cd ../../ocr/medium;../../utils/dataImage    2 <$(INSTALL_DIR)/PlatformPosition.bin >$(INSTALL_DIR)/x86/PlatformPosition.c)
-	(cd ../../ocr/medium;../../utils/dataImage    3 <$(INSTALL_DIR)/PulseTransmissionTime.bin >$(INSTALL_DIR)/x86/PulseTransmissionTime.c)
-	(cd ../../ocr/medium;../../utils/dataImageAsm 1 <$(INSTALL_DIR)/Data.bin >$(INSTALL_DIR)/tg/Data.s)
-	(cd ../../ocr/medium;../../utils/dataImageAsm 2 <$(INSTALL_DIR)/PlatformPosition.bin >$(INSTALL_DIR)/tg/PlatformPosition.s)
-	(cd ../../ocr/medium;../../utils/dataImageAsm 3 <$(INSTALL_DIR)/PulseTransmissionTime.bin >$(INSTALL_DIR)/tg/PulseTransmissionTime.s)
-	$(CC)    -c -o $(INSTALL_DIR)/x86/Data.o \
-		       $(INSTALL_DIR)/x86/Data.c
-	$(CC)    -c -o $(INSTALL_DIR)/x86/PlatformPosition.o \
-		       $(INSTALL_DIR)/x86/PlatformPosition.c
-	$(CC)    -c -o $(INSTALL_DIR)/x86/PulseTransmissionTime.o \
-		       $(INSTALL_DIR)/x86/PulseTransmissionTime.c
-	$(TG_AS) -o $(INSTALL_DIR)/tg/Data.o \
-		    $(INSTALL_DIR)/tg/Data.s
-	$(TG_AS) -o $(INSTALL_DIR)/tg/PlatformPosition.o \
-		    $(INSTALL_DIR)/tg/PlatformPosition.s
-	$(TG_AS) -o $(INSTALL_DIR)/tg/PulseTransmissionTime.o \
-		    $(INSTALL_DIR)/tg/PulseTransmissionTime.s
+	@if [ ! -f $(INSTALL_DIR)/x86/Data.c ]; then \
+		(cd ../../ocr/medium;../../utils/dataImage 1 <$(INSTALL_DIR)/Data.bin >$(INSTALL_DIR)/x86/Data.c); \
+	fi
+	@if [ ! -f $(INSTALL_DIR)/x86/PlatformPosition.c ]; then \
+		(cd ../../ocr/medium;../../utils/dataImage 2 <$(INSTALL_DIR)/PlatformPosition.bin >$(INSTALL_DIR)/x86/PlatformPosition.c); \
+	fi
+	@if [ ! -f $(INSTALL_DIR)/x86/PulseTransmissionTime.c ]; then \
+		(cd ../../ocr/medium;../../utils/dataImage 3 <$(INSTALL_DIR)/PulseTransmissionTime.bin >$(INSTALL_DIR)/x86/PulseTransmissionTime.c); \
+	fi
+	@if [ -x "$(TG_AS)" ]; then \
+		$(MKDIR) $(INSTALL_DIR)/tg; \
+		if [ ! -f $(INSTALL_DIR)/tg/Data.s ]; then \
+			(cd ../../ocr/medium;../../utils/dataImageAsm 1 <$(INSTALL_DIR)/Data.bin >$(INSTALL_DIR)/tg/Data.s); \
+		fi; \
+		if [ ! -f $(INSTALL_DIR)/tg/PlatformPosition.s ]; then \
+			(cd ../../ocr/medium;../../utils/dataImageAsm 2 <$(INSTALL_DIR)/PlatformPosition.bin >$(INSTALL_DIR)/tg/PlatformPosition.s); \
+		fi; \
+		if [ ! -f $(INSTALL_DIR)/tg/PulseTransmissionTime.s ]; then \
+			(cd ../../ocr/medium;../../utils/dataImageAsm 3 <$(INSTALL_DIR)/PulseTransmissionTime.bin >$(INSTALL_DIR)/tg/PulseTransmissionTime.s); \
+		fi; \
+	fi
+	@if [ ! -f $(INSTALL_DIR)/x86/Data.o ]; then \
+		$(CC) -c -o $(INSTALL_DIR)/x86/Data.o $(INSTALL_DIR)/x86/Data.c; \
+	fi
+	@if [ ! -f $(INSTALL_DIR)/x86/PlatformPosition.o ]; then \
+		$(CC) -c -o $(INSTALL_DIR)/x86/PlatformPosition.o $(INSTALL_DIR)/x86/PlatformPosition.c; \
+	fi
+	@if [ ! -f $(INSTALL_DIR)/x86/PulseTransmissionTime.o ]; then \
+		$(CC) -c -o $(INSTALL_DIR)/x86/PulseTransmissionTime.o $(INSTALL_DIR)/x86/PulseTransmissionTime.c; \
+	fi
+	@if [ -x "$(TG_AS)" ]; then \
+		if [ ! -f $(INSTALL_DIR)/tg/Data.o ]; then \
+			$(TG_AS) -o $(INSTALL_DIR)/tg/Data.o $(INSTALL_DIR)/tg/Data.s; \
+		fi; \
+		if [ ! -f $(INSTALL_DIR)/tg/PlatformPosition.o ]; then \
+			$(TG_AS) -o $(INSTALL_DIR)/tg/PlatformPosition.o $(INSTALL_DIR)/tg/PlatformPosition.s; \
+		fi; \
+		if [ ! -f $(INSTALL_DIR)/tg/PulseTransmissionTime.o ]; then \
+			$(TG_AS) -o $(INSTALL_DIR)/tg/PulseTransmissionTime.o $(INSTALL_DIR)/tg/PulseTransmissionTime.s; \
+		fi; \
+	fi
 
 uninstall:
 	$(RM)	$(INSTALL_DIR)/Data.bin \
@@ -61,12 +84,14 @@ uninstall:
 		$(INSTALL_DIR)/x86/Data.c \
 		$(INSTALL_DIR)/x86/PlatformPosition.c \
 		$(INSTALL_DIR)/x86/PulseTransmissionTime.c \
-		$(INSTALL_DIR)/tg/Data.s \
-		$(INSTALL_DIR)/tg/PlatformPosition.s \
-		$(INSTALL_DIR)/tg/PulseTransmissionTime.s \
 		$(INSTALL_DIR)/x86/Data.o \
 		$(INSTALL_DIR)/x86/PlatformPosition.o \
-		$(INSTALL_DIR)/x86/PulseTransmissionTime.o \
-		$(INSTALL_DIR)/tg/Data.o \
-		$(INSTALL_DIR)/tg/PlatformPosition.o \
-		$(INSTALL_DIR)/tg/PulseTransmissionTime.o
+		$(INSTALL_DIR)/x86/PulseTransmissionTime.o
+	@if [ -d "$(INSTALL_DIR)/tg" ]; then \
+		$(RM) $(INSTALL_DIR)/tg/Data.s \
+		      $(INSTALL_DIR)/tg/PlatformPosition.s \
+		      $(INSTALL_DIR)/tg/PulseTransmissionTime.s \
+		      $(INSTALL_DIR)/tg/Data.o \
+		      $(INSTALL_DIR)/tg/PlatformPosition.o \
+		      $(INSTALL_DIR)/tg/PulseTransmissionTime.o; \
+	fi

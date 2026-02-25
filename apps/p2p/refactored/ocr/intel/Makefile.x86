@@ -72,7 +72,7 @@ LDFLAGS := -lpthread -lreduction -lm
 
 
 
-all:	CFLAGS += -g -O2
+all:	CFLAGS += -g -O3
 all:	TARGETS := all
 all:	default
 

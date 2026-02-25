@@ -1,10 +1,11 @@
 #define _USE_MATH_DEFINES
 #include <math.h>
-#include <time.h>
 #include <stdio.h>
-#include <fftw3.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#include "fftw3.h"
 
 // Constants
 #define c_mks_mps 3e8			// Speed of light (m/s)

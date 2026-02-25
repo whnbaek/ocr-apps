@@ -14,6 +14,7 @@
 
 #include <ocr.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <ocr-std.h>
 #include <extensions/ocr-labeling.h>
 
@@ -546,7 +547,7 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
             printf("\n*CROSS-CHECKING NEIGHBOR DATA EXCHANGE*\n\n");
 
             for( i = 0; i < 8; i++ ){
-                if( neighborGUIDs[i] != NULL_GUID ) nPatches[i] = neighborPTRs[i]->patchNum;
+                if(!ocrGuidIsNull(neighborGUIDs[i])) nPatches[i] = neighborPTRs[i]->patchNum;
                 else nPatches[i] = -1;
             }
 
@@ -562,7 +563,7 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     u32 tog = patchPTR->toggle;
 
     ocrEdtCreate( &edtGUID, patchPTR->patchTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
-                                                NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID );
+                                                NULL, EDT_PROP_NONE, NULL_HINT, NULL );
 
 
     patchPTR->toggle = patchPTR->toggle ^ 1;
@@ -573,7 +574,7 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
 
     for( i = 0; i < 8; i++ ){       //create and set those deps!
-       if(patchPTR->rcvGUIDs[i][tog] != NULL_GUID) {
+       if(!ocrGuidIsNull(patchPTR->rcvGUIDs[i][tog])) {
             ocrEventCreate( &patchPTR->rcvGUIDs[i][tog], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
             ocrAddDependence( patchPTR->rcvGUIDs[i][tog], edtGUID, i, DB_MODE_RW );
         }else{
@@ -732,7 +733,7 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     ocrEdtTemplateCreate( &patchPTR->patchTPT, patchEdt, 0, 9 );
 
     ocrEdtCreate( &patchEdtGUID, patchPTR->patchTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
-        NULL_GUID, EDT_PROP_NONE, NULL_GUID, NULL_GUID );
+        NULL, EDT_PROP_NONE, NULL_HINT, NULL );
 
 
     ocrGuid_t dbGuid;
@@ -740,7 +741,7 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
 
     for( i = 0; i < 8; i++ ){
-        ocrDbCreate( &dbGuid, (void **)&dummy, sizeof(nbData_t), 0, NULL_GUID, NO_ALLOC );
+        ocrDbCreate( &dbGuid, (void **)&dummy, sizeof(nbData_t), 0, NULL_HINT, NO_ALLOC );
         ocrDbRelease( dbGuid );
         ocrAddDependence( dbGuid, patchEdtGUID, i, DB_MODE_RW );
     }
@@ -787,10 +788,10 @@ ocrGuid_t panelInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                                         //on the current panel.
 
         patchNum = ((k * k) * panelNum) + i;
-        ocrDbCreate( &patchDb, (void **)&dummyPatch, sizeof(patch_t), 0, NULL_GUID, NO_ALLOC );
+        ocrDbCreate( &patchDb, (void **)&dummyPatch, sizeof(patch_t), 0, NULL_HINT, NO_ALLOC );
 
         ocrEdtCreate( &patchInitGUID, patchInitTPT, EDT_PARAM_DEF, &patchNum,
-                EDT_PARAM_DEF, NULL_GUID, EDT_PROP_NONE, NULL_GUID, NULL_GUID );
+                EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL );
 
         ocrAddDependence( panelGUID, patchInitGUID, 0, DB_MODE_RW );
         ocrDbRelease( patchDb );
@@ -843,7 +844,7 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         panelPTR[i]->patchRange = paramv[0];
 
         ocrEdtCreate( &panelInitGUID, panelInitTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                        EDT_PROP_NONE, NULL_GUID, NULL_GUID );
+                        EDT_PROP_NONE, NULL_HINT, NULL );
         ocrDbRelease( panelGUID[i] );
         ocrAddDependence( panelGUID[i], panelInitGUID, 0, DB_MODE_RW );
     }
@@ -895,16 +896,16 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     ocrEdtTemplateCreate( &realmainTPT, realmainEdt, 1, 6 );
 
     ocrEdtCreate( &realmainGUID, realmainTPT, EDT_PARAM_DEF, &patchRange, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH,
-                    NULL_GUID, &finishEVT );
+                    NULL_HINT, &finishEVT );
 
     ocrEdtTemplateCreate( &wrapupTPT, wrapupEdt, 0, 1 );
 
     ocrEdtCreate( &wrapupGUID, wrapupTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, &finishEVT, EDT_PROP_NONE,
-                    NULL_GUID, NULL );
+                    NULL_HINT, NULL );
 
     for( i = 0; i < 6; i++ ){
 
-        ocrDbCreate( &panelDb, (void **)&panel, sizeof(panel_t), 0, NULL_GUID, NO_ALLOC );
+        ocrDbCreate( &panelDb, (void **)&panel, sizeof(panel_t), 0, NULL_HINT, NO_ALLOC );
         ocrDbRelease( panelDb );
         ocrAddDependence( panelDb, realmainGUID, i, DB_MODE_RW );
 

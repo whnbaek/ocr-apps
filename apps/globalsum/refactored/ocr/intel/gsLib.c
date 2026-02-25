@@ -38,8 +38,8 @@ Node 0 returns the global value in GSsharedBlock by satisfying rootEvent
     gsBlock_t * mydata = depv[1].ptr;
     gsBlock_t * yourdata;
 //check whether need to receive by cloning
-    if((mydata->event[1] != NULL_GUID) && (depv[2].guid == NULL_GUID)) {
-        ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+    if(!ocrGuidIsNull(mydata->event[1]) && ocrGuidIsNull(depv[2].guid)) {
+        ocrEdtCreate(&gsEdt, SB->GSxTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
         ocrAddDependence(depv[0].guid, gsEdt, 0 , DB_MODE_RW);
         ocrAddDependence(depv[1].guid, gsEdt, 1 , DB_MODE_RW);
         for(i=0;i<ARITY;i++) {
@@ -49,7 +49,7 @@ Node 0 returns the global value in GSsharedBlock by satisfying rootEvent
     }
 //I have received
     for(i=0;i<ARITY;i++) {
-        if(mydata->event[i+1] == NULL_GUID) break;
+        if(ocrGuidIsNull(mydata->event[i+1])) break;
         ocrEventDestroy(mydata->event[i+1]);
         yourdata = depv[i+2].ptr;
         mydata->event[i+1] = yourdata->event[0];
@@ -93,8 +93,8 @@ It then returns to the user by launching numnodes copies of computeInitEdt each 
 GSsharedBlock and private (initialized) gsBlock and rank number as a parameter.
 */
     u64 mynode = paramv[0];
-    ocrGuid_t mysend = paramv[1];
-    ocrGuid_t rootEvent = paramv[2];
+    ocrGuid_t mysend = (ocrGuid_t){.guid = paramv[1]};
+    ocrGuid_t rootEvent = (ocrGuid_t){.guid = paramv[2]};
     GSsharedBlock_t * SB = depv[0].ptr;
     gsBlock_t * myGSblock = depv[1].ptr;
     u64 numnodes = SB->numnodes;
@@ -108,12 +108,12 @@ GSsharedBlock and private (initialized) gsBlock and rank number as a parameter.
         ocrEdtTemplateCreate(&(SB->GSxTemplate), GSxEdt, 1, ARITY+2);
         ocrEdtTemplateCreate(&(SB->computeInitTemplate), computeInitEdt, 1, 3);
         ocrEventCreate(&rootEvent, OCR_EVENT_STICKY_T, true);
-        paramv[2] = rootEvent;
+        paramv[2] = rootEvent.guid;
         ocrEventCreate(&once, OCR_EVENT_ONCE_T, true);
         SB->rootEvent = once;
     }
 //create my compute event
-    ocrEdtCreate(&compute, SB->computeInitTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+    ocrEdtCreate(&compute, SB->computeInitTemplate, EDT_PARAM_DEF, &mynode, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
     ocrAddDependence(SB->userBlock, compute, 0, DB_MODE_RW);
     ocrDbRelease(depv[0].guid);
     ocrAddDependence(depv[0].guid, compute, 1, DB_MODE_RW);
@@ -126,9 +126,9 @@ GSsharedBlock and private (initialized) gsBlock and rank number as a parameter.
         paramvout[0] = yournode;
         ocrEventCreate(&sticky, OCR_EVENT_STICKY_T, true);
         myGSblock->event[i] = sticky;
-        paramvout[1] = sticky;
-        ocrDbCreate(&(gsBlock), (void**) &dummy, sizeof(gsBlock_t), 0, NULL_GUID, NO_ALLOC);
-        ocrEdtCreate(&GSi, GSiTemplate, EDT_PARAM_DEF, paramvout, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+        paramvout[1] = sticky.guid;
+        ocrDbCreate(&(gsBlock), (void**) &dummy, sizeof(gsBlock_t), 0, NULL_HINT, NO_ALLOC);
+        ocrEdtCreate(&GSi, GSiTemplate, EDT_PARAM_DEF, paramvout, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
         ocrAddDependence(depv[0].guid, GSi, 0, DB_MODE_RW);
         ocrAddDependence(gsBlock, GSi, 1, DB_MODE_RW);
     }

@@ -47,15 +47,15 @@ int makea(classdb_t* class, ocrGuid_t* a)
     u32** rows;
     double* aelt; // store generated values
     ocrDbCreate(&acolid, (void**)&acol, sizeof(u32)*class->na*(class->nonzer+1),
-                0, NULL_GUID, NO_ALLOC);
+                0, NULL_HINT, NO_ALLOC);
     ocrDbCreate(&arowid, (void**)&arow, sizeof(u32)*class->na,
-                0, NULL_GUID, NO_ALLOC);
+                0, NULL_HINT, NO_ALLOC);
     ocrDbCreate(&nzcountid, (void**)&nzcount, sizeof(u32)*class->na,
-                0, NULL_GUID, NO_ALLOC);
+                0, NULL_HINT, NO_ALLOC);
     ocrDbCreate(&aeltid, (void**)&aelt, sizeof(double)*class->na*(class->nonzer+1),
-                0, NULL_GUID, NO_ALLOC);
+                0, NULL_HINT, NO_ALLOC);
     ocrDbCreate(&rowsid, (void**)&rows, sizeof(u32*)*class->na,
-                0, NULL_GUID, NO_ALLOC);
+                0, NULL_HINT, NO_ALLOC);
     bzero(nzcount, sizeof(u32)*class->na);
 
     randdb_t* randdb;
@@ -72,7 +72,7 @@ int makea(classdb_t* class, ocrGuid_t* a)
     }
 
     ocrGuid_t* a_ptr;
-    ocrDbCreate(a, (void**)&a_ptr, sizeof(ocrGuid_t)*class->na/class->blk, 0, NULL_GUID, NO_ALLOC);
+    ocrDbCreate(a, (void**)&a_ptr, sizeof(ocrGuid_t)*class->na/class->blk, 0, NULL_HINT, NO_ALLOC);
     for(i=0; i<class->na; ++i)
       nzcount[i] = 0;
     u64 nza = 0;
@@ -89,7 +89,7 @@ int makea(classdb_t* class, ocrGuid_t* a)
       u32 b; u32 counts = 0;
       for(b=0; b<class->blk; ++b)
         counts += nzcount[i*class->blk+b];
-      ocrDbCreate(a_ptr+i, (void**)rows+i, sizeof(double)*counts+sizeof(u32)*(counts+even), 0, NULL_GUID, NO_ALLOC);
+      ocrDbCreate(a_ptr+i, (void**)rows+i, sizeof(double)*counts+sizeof(u32)*(counts+even), 0, NULL_HINT, NO_ALLOC);
       rows[i][class->blk] = counts<<1;
       for(b=0; b<class->blk; ++b)
         rows[i][b] = nzcount[i*class->blk+b];

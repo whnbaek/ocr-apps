@@ -21,9 +21,9 @@ box** init_lattice(simulation* sim, command* cmd, real_t lattice_constant, ocrGu
   }
 
   sim->bxs.boxes_num = sim->bxs.grid[0]*sim->bxs.grid[1]*sim->bxs.grid[2];
-  ocrDbCreate(&bxs->list, (void**)list, sizeof(ocrGuid_t)*sim->bxs.boxes_num, 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(&bxs->list, (void**)list, sizeof(ocrGuid_t)*sim->bxs.boxes_num, 0, NULL_HINT, NO_ALLOC);
   box** bxs_ptr;
-  ocrDbCreate(bxs_tmp, (void**)&bxs_ptr, sizeof(box*)*sim->bxs.boxes_num, 0, NULL_GUID, NO_ALLOC);
+  ocrDbCreate(bxs_tmp, (void**)&bxs_ptr, sizeof(box*)*sim->bxs.boxes_num, 0, NULL_HINT, NO_ALLOC);
   init_atoms(*list, sim->bxs.boxes_num, bxs_ptr);
   create_fcc_lattice(cmd->nx, cmd->ny, cmd->nz, lattice_constant, &sim->bxs, bxs_ptr);
   set_temperature(sim, bxs_ptr, cmd->temperature);
@@ -110,7 +110,7 @@ void fork_redistribute(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list,
 {
   ocrGuid_t tmp, red, red_e;
   ocrEdtTemplateCreate(&tmp,redistribute_edt, 0, boxes_num+1);
-  ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, NULL_GUID, &red_e);
+  ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, NULL_HINT, &red_e);
   ocrAddDependence(red_e, cont, depc, DB_MODE_CONST);
   for(u32 b = 0; b < boxes_num; ++b)
     ocrAddDependence(list[b], red, b, DB_MODE_RW);

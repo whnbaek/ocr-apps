@@ -29,8 +29,7 @@
 #endif
 
 #ifndef TG_ARCH
-void ocr_exit(void); // RAG ocr_exit() non-public
-#define xe_exit(a)  {if(a)ocrPrintf("\nxe_exit(%d)\n",a); RAG_FLUSH; ocrShutdown(); if(a)ocr_exit(); } // RAG ocr_exit() non-public
+#define xe_exit(a)  {if(a)ocrPrintf("\nxe_exit(%d)\n",a); RAG_FLUSH; ocrShutdown(); if(a)ocrAbort(a); }
 #else
 #define xe_exit(a)  {if(a){ ocrPrintf("\nxe_exit(%d)\n",a); RAG_FLUSH; } ocrShutdown(); }
 #endif

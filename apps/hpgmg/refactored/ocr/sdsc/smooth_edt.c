@@ -64,7 +64,11 @@ ocrPrintf("s = %u\n", s);
 
   if((CHEBYSHEV_DEGREE*NUM_SMOOTHS)&1){
     ocrPrintf("Error: CHEBYSHEV_DEGREE*NUM_SMOOTHS must be even for the chebyshev smoother\n");
+#if TG_ARCH
     ABORT(0);
+#else
+    ocrAbort(0);
+#endif
   }
 
   int s1;

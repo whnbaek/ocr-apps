@@ -6,6 +6,7 @@
 #define __USE_GNU
 #include <sched.h>
 
+#include "ocr-std.h"
 #include "numaHelpers.h"
 
 /** Find and print which CPU and which NUMA Node the current thread
