@@ -47,6 +47,7 @@ int main (int argc, char **argv) {
     nloc = (nx - 2) / Num_procs;
     if ((nx - 2)%Num_procs != 0) {
         printf ("ERROR: NX - 2 has to be multiple of Num_procs!\n");
+        MPI_Finalize();
         return (1);
     }
     /** assume for now there are is leftover
@@ -158,6 +159,7 @@ int main (int argc, char **argv) {
         }
     }
     }
+    MPI_Finalize();
     return (0);
 }
 
