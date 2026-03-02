@@ -146,9 +146,6 @@ _OCR_TASK_FNC_( FNC_splitBlocks )
                 createChildTriggerEvent = consolidateRedDownIEVT;
             }
 
-            ocrDbRelease( DBK_rankH );
-            ocrDbRelease( DBK_octTreeRedH );
-
             ocrGuid_t createChildBlocksEDT;
             createChildBlocksPRM_t createChildBlocksPRM = {irefine, refine};
 
@@ -167,14 +164,14 @@ _OCR_TASK_FNC_( FNC_splitBlocks )
             ocrAddDependence( childrenRankDBKs[_ichild++], createChildBlocksEDT, _idep++, DB_MODE_RW );
             ocrAddDependence( childrenRankDBKs[_ichild++], createChildBlocksEDT, _idep++, DB_MODE_RW );
             ocrAddDependence( createChildTriggerEvent, createChildBlocksEDT, _idep++, DB_MODE_RW );
+
+            ocrDbRelease(DBK_rankH);
+            ocrDbRelease(DBK_octTreeRedH);
         }
         else if( bp->refine == STAY ) {
 
             updateNeighborLevels( bp );
             DEBUG_PRINTF(("\nunmodified block ilevel %d id_l %d nei_level %d %d %d %d %d %d sib_level %d %d %d %d %d %d %d %d\n", bp->level, PTR_rankH->myRank, bp->nei_level[0], bp->nei_level[1], bp->nei_level[2], bp->nei_level[3], bp->nei_level[4], bp->nei_level[5], bp->sib_level[0], bp->sib_level[1], bp->sib_level[2], bp->sib_level[3], bp->sib_level[4], bp->sib_level[5], bp->sib_level[6], bp->sib_level[7]));
-
-            ocrDbRelease( DBK_rankH );
-            ocrDbRelease( DBK_octTreeRedH );
 
             ocrGuid_t continuationEDT;
             continuationPRM_t continuationPRM = {irefine};
@@ -185,6 +182,9 @@ _OCR_TASK_FNC_( FNC_splitBlocks )
             ocrAddDependence( DBK_rankH, continuationEDT, _idep++, DB_MODE_RW );
             ocrAddDependence( DBK_octTreeRedH, continuationEDT, _idep++, DB_MODE_RW );
             ocrAddDependence( NULL_GUID, continuationEDT, _idep++, DB_MODE_NULL );
+
+            ocrDbRelease(DBK_rankH);
+            ocrDbRelease(DBK_octTreeRedH);
 
         }
         else {
@@ -240,9 +240,6 @@ _OCR_TASK_FNC_( FNC_continuation )
     redObjects_t* PTR_redObjects = &PTR_octTreeRedH->blockRedObjects[r];
     ocrDBK_t DBK_in = PTR_redObjects->DBK_in;
 
-    ocrDbRelease( DBK_rankH );
-    ocrDbRelease( DBK_octTreeRedH );
-
     //start next refine
     if( irefine < num_refine_step ) {
 
@@ -256,6 +253,9 @@ _OCR_TASK_FNC_( FNC_continuation )
         ocrAddDependence( DBK_octTreeRedH, refineLoopEDT, _idep++, DB_MODE_RW );
         ocrAddDependence( DBK_in, refineLoopEDT, _idep++, DB_MODE_RW );
         ocrAddDependence( NULL_GUID, refineLoopEDT, _idep++, DB_MODE_NULL);
+
+        ocrDbRelease(DBK_rankH);
+        ocrDbRelease(DBK_octTreeRedH);
     }
     else {
         //update block counts
@@ -297,6 +297,9 @@ _OCR_TASK_FNC_( FNC_continuation )
         ocrAddDependence( DBK_rankH, timestepLoopEDT, _idep++, DB_MODE_RW );
         ocrAddDependence( DBK_octTreeRedH, timestepLoopEDT, _idep++, DB_MODE_RW );
         ocrAddDependence( loadbalanceOEVTS, timestepLoopEDT, _idep++, DB_MODE_NULL );
+
+        ocrDbRelease(DBK_rankH);
+        ocrDbRelease(DBK_octTreeRedH);
     }
 
 }
@@ -346,11 +349,7 @@ _OCR_TASK_FNC_( FNC_createChildBlocks )
         PTR_children_rankHs[o] = depv[o+1].ptr;
 
         DBK_array_children[o] = PTR_children_rankHs[o]->blockH.DBK_array;
-
-        ocrDbRelease(childrenRankDBKs[o]);
     }
-
-    ocrDbRelease(DBK_rankH);
 
     ocrGuid_t createChildBlocks1EDT;
     ocrEdtCreate( &createChildBlocks1EDT, TML_createChildBlocks1, //FNC_createChildBlocks1
@@ -377,6 +376,11 @@ _OCR_TASK_FNC_( FNC_createChildBlocks )
     ocrAddDependence( DBK_array_children[_ichild++], createChildBlocks1EDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_array_children[_ichild++], createChildBlocks1EDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_array_children[_ichild++], createChildBlocks1EDT, _idep++, DB_MODE_RW );
+
+    ocrDbRelease(DBK_rankH);
+    for (o = 0; o < 8; o++) {
+        ocrDbRelease(childrenRankDBKs[o]);
+    }
 
     return NULL_GUID;
 
@@ -448,7 +452,6 @@ _OCR_TASK_FNC_( FNC_createChildBlocks1 )
 
         for (o = 0; o < 8; o++) {
 
-            ocrDbRelease(childrenRankDBKs[o]);
             ocrDbRelease(DBK_array_children[o]);
 
             ocrGuid_t continuationEDT;
@@ -460,12 +463,13 @@ _OCR_TASK_FNC_( FNC_createChildBlocks1 )
             ocrAddDependence( childrenRankDBKs[o], continuationEDT, _idep++, DB_MODE_RW );
             ocrAddDependence( children_DBK_octTreeRedH[o], continuationEDT, _idep++, DB_MODE_RW );
             ocrAddDependence( NULL_GUID, continuationEDT, _idep++, DB_MODE_NULL );
+
+            ocrDbRelease(childrenRankDBKs[o]);
         }
     }
     else if( flag == - 1 ) {
         consolidate_blocks(PTR_rankH, PTR_children_rankHs, irefine);
 
-        ocrDbRelease(DBK_rankH);
         for (o = 0; o < 8; o++) {
             ocrDbRelease(childrenRankDBKs[o]);
             ocrDbRelease(DBK_array_children[o]);
@@ -482,6 +486,8 @@ _OCR_TASK_FNC_( FNC_createChildBlocks1 )
         ocrAddDependence( DBK_rankH, continuationEDT, _idep++, DB_MODE_RW );
         ocrAddDependence( DBK_octTreeRedH, continuationEDT, _idep++, DB_MODE_RW );
         ocrAddDependence( NULL_GUID, continuationEDT, _idep++, DB_MODE_NULL );
+
+        ocrDbRelease(DBK_rankH);
 
     }
     else if( flag == 0 ) {

@@ -71,9 +71,6 @@ void check_sum( ocrDBK_t DBK_rankH, rankH_t* PTR_rankH, ocrDBK_t DBK_octTreeRedH
     ocrDbRelease( DBK_gridSum_in );
     ocrEventSatisfy( redUpIEVT, DBK_gridSum_in ); //All blocks provide partial sums
 
-    ocrDbRelease( DBK_rankH );
-    ocrDbRelease( DBK_octTreeRedH );
-
     int phase = var;
     reducePRM_t reducePRM = {-1, ts, phase, r, number};
     ocrGuid_t reduceAllUpEDT;

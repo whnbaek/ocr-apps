@@ -88,10 +88,6 @@ _OCR_TASK_FNC_( FNC_refine )
 
     ocrDBK_t DBK_redRootH = PTR_octTreeRedH->DBK_redRootH[COARSEN_RED_HANDLE_LB + irefine%2];
 
-    ocrDbRelease(DBK_rankH);
-    ocrDbRelease(DBK_octTreeRedH);
-    ocrDbRelease(DBK_in);
-
     ocrGuid_t reduceBlockCountsEDT, reduceBlockCountsOEVT, reduceBlockCountsOEVTS;
     reduceBlockCountsPRM_t reduceBlockCountsPRM = {irefine, ts};
     ocrEdtCreate( &reduceBlockCountsEDT, TML_reduceBlockCounts,
@@ -217,9 +213,6 @@ _OCR_TASK_FNC_( FNC_reduceBlockCounts )
     ocrDbRelease( DBK_in );
     ocrEventSatisfy( redUpIEVT, DBK_in ); //All blocks provide partial sums
 
-    ocrDbRelease(DBK_rankH);
-    ocrDbRelease(DBK_octTreeRedH);
-
     int phase = r;
     reducePRM_t reducePRM = {irefine, ts, phase, r, number};
     ocrGuid_t reduceAllUpEDT;
@@ -240,6 +233,9 @@ _OCR_TASK_FNC_( FNC_reduceBlockCounts )
     _idep = 0;
     ocrAddDependence( DBK_rankH, updateBlockCountsEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( redDownOEVT, updateBlockCountsEDT, _idep++, DB_MODE_RW );
+
+    ocrDbRelease(DBK_rankH);
+    ocrDbRelease(DBK_octTreeRedH);
 
     return NULL_GUID;
 }
@@ -345,9 +341,6 @@ _OCR_TASK_FNC_( FNC_refineAllLevels )
     ocrDBK_t DBK_in = PTR_redObjects->DBK_in;
     ocrDBK_t DBK_out = PTR_redObjects->DBK_out;
 
-    ocrDbRelease(DBK_octTreeRedH);
-    ocrDbRelease(DBK_rankH);
-
     int phase = 10; //Propage -1 and 1 first.
     refineLevelsPRM_t refine1Levels = { irefine, ilevel, phase, iter };
     ocrGuid_t refine1AllLevelsEDT, refine1AllLevelsOEVT, refine1AllLevelsOEVTS;
@@ -379,6 +372,9 @@ _OCR_TASK_FNC_( FNC_refineAllLevels )
     ocrAddDependence( DBK_in, refine2AllLevelsEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_out, refine2AllLevelsEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( refine1AllLevelsOEVTS, refine2AllLevelsEDT, _idep++, DB_MODE_NULL );
+
+    ocrDbRelease(DBK_octTreeRedH);
+    ocrDbRelease(DBK_rankH);
 
     return NULL_GUID;
 }
@@ -432,11 +428,6 @@ _OCR_TASK_FNC_( FNC_refine1AllLevels ) //Make sure irefine is set to '0' the fir
     r = (QUIESCENCE_RED_HANDLE_LB+ilevel); //reserved
     PTR_redObjects = &PTR_octTreeRedH->blockRedObjects[r];
     ocrEVT_t redDownOEVT_prevLevel= PTR_redObjects->downOEVT;
-
-    ocrDbRelease(DBK_octTreeRedH);
-    ocrDbRelease(DBK_rankH);
-    ocrDbRelease( DBK_in );
-    ocrDbRelease( DBK_out );
 
     // Do one refine until quiescence has reached
     ocrGuid_t refine1LevelEDT;
@@ -540,8 +531,6 @@ _OCR_TASK_FNC_( FNC_refine1Level ) //Make sure irefine is set to '0' the first t
 
             ocrEventSatisfy( redUpIEVT, DBK_lchange ); //All blocks provide partial sums
 
-            ocrDbRelease( DBK_octTreeRedH );
-
             reducePRM_t reducePRM = {irefine, ts, phase, r, number};
             ocrGuid_t reducelchangeEDT;
 
@@ -552,6 +541,8 @@ _OCR_TASK_FNC_( FNC_refine1Level ) //Make sure irefine is set to '0' the first t
             _idep = 0;
             ocrAddDependence( DBK_octTreeRedH, reducelchangeEDT, _idep++, DB_MODE_RW );
             ocrAddDependence( redUpIEVT, reducelchangeEDT, _idep++, DB_MODE_RW );
+
+            ocrDbRelease( DBK_octTreeRedH );
         }
 
         return NULL_GUID;
@@ -581,9 +572,6 @@ _OCR_TASK_FNC_( FNC_refine1Level ) //Make sure irefine is set to '0' the first t
         ocrDbRelease( DBK_lchange );
 
         ocrEventSatisfy( redUpIEVT, DBK_lchange ); //All blocks provide partial sums
-
-        ocrDbRelease( DBK_rankH );
-        ocrDbRelease( DBK_octTreeRedH );
 
         reducePRM_t reducePRM = {irefine, ts, phase, r, number};
         ocrGuid_t reducelchangeEDT;
@@ -624,6 +612,9 @@ _OCR_TASK_FNC_( FNC_refine1Level ) //Make sure irefine is set to '0' the first t
         ocrAddDependence( DBK_gchange, refine1LevelEDT, _idep++, DB_MODE_RW ); //reduction result
         ocrAddDependence( scatterRefineOEVTS, refine1LevelEDT, _idep++, DB_MODE_NULL );
 
+        ocrDbRelease( DBK_rankH );
+        ocrDbRelease( DBK_octTreeRedH );
+
         return NULL_GUID;
 
     }
@@ -661,7 +652,6 @@ _OCR_TASK_FNC_( FNC_scatterRefine )
 
     DEBUG_PRINTF(( "%s ilevel_iter %d ilevel %d id_l %d irefine %d gchange %d phase %d iter %d ts %d\n", __func__, ilevel, PTR_rankH->ilevel, PTR_rankH->myRank, irefine, gchange, phase, iter, PTR_rankH->ts ));
 
-    ocrDbRelease(DBK_rankH);
     ocrDbRelease(DBK_gchange);
 
     if( gchange )
@@ -727,6 +717,8 @@ _OCR_TASK_FNC_( FNC_scatterRefine )
         ocrAddDependence( commRefnNbrsOEVTS, commRefnSibsEDT, _idep++, DB_MODE_NULL );
 
     }
+
+    ocrDbRelease(DBK_rankH);
 
     return NULL_GUID;
 }

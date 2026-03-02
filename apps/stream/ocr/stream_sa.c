@@ -14,8 +14,12 @@
 # include <float.h>
 #include "pthread.h"
 
+#ifndef STREAM_ARRAY_SIZE
 #define STREAM_ARRAY_SIZE 9000000
+#endif
+#ifndef NUM_THREADS
 #define NUM_THREADS  32
+#endif
 
 #define FLAGS DB_PROP_NONE
 #define PROPERTIES EDT_PROP_NONE

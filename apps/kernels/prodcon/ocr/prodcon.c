@@ -16,11 +16,17 @@
 #include <math.h>
 #include <float.h>
 
+#ifndef ARRAY_SIZE
 #define ARRAY_SIZE (1310720*32)
+#endif
+#ifndef NUM_THREADS
 #define NUM_THREADS  128
+#endif
 #define SKEW 1
 #define BUFFER NUM_THREADS
+#ifndef NTIMES
 #define NTIMES 200
+#endif
 #define PER_THREAD_SIZE ARRAY_SIZE/NUM_THREADS
 
 #define FLAGS DB_PROP_NONE
@@ -110,24 +116,22 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t evt2 = NULL_GUID;
   ocrGuid_t evt3 = NULL_GUID;
 
+  // Phase 1: Create all EDTs and labeled events (no triggering deps yet).
   ocrEdtCreate(&edt_cons, tmp_consumer, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &cons_output);
-
-  ocrGuidFromIndex(&evt3, mapConsGuid, BUFFER*paramv[1] + paramv[0]%BUFFER);
-  ocrEventCreate(&evt3, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
-  ocrAddDependence(evt3, edt_cons, 0, DB_MODE_RO);
 
   ocrEdtCreate(&edt_prod, tmp_producer, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &prod_output);
 
   ocrGuidFromIndex(&evt1, mapProdGuid, BUFFER*paramv[1] + paramv[0]%BUFFER);
   ocrEventCreate(&evt1, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
-  ocrAddDependence(prod_output, evt1, 0, DB_MODE_RO);
 
   ocrGuidFromIndex(&evt2, mapConsGuid, BUFFER*((paramv[1]+SKEW) % NUM_THREADS) + paramv[0]%BUFFER);
   ocrEventCreate(&evt2, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
-  ocrAddDependence(evt1, evt2, 0, DB_MODE_RO);
 
-  ocrAddDependence(db_a, edt_prod, 0, DB_MODE_RW);
+  ocrGuidFromIndex(&evt3, mapConsGuid, BUFFER*paramv[1] + paramv[0]%BUFFER);
+  ocrEventCreate(&evt3, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
 
+  // Phase 2: wire cons_output's waiters first — it is a ONCE event, so all
+  // its uses must be registered before any triggering dependency.
   iter++;
   param[0] = iter;
   if (iter < NTIMES) {  // Spawn another set
@@ -140,6 +144,15 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       u64 tid = paramv[1];
       ocrAddDependence(cons_output, evt_finalize[tid], 0, DB_DEFAULT_MODE);
   }
+
+  // Phase 3: Wire non-triggering event chains.
+  ocrAddDependence(prod_output, evt1, 0, DB_MODE_RO);
+  ocrAddDependence(evt1, evt2, 0, DB_MODE_RO);
+
+  // Phase 4: Wire triggering deps LAST (these can fire EDTs immediately).
+  // evt3 is a cross-thread labeled STICKY that may already be satisfied.
+  ocrAddDependence(evt3, edt_cons, 0, DB_MODE_RO);
+  ocrAddDependence(db_a, edt_prod, 0, DB_MODE_RW);
 
   return NULL_GUID;
 

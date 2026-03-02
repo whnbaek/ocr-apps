@@ -373,8 +373,6 @@ _OCR_TASK_FNC_( FNC_driver )
     int num_refine = PTR_cmd->num_refine;
     int uniform_refine = PTR_cmd->uniform_refine;
 
-    ocrDbRelease(DBK_rankH);
-
     if( num_refine || (uniform_refine && num_refine) ) {
         refineLoopPRM_t refineLoopPRM = {irefine, ts};
         ocrEdtCreate( &TS_refineLoop.EDT, TML_refineLoop, //FNC_refineLoop
@@ -402,6 +400,8 @@ _OCR_TASK_FNC_( FNC_driver )
         ocrAddDependence( DBK_octTreeRedH, timestepLoopEDT, _idep++, DB_MODE_RW );
         ocrAddDependence( NULL_GUID, timestepLoopEDT, _idep++, DB_MODE_NULL );
     }
+
+    ocrDbRelease(DBK_rankH);
 
     return NULL_GUID;
 }

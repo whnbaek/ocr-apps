@@ -82,9 +82,6 @@ _OCR_TASK_FNC_( FNC_timestepLoop )
     int ilevel = PTR_rankH->ilevel;
     DEBUG_PRINTF(( "%s ilevel %d id_l %d ts %d num_tsteps %d bp->number %d\n", __func__, ilevel, PTR_rankH->myRank, ts, num_tsteps, number ));
 
-    ocrDbRelease(DBK_rankH);
-    ocrDbRelease(DBK_octTreeRedH);
-
     ocrAssert( number >= 0 );
 
     if( ts <= num_tsteps ) {
@@ -528,9 +525,6 @@ _OCR_TASK_FNC_( FNC_checkSumLoop )
     redObjects_t* PTR_redObjects = &PTR_octTreeRedH->blockRedObjects[r];
     ocrDBK_t DBK_gridSum_in = PTR_redObjects->DBK_in;
 
-    ocrDbRelease( DBK_rankH );
-    ocrDbRelease( DBK_octTreeRedH );
-
     ocrGuid_t checkSumEDT, checkSumOEVT, checkSumOEVTS;
 
     checkSumPRM_t checkSumPRM = {istart, istage, ts};
@@ -740,8 +734,6 @@ _OCR_TASK_FNC_( FNC_finalize )
 
     ocrDbRelease( DBK_in );
     ocrEventSatisfy( redUpIEVT, DBK_in ); //All blocks provide partial sums
-
-    ocrDbRelease( DBK_rankH );
 
     int phase = -11;
     reducePRM_t reducePRM = {-1, ts, phase, r, number};
