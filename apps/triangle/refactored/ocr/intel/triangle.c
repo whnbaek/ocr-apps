@@ -16,6 +16,7 @@ See the README file for more information.
 */
 
 #include <ocr.h>
+#include <stdatomic.h>
 #define BOARDSIZE 15
 #define MOVESIZE 36
 
@@ -39,7 +40,7 @@ ocrGuid_t incrementTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     u64 * counter = depv[0].ptr;
 //ocrPrintf("in increment with %d\n", *counter);
 //    if(*counter == 0) ocrPrintf("found first solution...wait for final count\n");
-    (*counter)++;
+    atomic_fetch_add((_Atomic u64 *)counter, 1);
 //if(*counter %100 == 1) ocrPrintf("in increment with %d\n", *counter);
 //ocrPrintf("in increment with %d\n", *counter);
     return NULL_GUID;
