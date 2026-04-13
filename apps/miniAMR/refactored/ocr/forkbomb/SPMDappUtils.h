@@ -19,6 +19,8 @@ typedef struct
 {
     u64 id;
     u64 edtGridDims[3];
+    u32 maxRefLvl;    /* CLI --num_refine; propagated to block_t via paramv */
+    u32 numTsteps;    /* CLI --num_tsteps; propagated to block_t via paramv */
 } PRM_initEdt_t;
 
 void partition_bounds(s64 id, s64 lb_g, s64 ub_g, s64 R, s64* s, s64* e);

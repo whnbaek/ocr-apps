@@ -44,7 +44,14 @@
 
 #define PER_THREAD_SIZE (STREAM_ARRAY_SIZE/NUM_THREADS)
 
-STREAM_TYPE scalar = 3.0;
+/* McCalpin stream_mpi.c: "The old value of 3.0 caused floating-point
+ * overflows after a relatively small number of iterations.  The new default
+ * of 0.42 allows over 2000 iterations for 32-bit IEEE arithmetic and over
+ * 18000 iterations for 64-bit IEEE arithmetic." */
+#ifndef SCALAR
+#define SCALAR 0.42
+#endif
+STREAM_TYPE scalar = SCALAR;
 
 #include <sys/time.h>
 
@@ -130,7 +137,36 @@ ocrGuid_t triad(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
 ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
-  double *ptr = (double *)depv[0].ptr;
+  /* Validate a[] — adapted from checkSTREAMresults() in reference STREAM.
+   * Only a[] survives (b/c destroyed in triad), but a's final value depends
+   * on all four kernels executing correctly every iteration. */
+  STREAM_TYPE aj = 2.0;  /* initial value from mainLet */
+  int k;
+  for (k = 0; k < NTIMES; k++) {
+      STREAM_TYPE cj = aj;               /* copy  */
+      STREAM_TYPE bj = scalar * aj;      /* scale */
+      cj = aj + bj;                      /* add   */
+      aj = bj + scalar * cj;             /* triad: a = b(scale) + scalar*c(add) */
+  }
+
+  double epsilon = (sizeof(STREAM_TYPE) == 4) ? 1.e-6 : 1.e-13;
+  u64 errCount = 0;
+  u32 t, i;
+  for (t = 0; t < NUM_THREADS; t++) {
+      double *a = (double *)depv[t].ptr;
+      for (i = 0; i < PER_THREAD_SIZE; i++) {
+          double relErr = (aj != 0.0) ? fabs((a[i] - aj) / aj) : fabs(a[i]);
+          if (relErr > epsilon) errCount++;
+      }
+  }
+
+  if (errCount == 0)
+      PRINTF("Solution Validates: all %d elements match expected value\n",
+             (int)(PER_THREAD_SIZE * NUM_THREADS));
+  else
+      PRINTF("Solution FAILED Validation: %llu errors in a[]\n",
+             (unsigned long long)errCount);
+
   printTimes();
   ocrShutdown();
   return NULL_GUID;
@@ -153,8 +189,8 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtCreate(&edt_triad, tmp_triad, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &triad_output);
 
   ocrAddDependence(db_a, edt_triad, 0, DB_MODE_RW);
-  ocrAddDependence(add_output, edt_triad, 1, DB_MODE_RO);
-  ocrAddDependence(scale_output, edt_triad, 2, DB_MODE_RO);
+  ocrAddDependence(scale_output, edt_triad, 1, DB_MODE_RO);
+  ocrAddDependence(add_output, edt_triad, 2, DB_MODE_RO);
 
   ocrAddDependence(db_a, edt_add, 0, DB_MODE_RO);
   ocrAddDependence(scale_output, edt_add, 1, DB_MODE_RO);

@@ -3,7 +3,7 @@
 
 #include "hpgmg.h"
 
-double time();
+double hpgmg_time();
 void shift_vector(level_type * level, int id_c, int id_a, double shift_a);
 double dot(level_type * level, int id_a, int id_b);
 void get_neighbors(int b, int dim_i, int dim_j, int dim_k, int* nbrs);

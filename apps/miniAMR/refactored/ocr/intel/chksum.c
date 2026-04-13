@@ -285,7 +285,7 @@ void checksum_RootFinalAggregation (u32 depc, ocrEdtDep_t depv[], rootClone_Para
          ocrShutdown();
       }
    }
-//printf ("Grand Total Checksum == %lf at timestep %d\n", total, timeStep); fflush(stdout);
+ocrPrintf ("Grand Total Checksum == %f at timestep %d\n", total, timeStep);
 
    if (!ocrGuidIsNull(myDeps->scratchChecksum_Dep.guid)) {
       gasket__ocrDbDestroy(&myDeps->scratchChecksum_Dep.guid, &myDeps->scratchChecksum_Dep.ptr, __FILE__, __func__, __LINE__, "scratchChecksum", " "); // Destroy the scratch checksum

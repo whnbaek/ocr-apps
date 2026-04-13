@@ -96,7 +96,9 @@ void solve_nqueens( u32 n, u32 cutoff )
     create_task( &app_args, &outEvent );
 }
 
-ocrGuid_t shutdown( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
+/* Renamed from 'shutdown' to avoid POSIX shutdown(2) symbol collision
+ * that crashes Open MPI 5.x PMIx during MPI_Finalize. */
+ocrGuid_t shutdownEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 {
     timestamp_t stop;
     get_time(&stop);
@@ -136,7 +138,7 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
                           sizeof(struct nqueens_args)/sizeof(u64)+1, 0 );
     ocrAssert( err == 0 );
 
-    err = ocrEdtTemplateCreate( &shutdownTemplate, shutdown,
+    err = ocrEdtTemplateCreate( &shutdownTemplate, shutdownEdt,
                           sizeof(struct shutdown_args)/sizeof(u64)+1, 1 );
     ocrAssert( err == 0 );
 

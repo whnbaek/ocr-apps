@@ -13,7 +13,7 @@ ocrGuid_t smooth_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
   ocrGuid_t* boxes = (ocrGuid_t*)(((char*)depv[0].ptr)+l->boxes);
 
   ///// time smooth operator /////
-  l->time_temp[0] = time();
+  l->time_temp[0] = hpgmg_time();
   ////////////////////////////////
 
   ocrGuid_t r,r_t;

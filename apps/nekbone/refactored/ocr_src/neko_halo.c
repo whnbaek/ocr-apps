@@ -3111,7 +3111,14 @@ Err_t start_halo_multiplicity(OA_DEBUG_ARGUMENT, NEKOtools_t * in_nekoTools,
         err = halo_exchanges2(in_Rlattice,in_Elattice, DOFlattice, in_globals->rankID,
                               sz_V, io_V, &sz_riValues, io_riValues); IFEB;
 
-        if(sz_riValues == 0) break; //Nothing more to do.
+        /* Fix: removed `if(sz_riValues == 0) break;` here.  The original
+         * early-exit skipped the NULL-fill loop below, leaving the 27
+         * halo slots of the destination EDT forever unsatisfied whenever
+         * there were no cross-rank DOF values to exchange (always true
+         * for nrank=1, sometimes true for boundary ranks).  The inner
+         * exchange for-loop is naturally a no-op when sz_riValues==0
+         * and the sanity-check that follows is inert when dir_present
+         * is all-zero, so we just fall through to the NULL-fill. */
 
         char dir_found[NEKbone_regionCount]; //For sanity checking
         Idz i;
@@ -3273,8 +3280,10 @@ Err_t start_halo_setf(OA_DEBUG_ARGUMENT, NEKOtools_t * in_nekoTools,
         err = halo_exchanges2(in_Rlattice,in_Elattice, DOFlattice, in_globals->rankID,
                               sz_V, io_V, &sz_riValues, io_riValues); IFEB;
 
-
-        if(sz_riValues == 0) break; //Nothing more to do.
+        /* Fix: same early-exit bug as start_halo_multiplicity — see the
+         * comment there.  Removed `if(sz_riValues == 0) break;` so the
+         * NULL-fill loop below runs even when there are zero cross-rank
+         * halo values. */
 
         char dir_found[NEKbone_regionCount]; //For sanity checking
         Idz i;
@@ -3430,7 +3439,10 @@ Err_t start_halo_ai(OA_DEBUG_ARGUMENT, NEKOtools_t * in_nekoTools,
         err = halo_exchanges2(in_Rlattice,in_Elattice, DOFlattice, in_globals->rankID,
                               sz_V, io_V, &sz_riValues, io_riValues); IFEB;
 
-        if(sz_riValues == 0) break; //Nothing more to do.
+        /* Fix: same early-exit bug as start_halo_multiplicity — see the
+         * comment there.  Removed `if(sz_riValues == 0) break;` so the
+         * NULL-fill loop below runs even when there are zero cross-rank
+         * halo values. */
 
         char dir_found[NEKbone_regionCount]; //For sanity checking
         Idz i;

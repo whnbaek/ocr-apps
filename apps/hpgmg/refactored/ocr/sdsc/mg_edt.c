@@ -40,15 +40,15 @@ ocrGuid_t time_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
   if (paramv[0] == 4) { // total time - stored in level[0]
     if (fabs(l->time_temp[4]) <= mu) {
-      l->time_temp[4] = time();
+      l->time_temp[4] = hpgmg_time();
     } else {
-        l->time_operators[4] += time() - l->time_temp[4];
-        ocrPrintf("Time = %f\n", time() - l->time_temp[4]);
+        l->time_operators[4] += hpgmg_time() - l->time_temp[4];
+        ocrPrintf("Time = %f\n", hpgmg_time() - l->time_temp[4]);
         l->time_temp[4] = 0.0;
     }
   } else {
     if (fabs(l->time_temp[paramv[0]]) > mu) {
-      l->time_operators[paramv[0]] += (time() - l->time_temp[paramv[0]]);
+      l->time_operators[paramv[0]] += (hpgmg_time() - l->time_temp[paramv[0]]);
       l->time_temp[paramv[0]] = 0.0;
     }
   }
@@ -56,31 +56,31 @@ ocrGuid_t time_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 /*
   if (paramv[0] == 0) {  // smooth time per level
    if (fabs(l->time_temp[0]) > mu) {
-     l->time_operators[0] += (time() - l->time_temp[0]);
+     l->time_operators[0] += (hpgmg_time() - l->time_temp[0]);
      l->time_temp[0] = 0.0;
    }
   } else if (paramv[0] == 1) { // residual time per level
    if (fabs(l->time_temp[1]) > mu) {
-     l->time_operators[1] += (time() - l->time_temp[1]);
+     l->time_operators[1] += (hpgmg_time() - l->time_temp[1]);
      l->time_temp[1] = 0.0;
    }
   } else if (paramv[0] == 2) { // restriction time per level
     if (fabs(l->time_temp[2]) > mu) {
-     l->time_operators[2] += (time() - l->time_temp[2]);
+     l->time_operators[2] += (hpgmg_time() - l->time_temp[2]);
      l->time_temp[2] = 0.0;
     }
   } else if (paramv[0] == 3) { // interpolation time per level
    if (fabs(l->time_temp[3]) > mu) {
-     l->time_operators[3] += (time() - l->time_temp[3]);
+     l->time_operators[3] += (hpgmg_time() - l->time_temp[3]);
      l->time_temp[3] = 0.0;
    }
   } else if (paramv[0] == 4) { // total time - stored in level[0]
     if (fabs(l->time_temp[4]) <= mu) {
-//      l->time_operators[4] = time();
-      l->time_temp[4] = time();
+//      l->time_operators[4] = hpgmg_time();
+      l->time_temp[4] = hpgmg_time();
     } else {
-//      l->time_operators[4] += time()-l->time_operators[4];
-        l->time_operators[4] = time() - l->time_temp[4];
+//      l->time_operators[4] += hpgmg_time()-l->time_operators[4];
+        l->time_operators[4] = hpgmg_time() - l->time_temp[4];
         l->time_temp[4] = 0.0;
         ocrPrintf("Time = %f\n", l->time_operators[4]);
     }
@@ -334,7 +334,7 @@ ocrGuid_t exchange_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
 
   ///// time smooth operator /////
   if (fabs(l->time_temp[0]) >= mu) {
-    l->time_operators[0] += (time() - l->time_temp[0]);
+    l->time_operators[0] += (hpgmg_time() - l->time_temp[0]);
     l->time_temp[0] = 0.0;
   }
   ////////////////////////////////

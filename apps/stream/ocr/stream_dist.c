@@ -166,7 +166,35 @@ ocrGuid_t triad(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
 ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
-  (void)depv;
+  /* Validate a[] — same approach as checkSTREAMresults() in reference STREAM.
+   * a's final value encodes all four kernels over all iterations. */
+  STREAM_TYPE aj = 2.0;  /* initial value from mainLet */
+  int k;
+  for (k = 0; k < NTIMES; k++) {
+      STREAM_TYPE cj = aj;               /* copy  */
+      STREAM_TYPE bj = scalar * aj;      /* scale */
+      cj = aj + bj;                      /* add   */
+      aj = bj + scalar * cj;             /* triad: a = b(scale) + scalar*c(add) */
+  }
+
+  double epsilon = (sizeof(STREAM_TYPE) == 4) ? 1.e-6 : 1.e-13;
+  u64 errCount = 0;
+  u32 t, i;
+  for (t = 0; t < NUM_THREADS; t++) {
+      double *a = (double *)depv[t].ptr;
+      for (i = 0; i < PER_THREAD_SIZE; i++) {
+          double relErr = (aj != 0.0) ? fabs((a[i] - aj) / aj) : fabs(a[i]);
+          if (relErr > epsilon) errCount++;
+      }
+  }
+
+  if (errCount == 0)
+      PRINTF("Solution Validates: all %d elements match expected value\n",
+             PER_THREAD_SIZE * NUM_THREADS);
+  else
+      PRINTF("Solution FAILED Validation: %llu errors in a[]\n",
+             (unsigned long long)errCount);
+
   printTimes();
   ocrShutdown();
   return NULL_GUID;
@@ -202,8 +230,8 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtCreate(&edt_triad, tmp_triad, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &triad_output);
 
   ocrAddDependence(db_a, edt_triad, 0, DB_MODE_RW);
-  ocrAddDependence(add_output, edt_triad, 1, DB_MODE_RO);
-  ocrAddDependence(scale_output, edt_triad, 2, DB_MODE_RO);
+  ocrAddDependence(scale_output, edt_triad, 1, DB_MODE_RO);
+  ocrAddDependence(add_output, edt_triad, 2, DB_MODE_RO);
 
   ocrAddDependence(db_a, edt_add, 0, DB_MODE_RO);
   ocrAddDependence(scale_output, edt_add, 1, DB_MODE_RO);

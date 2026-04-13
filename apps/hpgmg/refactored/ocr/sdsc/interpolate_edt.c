@@ -17,7 +17,7 @@ ocrGuid_t interpolate_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
 
 
   ///// time interpolate /////
-  l->time_temp[3] = time();
+  l->time_temp[3] = hpgmg_time();
   ////////////////////////////
 
   ocrGuid_t* boxes = (ocrGuid_t*)(((char*)depv[1].ptr)+l->boxes);

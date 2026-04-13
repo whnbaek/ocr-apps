@@ -327,6 +327,18 @@ ocrGuid_t wrap_up_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
     }
     fclose(out);
 
+    /* Correctness scalar: trace of the Cholesky factor L. */
+    {
+        double trace = 0.0;
+        for (i = 0; i < numTiles; ++i) {
+            temp = (double *)(depv[i * (i + 1) / 2 + i].ptr);
+            for (i_b = 0; i_b < tileSize; ++i_b) {
+                trace += temp[i_b * tileSize + i_b];
+            }
+        }
+        ocrPrintf("CHOLESKY trace = %.6f\n", trace);
+    }
+
     ocrShutdown();
 
     return NULL_GUID;

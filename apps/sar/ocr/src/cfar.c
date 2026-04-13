@@ -43,6 +43,8 @@ ocrPrintf("//// SKIPPING Sort of the detections\n");RAG_FLUSH;
 #ifdef TRACE_LVL_2
 ocrPrintf("//// Output to file %d detects\n",Nd);RAG_FLUSH;
 #endif
+	/* Deterministic correctness scalar for a given input dataset. */
+	ocrPrintf("SAR detects: %d\n", Nd);RAG_FLUSH;
 	for(int m=0; m<Nd; m++) {
 #ifndef TG_ARCH
 		fprintf(pOutFile,"(x=%7.2f m, y=%7.2f m, p=%4.2f)\n", Y[m].x, Y[m].y, Y[m].p); // RAG -- Chaged to match latest code from Dan Campell

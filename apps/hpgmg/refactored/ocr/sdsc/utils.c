@@ -21,7 +21,8 @@ void ABORT(int a) {
 #endif
 
 
-double time() {
+/* Renamed from 'time' to avoid POSIX time(2) collision in non-PIE. */
+double hpgmg_time() {
 #ifndef TG_ARCH
   struct timeval tv;
   gettimeofday(&tv, 0);

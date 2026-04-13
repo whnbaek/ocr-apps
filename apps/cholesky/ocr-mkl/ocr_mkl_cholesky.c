@@ -228,6 +228,20 @@ ocrGuid_t wrap_up_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
     }
     fclose(out);
 
+    /* Correctness scalar: trace of the Cholesky factor L — deterministic and
+     * independent of scheduling order for a positive-definite input. */
+    {
+        double trace = 0.0;
+        u32 matrixSize = numTiles * tileSize;
+        for (i = 0; i < numTiles; ++i) {
+            temp = (double *)(depv[i * (i + 1) / 2 + i].ptr); /* diagonal tile */
+            for (i_b = 0; i_b < tileSize; ++i_b) {
+                trace += temp[i_b * tileSize + i_b]; /* L[i_b][i_b] within tile */
+            }
+        }
+        ocrPrintf("CHOLESKY trace = %.6f\n", trace);
+    }
+
     ocrShutdown();
 
     return NULL_GUID;

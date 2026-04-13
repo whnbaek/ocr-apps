@@ -20,6 +20,13 @@ ocrGuid_t add_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 #endif
     fclose(out);
 
+    /* Correctness scalar: XOR checksum of the output data array. */
+    {
+        u64 chk = 0;
+        for (i = 0; i < size; i++) { chk ^= data[i]; }
+        ocrPrintf("BASICIO_CHK %lu\n", (unsigned long)chk);
+    }
+
     ocrShutdown(); // This is the last EDT to execute
     return NULL_GUID;
 }

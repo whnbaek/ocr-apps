@@ -99,7 +99,7 @@ ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     memcpy( &PRM_block, paramv, sizeof(block_t) );
     ocrGuid_t blockGUID, blockTML;
 
-    if( PRM_block.timestep < 1500 )
+    if( PRM_block.timestep < PRM_block.numTsteps )
     {
         if( PRM_block.id == 0 ) ocrPrintf("%ld\n", PRM_block.timestep);
         if( PRM_block.timestep % 50 == 0 )
@@ -177,10 +177,18 @@ ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     ocrPrintf("BLOCK %ld finished.\n", PRM_block.id);
 
+    /* Shutdown: block 0 is always the first (and with --nx 1 --ny 1 --nz 1,
+     * the only) initial block.  When it finishes, call ocrShutdown(). */
+    if (PRM_block.id == 0) {
+        ocrShutdown();
+    }
+
     return NULL_GUID;
 }
 
-ocrGuid_t connect( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
+/* Renamed from 'connect' to avoid POSIX connect(2) symbol collision
+ * in non-PIE binaries (xsocr distributed mode requires non-PIE). */
+ocrGuid_t connectEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
 
     PRM_initEdt_t * PRM_initEdt = (PRM_initEdt_t *)paramv;
@@ -200,8 +208,9 @@ ocrGuid_t connect( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     PRM_block.id = PRM_initEdt->id;
     PRM_block.rootId = PRM_block.id;
     PRM_block.timestep = 0;
+    PRM_block.numTsteps = PRM_initEdt->numTsteps;
     PRM_block.refLvl = 0;
-    PRM_block.maxRefLvl = 3;
+    PRM_block.maxRefLvl = PRM_initEdt->maxRefLvl;
     ocrGuid_t blockGUID;
 
     u64 pCount = (sizeof( block_t ) / sizeof( u64 ));
@@ -231,9 +240,16 @@ ocrGuid_t connect( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
 
-    PRM_initEdt_t * PRM_initEdt = (PRM_initEdt_t *)paramv;
+    PRM_initEdt_t initPrm;
+    memcpy( &initPrm, paramv, sizeof(PRM_initEdt_t) );
+
+    /* Populate CLI values from the command-line args DB (depv[0]).
+     * params[2] = num_refine, params[20] = num_tsteps. */
+    int * prms = (int *)depv[0].ptr;
+    initPrm.maxRefLvl  = (u32)prms[2];
+    initPrm.numTsteps  = (u32)prms[20];
+
     range_t * rStruct = (range_t *)depv[1].ptr;
-    //int * prms = (int *)depv[0].ptr;
 
     u64 dir;
     ocrGuid_t sends[6];
@@ -243,11 +259,11 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     ocrGuid_t DBKComm;
     ocrDbCreate( &DBKComm, (void **)&comms, sizeof( comm_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
-    u64 id = PRM_initEdt->id;
+    u64 id = initPrm.id;
 
-    u64 xDim = PRM_initEdt->edtGridDims[0];
-    u64 yDim = PRM_initEdt->edtGridDims[1];
-    u64 zDim = PRM_initEdt->edtGridDims[2];
+    u64 xDim = initPrm.edtGridDims[0];
+    u64 yDim = initPrm.edtGridDims[1];
+    u64 zDim = initPrm.edtGridDims[2];
 
     u64 xPos = id % xDim;
     u64 yPos = (id / xDim) % yDim;
@@ -318,7 +334,7 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     u64 i;
 
     ocrGuid_t connectGUID, connectTML;
-    ocrEdtTemplateCreate( &connectTML, connect, paramc, 7 );
+    ocrEdtTemplateCreate( &connectTML, connectEdt, paramc, 7 );
 
     ocrGuid_t channelRcvs[6];
 
@@ -333,7 +349,7 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         ocrEventCreateParams( &comms->rcv[dir], OCR_EVENT_CHANNEL_T, false, &params );
     }
 
-    ocrEdtCreate( &connectGUID, connectTML, EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
+    ocrEdtCreate( &connectGUID, connectTML, EDT_PARAM_DEF, (u64 *)&initPrm, EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
           NULL_HINT, NULL );
 
 

@@ -14,7 +14,7 @@ ocrGuid_t restrict_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
   int count = l->num_boxes/c->num_boxes;
 
   ///// time restriction /////
-  l->time_temp[2] = time();
+  l->time_temp[2] = hpgmg_time();
   ////////////////////////////
 
   VERBOSEPA("restrict_level_edt %u\n", l->level);

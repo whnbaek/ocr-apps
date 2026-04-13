@@ -50,6 +50,7 @@ typedef struct{
     u32 maxRefLvl;
     block_comm_t comms;
     u64 timestep;
+    u64 numTsteps;   /* CLI --num_tsteps; passed via paramv, not globals */
     u64 id;
     s64 parent;
     u64 rootId;
