@@ -67,6 +67,7 @@ double mysecond()
 
 void checkSTREAMresults (void);
 void preamble(void);
+int printTimes(void);
 double times[NUM_THREADS][NTIMES];
 ocrGuid_t tmp_copy, tmp_scale, tmp_add, tmp_triad, tmp_loop, tmp_finalize;
 ocrGuid_t edt_finalize;
