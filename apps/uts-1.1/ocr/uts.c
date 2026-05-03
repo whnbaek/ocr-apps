@@ -1854,7 +1854,7 @@ TRACE0("mainEdt about to build ocrPtr_t (i.e datablock) version of argv");
   } else {
     ocrPtr_t *__argv = ocrPtrMalloc( &__ARGV, ((const int)argc)*sizeof(ocrPtr_t) );
     for( int i=0;i<((const int)argc);i++) {
-      strcpy( (char *)ocrPtrMalloc( &__argv[i], strlen( argv[i]+1 ) ), argv[i] );
+      strcpy( (char *)ocrPtrMalloc( &__argv[i], strlen( argv[i] ) + 1 ), argv[i] );
     }
   }
 
