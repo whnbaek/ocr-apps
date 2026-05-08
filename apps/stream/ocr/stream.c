@@ -189,6 +189,8 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtCreate(&edt_add, tmp_add, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &add_output);
   ocrEdtCreate(&edt_triad, tmp_triad, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &triad_output);
 
+  /* edt_triad / edt_add deps are relay-style (slots 1/2 wait on
+   * scale_output / add_output / copy_output); none is runnable yet. */
   ocrAddDependence(db_a, edt_triad, 0, DB_MODE_RW);
   ocrAddDependence(scale_output, edt_triad, 1, DB_MODE_RO);
   ocrAddDependence(add_output, edt_triad, 2, DB_MODE_RO);
@@ -197,11 +199,9 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrAddDependence(scale_output, edt_add, 1, DB_MODE_RO);
   ocrAddDependence(copy_output, edt_add, 2, DB_MODE_RW);
 
-  ocrAddDependence(db_a, edt_scale, 0, DB_MODE_RO);
-
-  ocrAddDependence(db_a, edt_copy, 0, DB_MODE_RO);
-
-
+  /* Every waiter on a ONCE event must be registered before the event's
+   * source EDT becomes runnable, so wire triad_output's waiter here and
+   * keep the chain-starting addDeps last. */
   iter++;
   param[0] = iter;
   if (iter < NTIMES) {  // Spawn another set
@@ -213,6 +213,10 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       u64 tid = paramv[1];
       ocrAddDependence(triad_output, evt_finalize[tid], 0, DB_DEFAULT_MODE);
   }
+
+  /* Chain-starting addDeps last: these make edt_scale/edt_copy runnable. */
+  ocrAddDependence(db_a, edt_scale, 0, DB_MODE_RO);
+  ocrAddDependence(db_a, edt_copy, 0, DB_MODE_RO);
 
   return NULL_GUID;
 

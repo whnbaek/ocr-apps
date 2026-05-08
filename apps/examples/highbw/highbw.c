@@ -35,6 +35,13 @@ ocrGuid_t work(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
             ptr[j]++ ;
         }
     }
+    /* Checksum makes the increments observable (defeats dead-store
+     * elimination); per-EDT sum is iter * dbsize while iter < 256. */
+    u64 my_sum = 0;
+    for(j = 0; j<DBSIZE; j++) {
+        my_sum += ptr[j];
+    }
+    PRINTF("HIGHBW_WORK_SUM = %llu\n", (unsigned long long)my_sum);
     return NULL_GUID;
 }
 

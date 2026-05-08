@@ -80,10 +80,22 @@ double mysecond()
 void checkSTREAMresults (void);
 void preamble(void);
 int printTimes(void);
+
+/* Per-process timing array — write-only on the rank running the
+ * sampling EDT.  printTimes() reports rank 0 only. */
 double times[NUM_THREADS][NTIMES];
-ocrGuid_t tmp_copy, tmp_scale, tmp_add, tmp_triad, tmp_loop, tmp_finalize;
-ocrGuid_t edt_finalize;
-ocrGuid_t evt_finalize[NUM_THREADS];
+
+/* Cross-rank GUIDs travel through paramv (deep-copied at EDT create),
+ * never file-scope statics: statics are per-process, so only the rank
+ * that ran mainEdt would see them initialized.
+ *
+ * paramv layouts:
+ *   mainLet (paramc=7): [0] tid, [1] evt_finalize_my,
+ *     [2..6] tmp_copy/scale/add/triad/loop
+ *   loop (paramc=8): [0] iter, [1] tid, [2] evt_finalize_my,
+ *     [3..7] templates */
+#define MAINLET_PARAMC 7
+#define LOOP_PARAMC    8
 
 /* --- Helper: build EDT affinity hint for a given thread id --- */
 static void getAffinityHints(u64 tid, ocrHint_t *edtHint, ocrHint_t *dbHint)
@@ -208,12 +220,19 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
 ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
+  /* paramv: [iter, tid, evt_finalize_my, tmp_copy, tmp_scale, tmp_add,
+   *          tmp_triad, tmp_loop]; depv[0..2] = db_a/b/c (RW) */
   ocrGuid_t db_a = depv[0].guid;
   ocrGuid_t db_b = depv[1].guid;
   ocrGuid_t db_c = depv[2].guid;
   u64 iter = paramv[0];
   u64 tid = paramv[1];
-  u64 param[2] = { iter, tid };
+  ocrGuid_t evt_finalize_my = (ocrGuid_t){.guid = (intptr_t)paramv[2]};
+  ocrGuid_t tmp_copy_g  = (ocrGuid_t){.guid = (intptr_t)paramv[3]};
+  ocrGuid_t tmp_scale_g = (ocrGuid_t){.guid = (intptr_t)paramv[4]};
+  ocrGuid_t tmp_add_g   = (ocrGuid_t){.guid = (intptr_t)paramv[5]};
+  ocrGuid_t tmp_triad_g = (ocrGuid_t){.guid = (intptr_t)paramv[6]};
+  ocrGuid_t tmp_loop_g  = (ocrGuid_t){.guid = (intptr_t)paramv[7]};
 
   /* Build affinity hint for this thread's target node */
   ocrHint_t edtHint;
@@ -223,12 +242,15 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t copy_output, scale_output, add_output, triad_output;
   ocrGuid_t edt_copy, edt_scale, edt_add, edt_triad;
 
-  /* Create kernel EDTs with affinity hint (routed to owning node) */
-  ocrEdtCreate(&edt_copy, tmp_copy, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &copy_output);
-  ocrEdtCreate(&edt_scale, tmp_scale, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &scale_output);
-  ocrEdtCreate(&edt_add, tmp_add, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &add_output);
-  ocrEdtCreate(&edt_triad, tmp_triad, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &triad_output);
+  /* Child kernel paramv: [iter, tid] (existing 2-slot template). */
+  u64 child_param[2] = { iter, tid };
+  ocrEdtCreate(&edt_copy,  tmp_copy_g,  EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &copy_output);
+  ocrEdtCreate(&edt_scale, tmp_scale_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &scale_output);
+  ocrEdtCreate(&edt_add,   tmp_add_g,   EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &add_output);
+  ocrEdtCreate(&edt_triad, tmp_triad_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &triad_output);
 
+  /* edt_triad / edt_add deps are relay-style (slots 1/2 wait on
+   * scale_output / add_output / copy_output); none is runnable yet. */
   ocrAddDependence(db_a, edt_triad, 0, DB_MODE_RW);
   ocrAddDependence(scale_output, edt_triad, 1, DB_MODE_RO);
   ocrAddDependence(add_output, edt_triad, 2, DB_MODE_RO);
@@ -237,24 +259,32 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrAddDependence(scale_output, edt_add, 1, DB_MODE_RO);
   ocrAddDependence(copy_output, edt_add, 2, DB_MODE_RW);
 
-  ocrAddDependence(db_a, edt_scale, 0, DB_MODE_RO);
-  ocrAddDependence(db_b, edt_scale, 1, DB_MODE_RW);
-
-  ocrAddDependence(db_a, edt_copy, 0, DB_MODE_RO);
-  ocrAddDependence(db_c, edt_copy, 1, DB_MODE_RW);
-
+  /* Every waiter on a ONCE event must be registered before the event's
+   * source EDT becomes runnable, so wire the output-event waiters here and
+   * keep the chain-starting addDeps last. */
   iter++;
-  param[0] = iter;
   if (iter < NTIMES) {
+    /* Forward all paramv slots to the next iteration. */
+    u64 next_param[LOOP_PARAMC] = {
+      iter, tid, paramv[2], paramv[3], paramv[4],
+      paramv[5], paramv[6], paramv[7]
+    };
     ocrGuid_t edt_loop;
-    ocrEdtCreate(&edt_loop, tmp_loop, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, NULL);
+    ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, next_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, NULL);
 
     ocrAddDependence(triad_output, edt_loop, 0, DB_MODE_RW);
     ocrAddDependence(scale_output, edt_loop, 1, DB_MODE_RW);
     ocrAddDependence(add_output, edt_loop, 2, DB_MODE_RW);
   } else {
-      ocrAddDependence(triad_output, evt_finalize[tid], 0, DB_DEFAULT_MODE);
+    ocrAddDependence(triad_output, evt_finalize_my, 0, DB_DEFAULT_MODE);
   }
+
+  /* Chain-starting addDeps last: these make edt_scale/edt_copy runnable. */
+  ocrAddDependence(db_a, edt_scale, 0, DB_MODE_RO);
+  ocrAddDependence(db_b, edt_scale, 1, DB_MODE_RW);
+
+  ocrAddDependence(db_a, edt_copy, 0, DB_MODE_RO);
+  ocrAddDependence(db_c, edt_copy, 1, DB_MODE_RW);
 
   return NULL_GUID;
 }
@@ -267,11 +297,18 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
 ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
+    u64 tid                   = paramv[0];
+    ocrGuid_t evt_finalize_my = (ocrGuid_t){.guid = (intptr_t)paramv[1]};
+    ocrGuid_t tmp_copy_g      = (ocrGuid_t){.guid = (intptr_t)paramv[2]};
+    ocrGuid_t tmp_scale_g     = (ocrGuid_t){.guid = (intptr_t)paramv[3]};
+    ocrGuid_t tmp_add_g       = (ocrGuid_t){.guid = (intptr_t)paramv[4]};
+    ocrGuid_t tmp_triad_g     = (ocrGuid_t){.guid = (intptr_t)paramv[5]};
+    ocrGuid_t tmp_loop_g      = (ocrGuid_t){.guid = (intptr_t)paramv[6]};
+
     ocrGuid_t db_a, db_b, db_c;
     double *a, *b, *c;
     u32 i;
     ocrGuid_t edt_loop, output_evt;
-    u64 tid = paramv[0];
 
     /* Build affinity hints: DBs on same node as this EDT */
     ocrHint_t edtHint, dbHint;
@@ -292,8 +329,17 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         c[i] = 0.0;
     }
 
-    u64 param[2] = { 0, tid };
-    ocrEdtCreate(&edt_loop, tmp_loop, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL,
+    /* Forward all GUIDs to loop via paramv. */
+    u64 param[LOOP_PARAMC] = {
+      0 /*iter*/, tid,
+      paramv[1] /*evt_finalize_my*/,
+      paramv[2] /*tmp_copy*/,
+      paramv[3] /*tmp_scale*/,
+      paramv[4] /*tmp_add*/,
+      paramv[5] /*tmp_triad*/,
+      paramv[6] /*tmp_loop*/
+    };
+    ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL,
                  EDT_PROP_FINISH, &edtHint, &output_evt);
 
     ocrAddDependence(db_a, edt_loop, 0, DB_MODE_RW);
@@ -309,19 +355,21 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
     preamble();
 
-    ocrGuid_t tmp_mainLet;
-    ocrGuid_t edt_mainLet;
+    ocrGuid_t tmp_mainLet, tmp_loop, tmp_copy, tmp_scale, tmp_add, tmp_triad;
+    ocrGuid_t tmp_finalize;
+    ocrGuid_t edt_finalize, edt_mainLet;
     u64 i;
 
-    ocrEdtTemplateCreate(&tmp_mainLet, mainLet, 1, 0);
-
-    ocrEdtTemplateCreate(&tmp_loop, loop, 2, 3);
-    ocrEdtTemplateCreate(&tmp_copy, copy, 2, 2);
-    ocrEdtTemplateCreate(&tmp_scale, scale, 2, 2);
-    ocrEdtTemplateCreate(&tmp_add, add, 2, 3);
-    ocrEdtTemplateCreate(&tmp_triad, triad, 2, 3);
-
+    /* Create the templates once on this rank and forward their GUIDs
+     * to children through paramv so cross-rank EDTs can use the same
+     * GUIDs without per-rank template recreation. */
+    ocrEdtTemplateCreate(&tmp_mainLet, mainLet, MAINLET_PARAMC, 0);
     ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, NUM_THREADS);
+    ocrEdtTemplateCreate(&tmp_copy,  copy,  2, 2);
+    ocrEdtTemplateCreate(&tmp_scale, scale, 2, 2);
+    ocrEdtTemplateCreate(&tmp_add,   add,   2, 3);
+    ocrEdtTemplateCreate(&tmp_triad, triad, 2, 3);
+    ocrEdtTemplateCreate(&tmp_loop,  loop,  LOOP_PARAMC, 3);
     ocrEdtCreate(&edt_finalize, tmp_finalize, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
 
     for(i = 0; i<NUM_THREADS; i++) {
@@ -329,9 +377,21 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
         ocrHint_t edtHint;
         getAffinityHints(i, &edtHint, NULL);
 
-        ocrEventCreate(&evt_finalize[i], OCR_EVENT_ONCE_T, true);
-        ocrAddDependence(evt_finalize[i], edt_finalize, i, DB_MODE_RO);
-        ocrEdtCreate(&edt_mainLet, tmp_mainLet, EDT_PARAM_DEF, &i, EDT_PARAM_DEF, NULL,
+        ocrGuid_t evt_finalize_i;
+        ocrEventCreate(&evt_finalize_i, OCR_EVENT_ONCE_T, true);
+        ocrAddDependence(evt_finalize_i, edt_finalize, i, DB_MODE_RO);
+
+        u64 mainLet_param[MAINLET_PARAMC] = {
+          i /*tid*/,
+          (u64)evt_finalize_i.guid,
+          (u64)tmp_copy.guid,
+          (u64)tmp_scale.guid,
+          (u64)tmp_add.guid,
+          (u64)tmp_triad.guid,
+          (u64)tmp_loop.guid
+        };
+        ocrEdtCreate(&edt_mainLet, tmp_mainLet, EDT_PARAM_DEF, mainLet_param,
+                     EDT_PARAM_DEF, NULL,
                      PROPERTIES, &edtHint, NULL);
     }
 

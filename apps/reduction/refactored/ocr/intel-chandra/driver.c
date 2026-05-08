@@ -74,13 +74,21 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( DBK_reductionEventsH, TS_globalInit.EDT, _idep++, DB_MODE_RW );
 
     TS_globalCompute.FNC = FNC_globalCompute;
-    ocrEdtTemplateCreate( &TS_globalCompute.TML, TS_globalCompute.FNC, 1, 2 );
+    ocrEdtTemplateCreate( &TS_globalCompute.TML, TS_globalCompute.FNC, 2, 2 );
+
+    /* A FINISH EDT's output event fires on completion and carries no data, so
+     * the reduction result must reach the consumer through the user-visible
+     * sticky event; paramv[1] carries that event's GUID into the body. */
+    u64 globalCompute_paramv[2];
+    globalCompute_paramv[0] = N;
+    globalCompute_paramv[1] = (u64)(TS_globalCompute_OET.guid);
 
     ocrEdtCreate( &TS_globalCompute.EDT, TS_globalCompute.TML,
-                  EDT_PARAM_DEF, &N, EDT_PARAM_DEF, NULL,
+                  EDT_PARAM_DEF, globalCompute_paramv, EDT_PARAM_DEF, NULL,
                   EDT_PROP_FINISH, NULL_HINT, &TS_globalCompute.OET );
 
-    ocrAddDependence( TS_globalCompute.OET, TS_globalCompute_OET, 0, DB_MODE_RO );
+    /* No OE relay: the reduction-tree root satisfies TS_globalCompute_OET
+     * from inside FNC_globalCompute. */
 
     _idep = 0;
     ocrAddDependence( DBK_reductionEventsH, TS_globalCompute.EDT, _idep++, DB_MODE_RO );
@@ -132,6 +140,8 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
     ocrGuid_t *PTR_reductionEventsH = depv[0].ptr;
 
     u64 N = paramv[0];
+    /* paramv[1]: the user-visible sticky event to wire the tree root to. */
+    ocrGuid_t TS_globalCompute_OET_local = (ocrGuid_t){.guid = (intptr_t)paramv[1]};
 
     u64 compute_paramv[2];
 
@@ -160,7 +170,11 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
         ocrAddDependence( DBK_reduction_in, TS_rankPartialSumCompute.EDT, _idep++, DB_MODE_RW );
     }
 
-    return PTR_reductionEventsH[N];
+    /* Adding a dep on a sticky event is safe even after it has fired: the
+     * stored value propagates to the new waiter. */
+    ocrAddDependence( PTR_reductionEventsH[N], TS_globalCompute_OET_local, 0, DB_MODE_RO );
+
+    return NULL_GUID;
 }
 
 ocrGuid_t FNC_rankPartialSumCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
