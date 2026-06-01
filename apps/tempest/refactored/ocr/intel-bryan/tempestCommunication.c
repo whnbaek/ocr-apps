@@ -37,7 +37,7 @@
 typedef struct{
     u32 panelNum;
     u64 patchRange;
-    ocrGuid_t guidRanges[8][2];
+    ocrGuid_t guidRanges[8];
 }panel_t;
 
 typedef struct{
@@ -45,10 +45,13 @@ typedef struct{
     u64 k;
     ocrGuid_t patchTPT;
     s64 n, e, s, w, ne, se, sw, nw;
-    u32 toggle;
     u64 timestep;
-    ocrGuid_t sendGUIDs[8][2];
-    ocrGuid_t rcvGUIDs[8][2];
+    /* Persistent per-direction halo channels: recvChannels[dir] receives from
+     * the neighbor in direction dir; sendChannels[dir] is that neighbor's recv
+     * channel, learned once at init.  Timestep generations stream through the
+     * persistent FIFOs, so no per-generation event create/destroy is needed. */
+    ocrGuid_t recvChannels[8];
+    ocrGuid_t sendChannels[8];
 }patch_t;
 
 typedef struct{
@@ -515,18 +518,6 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     s64 * dirptr = &patchPTR->n;
 
-    if( patchPTR->timestep > 0 ){
-        //ocrPrintf("cleaning events\n");
-        for( i = 0; i < 8; i++ )
-        {
-            if( dirptr[i] > -1 ){
-               // ocrPrintf("EVENT TO DESTROY\n");//
-                ocrEventDestroy( patchPTR->rcvGUIDs[i][patchPTR->toggle^1] );
-            }
-        }
-        //ocrPrintf("done cleaning events\n");
-    }
-
     for(i = 0; i < 8; i++){
         if( dirptr[i] > -1 ) neighborPTRs[i] = depv[i].ptr;
         else neighborPTRs[i] = NULL;
@@ -560,39 +551,26 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         return NULL_GUID;
     }
 
-    u32 tog = patchPTR->toggle;
-
     ocrEdtCreate( &edtGUID, patchPTR->patchTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
                                                 NULL, EDT_PROP_NONE, NULL_HINT, NULL );
 
-
-    patchPTR->toggle = patchPTR->toggle ^ 1;
-
-    //set all of the rcv events.
-
-
-
-
-    for( i = 0; i < 8; i++ ){       //create and set those deps!
-       if(!ocrGuidIsNull(patchPTR->rcvGUIDs[i][tog])) {
-            ocrEventCreate( &patchPTR->rcvGUIDs[i][tog], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
-            ocrAddDependence( patchPTR->rcvGUIDs[i][tog], edtGUID, i, DB_MODE_RW );
+    /* Wire the next generation's halo receives onto the persistent channels;
+     * each dependence pops one generation from the FIFO. */
+    for( i = 0; i < 8; i++ ){
+        if( dirptr[i] > -1 ){
+            ocrAddDependence( patchPTR->recvChannels[i], edtGUID, i, DB_MODE_RW );
         }else{
             ocrAddDependence( NULL_GUID, edtGUID, i, DB_MODE_RW );
         }
-
     }
 
-
+    /* Forward each received block to the matching neighbor by satisfying its
+     * recv channel; one satisfy enqueues one generation. */
     for( i = 0; i < 8; i++ ){
         if( neighborPTRs[i] != NULL ){
-            ocrEventCreate( &patchPTR->sendGUIDs[i][tog], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
-
-            if( neighborPTRs[i] == NULL ) ocrPrintf("DANGER, WILL ROBINSON\n");
-
             neighborPTRs[i]->patchNum = patchPTR->patchNum;
             ocrDbRelease( neighborGUIDs[i] );
-            ocrEventSatisfy( patchPTR->sendGUIDs[i][tog], neighborGUIDs[i] );
+            ocrEventSatisfy( patchPTR->sendChannels[i], neighborGUIDs[i] );
         }
     }
 
@@ -615,6 +593,47 @@ u32 findNeighborRelation( u64 patchNum, u64 neighborPatchNum, u64 k )
     }
 
     return relation;
+}
+
+
+ocrGuid_t channelSetupEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
+{
+    /*
+     * Second half of the channel handshake.
+     * depv[0..7]: neighbors' published recv-channel GUIDs (my send targets;
+     *             NULL_GUID where there is no neighbor); depv[8]: patch block.
+     * Record the send channels, then launch the first patchEdt with the
+     * timestep-0 seed halo blocks.
+     */
+    patch_t * patchPTR = depv[8].ptr;
+    ocrGuid_t patchGUID = depv[8].guid;
+    s64 *dirptr = &patchPTR->n;
+    u64 i;
+
+    for( i = 0; i < 8; i++ ){
+        if( dirptr[i] > -1 && depv[i].ptr != NULL ){
+            patchPTR->sendChannels[i] = *((ocrGuid_t *)depv[i].ptr);
+        }else{
+            patchPTR->sendChannels[i] = NULL_GUID;
+        }
+    }
+
+    ocrGuid_t patchEdtGUID;
+    ocrEdtCreate( &patchEdtGUID, patchPTR->patchTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
+                  NULL, EDT_PROP_NONE, NULL_HINT, NULL );
+
+    ocrGuid_t dbGuid;
+    u64 *dummy;
+    for( i = 0; i < 8; i++ ){
+        ocrDbCreate( &dbGuid, (void **)&dummy, sizeof(nbData_t), 0, NULL_HINT, NO_ALLOC );
+        ocrDbRelease( dbGuid );
+        ocrAddDependence( dbGuid, patchEdtGUID, i, DB_MODE_RW );
+    }
+
+    ocrDbRelease( patchGUID );
+    ocrAddDependence( patchGUID, patchEdtGUID, 8, DB_MODE_RW );
+
+    return NULL_GUID;
 }
 
 
@@ -642,9 +661,7 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     patch_t * patchPTR = depv[1].ptr;
     ocrGuid_t patchGUID = depv[1].guid;
     /*-------- end unpack deps --------*/
-    ocrGuid_t patchEdtGUID;
     u64 i;
-    u64 patchNeighbors[8];
     u32 rel;
 
     patchPTR->k = panelPTR->patchRange;
@@ -663,91 +680,60 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     patchPTR->nw = findNeighborPatch( patchPTR->patchNum, patchPTR->k, NW );
     /*neighbors found*/
 
-    /*indexing occurs here.*/
+    /* One-time channel handshake over shared rendezvous slots
+     * ocrGuidFromIndex(guidRanges[r], q): I publish my recvChannels[dir] at
+     * (r = neighbor's relation back to me, q = neighbor's patchNum) and learn
+     * sendChannels[dir] from (r = dir, q = my patchNum).  The encodings are
+     * symmetric, so both endpoints agree on every slot. */
 
-    for( i = 0; i < 8; i++ )
-    {
-        //set the sends
-        ocrGuidFromIndex( &(patchPTR->sendGUIDs[i][0]), panelPTR->guidRanges[i][0], patchPTR->patchNum );
-        ocrGuidFromIndex( &(patchPTR->sendGUIDs[i][1]), panelPTR->guidRanges[i][1], patchPTR->patchNum );
-    }
+    s64 *dirptr = &patchPTR->n;
 
-
-    rel = findNeighborRelation( patchPTR->patchNum, patchPTR->n, patchPTR->k );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[N][0]), panelPTR->guidRanges[rel][0], patchPTR->n );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[N][1]), panelPTR->guidRanges[rel][1], patchPTR->n );
-
-    rel = findNeighborRelation( patchPTR->patchNum, patchPTR->e, patchPTR->k );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[E][0]), panelPTR->guidRanges[rel][0], patchPTR->e );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[E][1]), panelPTR->guidRanges[rel][1], patchPTR->e );
-
-    rel = findNeighborRelation( patchPTR->patchNum, patchPTR->s, patchPTR->k );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[S][0]), panelPTR->guidRanges[rel][0], patchPTR->s );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[S][1]), panelPTR->guidRanges[rel][1], patchPTR->s );
-
-    rel = findNeighborRelation( patchPTR->patchNum, patchPTR->w, patchPTR->k );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[W][0]), panelPTR->guidRanges[rel][0], patchPTR->w );
-    ocrGuidFromIndex( &(patchPTR->rcvGUIDs[W][1]), panelPTR->guidRanges[rel][1], patchPTR->w );
-
-    if( patchPTR->ne != -1 ){
-        rel = findNeighborRelation( patchPTR->patchNum, patchPTR->ne, patchPTR->k );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[NE][0]), panelPTR->guidRanges[rel][0], patchPTR->ne );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[NE][1]), panelPTR->guidRanges[rel][1], patchPTR->ne );
-    }else{
-        patchPTR->rcvGUIDs[NE][0] = NULL_GUID;
-        patchPTR->rcvGUIDs[NE][1] = NULL_GUID;
-    }
-
-    if( patchPTR->se != -1 ){
-        rel = findNeighborRelation( patchPTR->patchNum, patchPTR->se, patchPTR->k );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[SE][0]), panelPTR->guidRanges[rel][0], patchPTR->se );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[SE][1]), panelPTR->guidRanges[rel][1], patchPTR->se );
-    }else{
-        patchPTR->rcvGUIDs[SE][0] = NULL_GUID;
-        patchPTR->rcvGUIDs[SE][1] = NULL_GUID;
-    }
-
-    if( patchPTR->sw != -1 ){
-        rel = findNeighborRelation( patchPTR->patchNum, patchPTR->sw, patchPTR->k );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[SW][0]), panelPTR->guidRanges[rel][0], patchPTR->sw );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[SW][1]), panelPTR->guidRanges[rel][1], patchPTR->sw );
-    }else{
-        patchPTR->rcvGUIDs[SW][0] = NULL_GUID;
-        patchPTR->rcvGUIDs[SW][1] = NULL_GUID;
-    }
-
-    if( patchPTR->nw != -1 ){
-        rel = findNeighborRelation( patchPTR->patchNum, patchPTR->nw, patchPTR->k );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[NW][0]), panelPTR->guidRanges[rel][0], patchPTR->nw );
-        ocrGuidFromIndex( &(patchPTR->rcvGUIDs[NW][1]), panelPTR->guidRanges[rel][1], patchPTR->nw );
-    }else{
-        patchPTR->rcvGUIDs[NW][0] = NULL_GUID;
-        patchPTR->rcvGUIDs[NW][1] = NULL_GUID;
-    }
-
-    /*end indexing*/
-
-    patchPTR->toggle = 0;
-    patchPTR->timestep = 0;
+    ocrEventParams_t chParams;
+    chParams.EVENT_CHANNEL.maxGen = 2;
+    chParams.EVENT_CHANNEL.nbSat  = 1;
+    chParams.EVENT_CHANNEL.nbDeps = 1;
 
     ocrEdtTemplateCreate( &patchPTR->patchTPT, patchEdt, 0, 9 );
 
-    ocrEdtCreate( &patchEdtGUID, patchPTR->patchTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
-        NULL, EDT_PROP_NONE, NULL_HINT, NULL );
-
-
-    ocrGuid_t dbGuid;
-    u64 *dummy;
-
+    ocrGuid_t setupTPT, setupEdtGUID;
+    ocrEdtTemplateCreate( &setupTPT, channelSetupEdt, 0, 9 );
+    ocrEdtCreate( &setupEdtGUID, setupTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
+                  NULL, EDT_PROP_NONE, NULL_HINT, NULL );
 
     for( i = 0; i < 8; i++ ){
-        ocrDbCreate( &dbGuid, (void **)&dummy, sizeof(nbData_t), 0, NULL_HINT, NO_ALLOC );
-        ocrDbRelease( dbGuid );
-        ocrAddDependence( dbGuid, patchEdtGUID, i, DB_MODE_RW );
+        if( dirptr[i] > -1 ){
+            /* create the channel on which I receive from this neighbor */
+            ocrEventCreateParams( &(patchPTR->recvChannels[i]), OCR_EVENT_CHANNEL_T, false, &chParams );
+
+            /* publish recvChannels[i] at the slot the neighbor reads */
+            rel = findNeighborRelation( patchPTR->patchNum, dirptr[i], patchPTR->k );
+            ocrGuid_t pubSticky;
+            ocrGuidFromIndex( &pubSticky, panelPTR->guidRanges[rel], dirptr[i] );
+            ocrEventCreate( &pubSticky, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+
+            ocrGuid_t chanDb;
+            ocrGuid_t *chanSlot;
+            ocrDbCreate( &chanDb, (void **)&chanSlot, sizeof(ocrGuid_t), 0, NULL_HINT, NO_ALLOC );
+            *chanSlot = patchPTR->recvChannels[i];
+            ocrDbRelease( chanDb );
+            ocrEventSatisfy( pubSticky, chanDb );
+
+            /* learn the neighbor's recv channel (my send target in dir i) */
+            ocrGuid_t learnSticky;
+            ocrGuidFromIndex( &learnSticky, panelPTR->guidRanges[i], patchPTR->patchNum );
+            ocrEventCreate( &learnSticky, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+            ocrAddDependence( learnSticky, setupEdtGUID, i, DB_MODE_RO );
+        }else{
+            patchPTR->recvChannels[i] = NULL_GUID;
+            patchPTR->sendChannels[i] = NULL_GUID;
+            ocrAddDependence( NULL_GUID, setupEdtGUID, i, DB_MODE_RO );
+        }
     }
 
+    patchPTR->timestep = 0;
+
     ocrDbRelease( patchGUID );
-    ocrAddDependence( patchGUID, patchEdtGUID, 8, DB_MODE_RW );
+    ocrAddDependence( patchGUID, setupEdtGUID, 8, DB_MODE_RW );
 
     return NULL_GUID;
 }
@@ -818,15 +804,17 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     panel_t * panelPTR[6];
     ocrGuid_t panelInitGUID, panelInitTPT;
     u32 i, j;
-    ocrGuid_t ranges[8][2];
+    ocrGuid_t ranges[8];
     ocrEdtTemplateCreate( &panelInitTPT, panelInitEdt, 0, 1 );
     u64 k = paramv[0];
 
 
+    /* One labeled-sticky range per direction; used only for the one-time
+     * channel-GUID handshake (no toggle buffering needed -- the persistent
+     * channels carry every timestep generation). */
     for( i = 0; i < 8; i++ )
     {
-        ocrGuidRangeCreate( &(ranges[i][0]), 6 * (k * k), GUID_USER_EVENT_STICKY );
-        ocrGuidRangeCreate( &(ranges[i][1]), 6 * (k * k), GUID_USER_EVENT_STICKY );
+        ocrGuidRangeCreate( &(ranges[i]), 6 * (k * k), GUID_USER_EVENT_STICKY );
     }
     for( i = 0; i < 6; i++ )
     {
@@ -837,8 +825,7 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
         for( j = 0; j < 8; j++ )
         {
-            panelPTR[i]->guidRanges[j][0] = ranges[j][0];
-            panelPTR[i]->guidRanges[j][1] = ranges[j][1];
+            panelPTR[i]->guidRanges[j] = ranges[j];
         }
 
         panelPTR[i]->patchRange = paramv[0];

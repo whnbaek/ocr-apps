@@ -395,9 +395,11 @@ ocrGuid_t FNC_rankInitSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
         ocrSetHintValue( &HNT_db, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(currentAffinity) );
 #endif
 
+        // The creator never touches this block's payload — DB_PROP_NO_ACQUIRE
+        // creates it unowned at the hinted home, where the consumer acquires it.
         rankH_t *PTR_rankH;
         ocrDbCreate( &(PTR_rankHs[i]), (void **) &PTR_rankH, sizeof(rankH_t),
-                     DB_PROP_NONE, &HNT_db, NO_ALLOC );
+                     DB_PROP_NO_ACQUIRE, &HNT_db, NO_ALLOC );
 
         init_paramv[0] = (u64) i;
         ocrEdtCreate( &TS_rankInit.EDT, TS_rankInit.TML,
