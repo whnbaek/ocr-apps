@@ -601,6 +601,15 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 
 	}
 
+	// A datablock's metadata reaches its home only on release; release every
+	// tile so remote EDTs can acquire them by labeled GUID.
+	for(int k = 0; k < num_labels; k++)
+	{
+		ocrGuid_t g;
+		ocrGuidFromIndex(&g, t_labels, k); ocrDbRelease(g);
+		ocrGuidFromIndex(&g, s_labels, k); ocrDbRelease(g);
+	}
+
 	long true_value;
 	#ifdef CHECK_RESULTS
 

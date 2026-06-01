@@ -126,12 +126,13 @@ u8 init_simulation( command_t* cmd_p, simulationH_t* simH_p, mdtimer_t* timer_p 
         ocrSetHintValue( &HNT_db, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(PDaffinityGuid) );
 #endif
     void* ptr;
-    //ocrDbCreate( PTR_linkCellGuidsH+b, &ptr, sizeof(linkCellH_t), DB_PROP_NO_ACQUIRE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC );
-    //ocrDbCreate( PTR_atomDataGuidsH+b, &ptr, sizeof(atomData_t), DB_PROP_NO_ACQUIRE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC );
+    // The creator never writes these blocks — DB_PROP_NO_ACQUIRE creates them
+    // at their home (no acquire taken, hence no release) before the GUIDs are
+    // handed off.
     ocrDbCreate( PTR_linkCellGuidsH+b, &ptr, sizeof(linkCellH_t),
-                    DB_PROP_NONE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC ); //TODO:DB_PROP_NO_ACQUIRE results in a hang with affinity hints
+                    DB_PROP_NO_ACQUIRE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC );
     ocrDbCreate( PTR_atomDataGuidsH+b, &ptr, sizeof(atomData_t),
-                    DB_PROP_NONE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC );
+                    DB_PROP_NO_ACQUIRE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC );
   }
 
   ocrDbRelease( simH_p->boxDataStH.DBK_linkCellGuidsH );
@@ -567,8 +568,9 @@ ocrGuid_t EDT_init_fork( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
         PDaffinityGuid = PTR_affinityGuids[pd];
         ocrSetHintValue( &HNT_db, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(PDaffinityGuid) );
 #endif
-    //ocrDbCreate( PTR_scheduleGuids+b, &PTR_linkCell_scheduleGuids, sizeof(ocrGuid_t)*26, DB_PROP_NO_ACQUIRE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC ); //TODO: DB_PROP_NO_ACQUIRE issue
-    ocrDbCreate( PTR_scheduleGuids+b, &PTR_linkCell_scheduleGuids, sizeof(ocrGuid_t)*26, DB_PROP_NONE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC );
+    // The creator never writes this block — DB_PROP_NO_ACQUIRE creates it at
+    // its home (no acquire, hence no release) before the GUID is handed off.
+    ocrDbCreate( PTR_scheduleGuids+b, &PTR_linkCell_scheduleGuids, sizeof(ocrGuid_t)*26, DB_PROP_NO_ACQUIRE, PICK_1_1(&HNT_db,PDaffinityGuid), NO_ALLOC );
   }
 
   reductionH_t* reductionH_p;
