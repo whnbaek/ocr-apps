@@ -30,6 +30,10 @@ ocrGuid_t work(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     u32 i, j;
     u8 *ptr = depv[0].ptr;
 
+    /* ocrDbCreate does not zero the payload; the checksum below needs a
+     * known starting value. */
+    for(j = 0; j<DBSIZE; j++) ptr[j] = 0;
+
     for(i = 0; i<ITER; i++) {
         for(j = 0; j<DBSIZE; j++) {
             ptr[j]++ ;
