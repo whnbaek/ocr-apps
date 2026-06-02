@@ -98,6 +98,11 @@ ocrGuid_t fftVerifyEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
             break;
         }
     }
+    double fft_checksum = 0.0;
+    for(i=0;i<N;i++) {
+        fft_checksum += fabs((double)X_real_other[i]) + fabs((double)X_imag_other[i]);
+    }
+    ocrPrintf("FFT checksum = %f\n", fft_checksum);
     if(depc > 4) {
         ocrDbDestroy(depv[3].guid);
         ocrDbDestroy(depv[4].guid);

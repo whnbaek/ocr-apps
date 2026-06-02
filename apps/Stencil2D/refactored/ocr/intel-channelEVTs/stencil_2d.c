@@ -556,6 +556,8 @@ _OCR_TASK_FNC_( FNC_summary )
 #if FULL_APP==1
     PTR_norm[0] /= f_active_points;
 
+    ocrPrintf( "Computed L1 norm = %.12f\n", PTR_norm[0] );
+
     if( ABS( PTR_norm[0] - reference_norm ) > EPSILON )
         ocrPrintf( "ERROR: L1 norm = %f, Reference L1 norm = %f\n", PTR_norm[0], reference_norm);
     else

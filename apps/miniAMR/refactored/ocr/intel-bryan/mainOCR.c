@@ -252,6 +252,8 @@ ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     ocrPrintf("BLOCK %ld finished.\n", PRM_block->id);
     fflush(0);
+    ocrPrintf("block %ld checksum: %.17g\n", PRM_block->id, PRM_block->data);
+    fflush(0);
 
     ocrDbDestroy( depv[0].guid );
     return NULL_GUID;

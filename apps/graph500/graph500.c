@@ -1815,7 +1815,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	gettimeofday(pt0, 0);
 	u64 t0sec = pt0->tv_sec;
 	u64 t0usec = pt0->tv_usec;
-	u64 SEED = (u64)pt0->tv_sec;
+	u64 SEED = UINT64_C(123456789); // fixed seed: deterministic graph for reproducible cross-runtime/cross-rank correctness compare
 	ocrDbRelease(timeDBK);
 
 	ocrGuid_t paramDBK;

@@ -104,7 +104,8 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
 
-    srand(time(NULL));
+    // Fixed seed: the slow-Faddeeva counters serve as a correctness checksum.
+    srand(42);
 
     Inputs in = PTR_rankH->globalParamH.in;
 
@@ -518,8 +519,8 @@ ocrGuid_t lookUpKernelEdt( EDT_ARGS )
         ocrDBK_t DBK_seed;
         u64 *seed;
         ocrDbCreate( &DBK_seed, (void**) &seed, sizeof(u64), 0, NULL_HINT, NO_ALLOC );
-        *seed = time(NULL)+1;
-        *seed += tid;
+        // Deterministic per-thread seed; Park-Miller requires a nonzero seed.
+        *seed = 42 + 1 + tid;
         ocrDbRelease( DBK_seed );
 
         ocrDBK_t DBK_xs;
@@ -665,6 +666,10 @@ ocrGuid_t summaryEdt( EDT_ARGS )
 
         // Print / Save Results and Exit
         print_results( *PTR_in, mype, *runtime, nprocs, *g_abrarov, *g_alls);
+
+        // The counters are a pure function of the fixed seeds: a deterministic
+        // correctness checksum.
+        ocrPrintf("RS_CHECKSUM: %"PRIu64" %"PRIu64"\n", *g_abrarov, *g_alls);
     }
 
     //Destroy DBK, events, etc.

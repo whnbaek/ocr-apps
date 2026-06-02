@@ -1933,13 +1933,15 @@ ocrGuid_t FNC_summary(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 #if FULL_APP==1
     PTR_norm[0] /= f_active_points;
 
+    ocrPrintf( "L1 norm check: %.10f\n", PTR_norm[0] );
+
     if( ABS( PTR_norm[0] - reference_norm ) > EPSILON )
     {
         ocrPrintf( "ERROR: L1 norm = %f, Reference L1 norm = %f\n", PTR_norm[0], reference_norm);
     }
     else
     {
-        DEBUG_PRINTF(( "SUCCESS: L1 norm = %f, Reference L1 norm = %f\n", PTR_norm[0], reference_norm));
+        ocrPrintf( "SUCCESS: L1 norm = %f, Reference L1 norm = %f\n", PTR_norm[0], reference_norm);
         ocrPrintf( "Solution validates\n" );
     }
 #endif

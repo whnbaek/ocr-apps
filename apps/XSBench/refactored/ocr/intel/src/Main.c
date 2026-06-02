@@ -434,6 +434,18 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     qsort( PTR_uEnergy, n_isotopes*n_gridpoints, sizeof(double), cmp );
 
+    // The kernel discards its lookup results, so the deterministic energy grid
+    // is the only observable answer; summing its IEEE-754 bit patterns is
+    // bit-exact.  This does NOT verify the lookup arithmetic itself.
+    unsigned long long grid_cksum = 0;
+    for( i = 0; i < n_isotopes*n_gridpoints; i++ )
+    {
+        unsigned long long bits;
+        memcpy( &bits, &PTR_uEnergy[i], sizeof(bits) );
+        grid_cksum += bits;
+    }
+    ocrPrintf("XSBench grid checksum: %llu\n", grid_cksum);
+
     int* PTR_xs_indices;
 
     for( i = 0; i < n_gridpoints*n_isotopes; i++ )

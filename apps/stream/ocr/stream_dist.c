@@ -200,6 +200,8 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
       }
   }
 
+  PRINTF("STREAM checksum: a[0] = %.12f\n", ((double *)depv[0].ptr)[0]);
+
   if (errCount == 0)
       PRINTF("Solution Validates: all %d elements match expected value\n",
              PER_THREAD_SIZE * NUM_THREADS);

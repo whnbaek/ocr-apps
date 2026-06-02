@@ -335,6 +335,9 @@ ocrGuid_t shutDownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     long end = cilk_getticks();
     ocrPrintf("runtime: %f\n", cilk_ticks_to_seconds(end - (long)paramv[2]));
 
+    // Bottom-right cell of the last score tile is the final LCS length.
+    ocrPrintf("LCS length: %d\n", score[len * len - 1]);
+
 #ifdef CHECK_RESULTS
     if (score[len * len - 1] != (int)paramv[1])
         printf("Result did not match! :(\n");
@@ -352,15 +355,16 @@ ocrGuid_t randInitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     int* Ti = (int*)depv[0].ptr;
     int len = (int)paramv[0];
     int base = (int)paramv[1];
+    // Seed a reentrant generator from the tile index so each tile's data is
+    // reproducible regardless of the concurrent init EDTs' order or location.
+    unsigned int seed = (unsigned int)paramv[2] * 2654435761u + 12345u;
     if (len == base + 1) {
         Ti[0] = 32;
-        //ocrPrintf("%d ", Ti[0]);
         Ti++;
     }
 
     for (int l = 0; l < len; l++) {
-        Ti[l] = rand() % 4 + 'A'; // Initialize T
-        //ocrPrintf("%d ", Ti[l]);
+        Ti[l] = rand_r(&seed) % 4 + 'A'; // Initialize T
     }
     return NULL_GUID;
 }
@@ -434,11 +438,14 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     //Now initialize it
     //Create the task
     ocrGuid_t randInitTmp;
-    ocrEdtTemplateCreate(&randInitTmp, randInitEdt, 2, 1);
+    ocrEdtTemplateCreate(&randInitTmp, randInitEdt, 3, 1);
 
-    u64 string_param[2];
+    // string_param[2] is a per-tile seed index so each tile is filled
+    // deterministically regardless of the concurrent init EDTs' run order.
+    u64 string_param[3];
     string_param[0] = block_size;
     string_param[1] = base;
+    string_param[2] = 0;            // T tile 0
 
     ocrGuid_t randInitTEdt;
     ocrEdtCreate(&randInitTEdt,
@@ -475,6 +482,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         ocrGuid_t randInitTEdt;
 
         string_param[0] = block_size;
+        string_param[2] = j;            // T tile j
 
         ocrEdtCreate(&randInitTEdt,
             randInitTmp,
@@ -508,12 +516,11 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     assert(S[0] != NULL);
     // Now initialize it
-    // TODO: Move this part to a initializer EDT.
-    srand(84388311);
 
     ocrGuid_t randInitSEdt;
 
     string_param[0] = block_size;
+    string_param[2] = num_labels;   // S tile 0 (seed range distinct from T)
 
     ocrEdtCreate(&randInitSEdt,
         randInitTmp,
@@ -546,6 +553,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         // Now initialize it
 
         string_param[0] = block_size;
+        string_param[2] = num_labels + i;   // S tile i
 
         ocrGuid_t randInitSEdt;
 

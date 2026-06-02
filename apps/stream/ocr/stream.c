@@ -168,6 +168,8 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
       PRINTF("Solution FAILED Validation: %llu errors in a[]\n",
              (unsigned long long)errCount);
 
+  PRINTF("STREAM_RESULT a[0] = %.15e\n", ((double *)depv[0].ptr)[0]);
+
   printTimes();
   ocrShutdown();
   return NULL_GUID;

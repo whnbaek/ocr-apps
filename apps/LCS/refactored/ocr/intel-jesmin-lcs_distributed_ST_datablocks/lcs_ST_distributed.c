@@ -333,6 +333,8 @@ ocrGuid_t shutDownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	long end = cilk_getticks();
 	ocrPrintf("runtime: %f\n",cilk_ticks_to_seconds(end-(long)paramv[2]));
 
+	ocrPrintf("LCS length: %ld\n", score[paramv[0]]);
+
 	assert(true_value==score[paramv[0]]);
 
     ocrPrintf("\nShutting down OCR runtime\n");

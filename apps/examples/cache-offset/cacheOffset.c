@@ -166,6 +166,12 @@ int testRealCacheOffset(TestResults *results) {
     if (mem1Longs[14] == mem2Longs[14])
         ocrPrintf("THIS ERROR WILL NEVER OCCCUR!\n");
 
+    // Correctness checksum: mem1Longs[i] == 2*i for all i.
+    u64 chk = 0;
+    for (i=0; i<end; i++)
+        chk += mem1Longs[i];
+    ocrPrintf("CACHE_OFFSET_CHK %lu\n", chk);
+
     results->numIterations = loopEnd;
     results->timeNs = averageTime;
     results->numRejects = numBads;

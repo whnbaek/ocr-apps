@@ -329,6 +329,8 @@ ocrGuid_t shutDownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 	assert(true_value==score[paramv[0]]);
 
+	ocrPrintf("LCS length: %ld\n", (long)score[paramv[0]]);
+
     ocrPrintf("\nShutting down OCR runtime\n");
 
 	ocrShutdown(); // This is the last EDT to execute, terminate
