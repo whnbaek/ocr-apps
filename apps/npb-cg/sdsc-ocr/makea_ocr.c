@@ -99,6 +99,12 @@ int makea(classdb_t* class, ocrGuid_t* a)
       u32 b, j, offset=0;
       for(b=0; b<class->blk; ++b)
         offset += rows[i][b];
+      { /* the fill pass below accumulates with += into the value slots, so
+           they must start at zero; the datablock memory is uninitialized */
+        double* vals = (double*)(rows[i]+even);
+        for(j=0; j<offset; ++j)
+          vals[j] = 0;
+      }
       offset += rows[i][class->blk];
       for(j=rows[i][class->blk]; j<offset; ++j)
         rows[i][j] = NEGATIVE;

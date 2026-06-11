@@ -233,6 +233,7 @@ realMain launches the GS initialization
 }
 ocrGuid_t wrapupEdt(){
     ocrShutdown();
+    return NULL_GUID;
     }
 ocrGuid_t mainEdt(){
 /*

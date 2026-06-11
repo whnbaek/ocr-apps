@@ -112,6 +112,7 @@ ocrGuid_t wrapupEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
     ocrPrintf("startup time=%f (s) elapsed time=%f (s)\n", initElapsed, elapsed);
     print_throughput("Reduction", PRM(wrapup,nbInstances), elapsed);
     ocrShutdown();
+    return NULL_GUID;
 }
 
 

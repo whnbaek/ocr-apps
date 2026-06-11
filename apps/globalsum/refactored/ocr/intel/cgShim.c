@@ -213,6 +213,7 @@ before launching the next compute phase
 //launch cgTask by satisfying the last dependency
     ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(dest, depv[0].guid);
+    return NULL_GUID;
 }
 
 ocrGuid_t realMainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
@@ -247,6 +248,7 @@ realMain launches the GS initialization
 
 ocrGuid_t wrapupEdt(){
     ocrShutdown();
+    return NULL_GUID;
     }
 ocrGuid_t mainEdt(){
 /*

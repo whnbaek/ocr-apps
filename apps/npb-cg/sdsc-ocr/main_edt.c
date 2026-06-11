@@ -143,6 +143,9 @@ ocrGuid_t loop_bottom_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     if(++paramv[0] > class->niter) {
         *(double*)depv[5].ptr = zeta;
+        /* Release before wiring the consumer so it cannot acquire a stale copy. */
+        ocrDbRelease(depv[5].guid);
+        ocrDbRelease(depv[1].guid);
         ocrGuid_t tmp,edt;
         ocrEdtTemplateCreate(&tmp, tail_edt, 0, 3);
         ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, NULL);

@@ -125,6 +125,7 @@ typedef struct {
 ocrGuid_t wrapupEdt( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrPrintf("SUCCESS - Shutting down OCR\n");
     ocrShutdown();
+    return NULL_GUID;
 }
 
 typedef struct {

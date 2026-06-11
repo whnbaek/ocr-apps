@@ -103,7 +103,9 @@ void update(u64 n, ocrGuid_t na, ocrGuid_t p, ocrGuid_t q, ocrGuid_t r, ocrGuid_
     ocrEdtTemplateCreate(&tmp,update_edt,2,7);
     ocrEdtCreate(&de,tmp,2,paramv,7,NULL,0,NULL_HINT,po);
     ocrAddDependence(na,de,0,DB_MODE_CONST);
-    ocrAddDependence(p,de,1,DB_MODE_CONST);
+    /* update_edt writes p in-place (p = r + beta*p): a write to a CONST
+       acquisition is never written back, so acquire it RW. */
+    ocrAddDependence(p,de,1,DB_MODE_RW);
     ocrAddDependence(q,de,2,DB_MODE_CONST);
     ocrAddDependence(r,de,3,DB_MODE_RW);
     ocrAddDependence(rr,de,4,DB_MODE_RW);
