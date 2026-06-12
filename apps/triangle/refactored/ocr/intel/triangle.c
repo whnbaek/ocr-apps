@@ -17,6 +17,7 @@ See the README file for more information.
 
 #include <ocr.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #define BOARDSIZE 15
 #define MOVESIZE 36
 
@@ -53,6 +54,7 @@ paramv
 2: triangleTemplate
 3: incrementTemplate
 4: counterDBguid
+5: depth (number of moves to search; BOTTOM solves the full puzzle)
 depv
 0: oldboard
 1: board
@@ -67,6 +69,7 @@ look for legal moves
     ocrGuid_t triangleTemplate = (ocrGuid_t){.guid = paramv[2]};
     ocrGuid_t incrementTemplate = (ocrGuid_t){.guid = paramv[3]};
     ocrGuid_t counterDb = (ocrGuid_t){.guid = paramv[4]};
+    u64 depth = paramv[5];
     u64 * oldboard = depv[0].ptr;
     u64 * board = depv[1].ptr;
     u64 * pmoves = depv[2].ptr;
@@ -83,7 +86,7 @@ look for legal moves
         board[pmoves[3*oldmove+2]] = 1;
     }
 //printboard(board);
-    if(nummoves == BOTTOM){
+    if(nummoves == depth){
 //ocrPrintf("nummoves == 13 !!\n");
 /*
         if(*count==0) {
@@ -106,7 +109,7 @@ look for legal moves
         ocrAddDependence(counterDb, incrementEdt, 0, DB_MODE_EW);
         return NULL_GUID;
     } else {
-        u64 triangleParamv[5] = {nummoves, 0, triangleTemplate.guid, incrementTemplate.guid, counterDb.guid};
+        u64 triangleParamv[6] = {nummoves, 0, triangleTemplate.guid, incrementTemplate.guid, counterDb.guid, depth};
         ocrEventCreate(&once, OCR_EVENT_ONCE_T, true);
         for(i=0;i<MOVESIZE;i++) {
             if(board[pmoves[3*i]] && board[pmoves[3*i+1]] && (!board[pmoves[3*i+2]])) { //legal move
@@ -124,17 +127,25 @@ look for legal moves
     return NULL_GUID;
 }
 //print final count
+//paramv 0: depth.  The known answer (29760 solutions) only applies to the
+//full-depth puzzle; for a partial search the count is reported as-is.
 ocrGuid_t wrapupTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
+    u64 depth = paramv[0];
     u64 * count = depv[0].ptr;
-    if(*count == 29760) ocrPrintf("PASS  final count %d \n", *count);
-        else ocrPrintf("FAIL final count %d should be 29760 \n", *count);
+    if(depth == BOTTOM) {
+        if(*count == 29760) ocrPrintf("PASS  final count %d \n", *count);
+            else ocrPrintf("FAIL final count %d should be 29760 \n", *count);
+    } else {
+        ocrPrintf("final count %d at depth %d \n", *count, depth);
+    }
 
     ocrShutdown();
     return NULL_GUID;
 }
 ocrGuid_t realmainTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
 /*
-params: none
+params
+0: depth (number of moves to search)
 depv
 0: counter
 1: oldboard
@@ -146,6 +157,7 @@ create and launch wrapup
 launch triangleEdt
 */
 
+    u64 depth = paramv[0];
     u64 count = 0;
     u64 nummoves = 0;
     u64 i, j;
@@ -200,10 +212,10 @@ launch triangleEdt
 //initialize oldboard
     u64 btemp[BOARDSIZE] = {0,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
     for(i=0;i<BOARDSIZE;i++) oldboard[i] = btemp[i];
-    ocrEdtTemplateCreate(&triangleTemplate, triangleTask, 5, 3);
+    ocrEdtTemplateCreate(&triangleTemplate, triangleTask, 6, 3);
     ocrEdtTemplateCreate(&incrementTemplate, incrementTask, 0, 1);
     oldmove = -1;
-    u64 triangleParamv[5] = {nummoves, oldmove, triangleTemplate.guid, incrementTemplate.guid, depv[0].guid.guid};
+    u64 triangleParamv[6] = {nummoves, oldmove, triangleTemplate.guid, incrementTemplate.guid, depv[0].guid.guid, depth};
 //create triangleEdt as a FINISH Edt
     ocrEdtCreate(&triangleEdt, triangleTemplate, EDT_PARAM_DEF, triangleParamv,
                  EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_HINT,
@@ -211,8 +223,8 @@ launch triangleEdt
     // create and launch wrapup
     ocrGuid_t wrapupTemplate;
     ocrGuid_t wrapupEdt;
-    ocrEdtTemplateCreate(&wrapupTemplate, wrapupTask, 0, 2);
-    ocrEdtCreate(&wrapupEdt, wrapupTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
+    ocrEdtTemplateCreate(&wrapupTemplate, wrapupTask, 1, 2);
+    ocrEdtCreate(&wrapupEdt, wrapupTemplate, EDT_PARAM_DEF, &depth, EDT_PARAM_DEF,
                  NULL, EDT_PROP_NONE, NULL_HINT, NULL);
     ocrDbRelease(depv[0].guid);
     ocrAddDependence(depv[0].guid, wrapupEdt, 0, DB_MODE_CONST);
@@ -225,11 +237,15 @@ launch triangleEdt
     ocrAddDependence(depv[3].guid, triangleEdt, 2, DB_MODE_CONST);
     return NULL_GUID;
 }
-ocrGuid_t mainEdt(){
+ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
     u64 *counter;
     ocrGuid_t realmain, realmainTemplate, counterDb, boardDb, oldboardDb, pmovesDb;
     u64 *oldboard, *board, *pmoves;
-ocrPrintf("triangle puzzle BOTTOM %d \n", BOTTOM);
+//optional argument: search depth in moves; the full puzzle (BOTTOM moves) by default
+    u64 depth = BOTTOM;
+    if(ocrGetArgc(depv[0].ptr) > 1) depth = (u64) atoi(ocrGetArgv(depv[0].ptr, 1));
+    if(depth < 1 || depth > BOTTOM) depth = BOTTOM;
+ocrPrintf("triangle puzzle depth %d \n", depth);
 
 ocrDbCreate(&counterDb, (void **)&counter, sizeof(u64), 0, NULL_HINT, NO_ALLOC);
 ocrDbCreate(&oldboardDb, (void **)&oldboard, sizeof(u64) * BOARDSIZE, 0,
@@ -238,8 +254,8 @@ ocrDbCreate(&boardDb, (void **)&board, sizeof(u64) * BOARDSIZE, 0, NULL_HINT,
             NO_ALLOC);
 ocrDbCreate(&pmovesDb, (void **)&pmoves, sizeof(u64) * MOVESIZE * 3, 0,
             NULL_HINT, NO_ALLOC);
-ocrEdtTemplateCreate(&realmainTemplate, realmainTask, 0, 4);
-ocrEdtCreate(&realmain, realmainTemplate, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
+ocrEdtTemplateCreate(&realmainTemplate, realmainTask, 1, 4);
+ocrEdtCreate(&realmain, realmainTemplate, EDT_PARAM_DEF, &depth, EDT_PARAM_DEF,
              NULL, EDT_PROP_NONE, NULL_HINT, NULL);
 ocrAddDependence(counterDb, realmain, 0, DB_MODE_RW);
 ocrAddDependence(oldboardDb, realmain, 1, DB_MODE_RW);
