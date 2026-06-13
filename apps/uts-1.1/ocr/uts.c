@@ -1846,6 +1846,11 @@ T3WL="-t 0 -b 2000 -q 0.4999995 -m 2 -r 559"
 #error One of the above must be selected!
 #endif
 
+/* Use the real command line when one is provided; argument-less runs keep
+ * the built-in sample problem above. */
+  int __cmdline_argc = ( depc > 0 && depv[0].ptr != NULL ) ? (int) ocrGetArgc( depv[0].ptr ) : 0;
+  if ( __cmdline_argc > 1 ) argc = __cmdline_argc;
+
 TRACE0("mainEdt about to build ocrPtr_t (i.e datablock) version of argv");
 
   ocrPtr_t __ARGV;
@@ -1854,7 +1859,8 @@ TRACE0("mainEdt about to build ocrPtr_t (i.e datablock) version of argv");
   } else {
     ocrPtr_t *__argv = ocrPtrMalloc( &__ARGV, ((const int)argc)*sizeof(ocrPtr_t) );
     for( int i=0;i<((const int)argc);i++) {
-      strcpy( (char *)ocrPtrMalloc( &__argv[i], strlen( argv[i] ) + 1 ), argv[i] );
+      const char *__arg = ( __cmdline_argc > 1 ) ? ocrGetArgv( depv[0].ptr, i ) : argv[i];
+      strcpy( (char *)ocrPtrMalloc( &__argv[i], strlen( __arg ) + 1 ), __arg );
     }
   }
 
