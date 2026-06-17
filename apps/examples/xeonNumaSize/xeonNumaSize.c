@@ -698,9 +698,14 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrEdtTemplateCreate(&workerTemplate, workerEdt, 1, 1);
         for (wkr=0; wkr<clVals.numCpus; wkr++) {
             paramv[0] = wkr;
+            /* An EDT output event is ONCE (auto-destroyed on satisfaction), so
+             * every waiter must be linked before the producer becomes runnable:
+             * create the worker unsatisfied, link, then satisfy its slots. */
+            ocrGuid_t workerDep = UNINITIALIZED_GUID;
             ocrEdtCreate(&workerGuid, workerTemplate, 1, paramv,
-                         1, &dbGuids[wkr], EDT_PROP_NONE, NULL_HINT, &event);
+                         1, &workerDep, EDT_PROP_NONE, NULL_HINT, &event);
             ocrAddDependence(event, finishGuid, wkr, DB_MODE_NULL);
+            ocrAddDependence(dbGuids[wkr], workerGuid, 0, DB_DEFAULT_MODE);
         }
     }
 
