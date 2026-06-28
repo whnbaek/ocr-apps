@@ -511,6 +511,11 @@ ocrGuid_t realMainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     ocrDbCreate( &DBKArgs, (void **)&params, sizeof( int ) * 35, DB_PROP_NONE, NULL_HINT, NO_ALLOC);
     ocrDbCreate( &DBKmyRange, (void **)&rStruct, sizeof( range_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
+    /* DBKObjects is created only when --num_objects is given; NULL_GUID gives
+       the no-objects case a well-defined empty slot (consumers guard with
+       ocrGuidIsNull). */
+    rStruct->DBKObjects = NULL_GUID;
+
 #include "param.h"
 
     counter_malloc = 0;
@@ -685,7 +690,9 @@ ocrGuid_t realMainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     //if(ocrGuidIsNull(DBKObjects)) ocrPrintf("objects are null, for some reason!\n");
 
-    ocrDbRelease( rStruct->DBKObjects );
+    /* Release mirrors the conditional creation. */
+    if( num_objects > 0 )
+        ocrDbRelease( rStruct->DBKObjects );
     ocrDbRelease( DBKArgs );
     ocrDbRelease( DBKmyRange );
     ocrGuid_t dv[3] = { DBKArgs, DBKmyRange };
