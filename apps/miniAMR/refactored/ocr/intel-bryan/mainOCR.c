@@ -22,10 +22,6 @@
 #include "check_sumOCR.h"
 
 
-#ifndef MAX_TIME
-    #define MAX_TIME 1000
-#endif
-
 #ifndef MAX_REF
     #define MAX_REF 1
 #endif
@@ -143,7 +139,7 @@ ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     block_t * PRM_block = depv[0].ptr;
     ocrGuid_t blockGUID, blockTML;
 
-    if( PRM_block->timestep < MAX_TIME )
+    if( PRM_block->timestep < max_time )
     {
         if( PRM_block->id == 0 )
         {
@@ -581,6 +577,8 @@ ocrGuid_t realMainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
             error_tol = atoi(ocrGetArgv( programArgv, ++i) );
         else if (!strcmp(str, "--num_tsteps"))
             num_tsteps = atoi(ocrGetArgv(programArgv, ++i) );
+        else if (!strcmp(str, "--max_time"))
+            max_time = atoi(ocrGetArgv(programArgv, ++i) );
         else if (!strcmp(str, "--stages_per_ts"))
             stages_per_ts = atoi(ocrGetArgv(programArgv, ++i) );
         else if (!strcmp(str, "--checksum_freq"))

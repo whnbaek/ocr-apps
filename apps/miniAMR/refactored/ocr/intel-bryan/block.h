@@ -85,6 +85,7 @@ int checksum_freq;
 int stages_per_ts;
 int error_tol;
 int num_tsteps;
+int max_time;
 int stencil;
 int report_perf;
 int plot_freq;

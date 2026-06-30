@@ -47,6 +47,7 @@ refine_freq = 5;
 report_diffusion = 0;
 error_tol = 8;
 num_tsteps = 20;
+max_time = 1000;
 stages_per_ts = 20;
 checksum_freq = 5;
 stencil = 7;
