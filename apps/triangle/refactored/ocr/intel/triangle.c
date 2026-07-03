@@ -260,6 +260,7 @@ ocrEdtCreate(&realmain, realmainTemplate, EDT_PARAM_DEF, &depth, EDT_PARAM_DEF,
 ocrAddDependence(counterDb, realmain, 0, DB_MODE_RW);
 ocrAddDependence(oldboardDb, realmain, 1, DB_MODE_RW);
 ocrAddDependence(boardDb, realmain, 2, DB_MODE_RW);
-ocrAddDependence(pmovesDb, realmain, 3, DB_MODE_CONST);
+// the initializer must acquire the table writable; CONST grants a non-written-back copy
+ocrAddDependence(pmovesDb, realmain, 3, DB_MODE_RW);
 return NULL_GUID;
 }

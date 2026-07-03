@@ -188,12 +188,15 @@ runs T iterations cloning and launching reduction (using F8_ADD  e.g. global sum
        ocrAddDependence(reductionPrivatePTR->returnEVT, driverEDT, SLOT(driver,returnData), DB_MODE_RO);
 
 
+    // capture fields needed below before the call, since reductionLaunch releases reductionPrivate
+    reductionType rpType = reductionPrivatePTR->type;
+
     reductionLaunch(DEPV(driver,reductionPrivate,ptr), DEPV(driver,reductionPrivate,guid), a);
 
 
 //finish clone
     ocrDbRelease(DEPV(driver,myData,guid));
-if((reductionPrivatePTR->type == ALLREDUCE) || (myrank != 0 && reductionPrivatePTR->type == BROADCAST) || (myrank == 0 && reductionPrivatePTR->type == REDUCE))    ocrAddDependence(DEPV(driver,myData,guid),driverEDT, SLOT(driver,myData), DB_MODE_RW);
+if((rpType == ALLREDUCE) || (myrank != 0 && rpType == BROADCAST) || (myrank == 0 && rpType == REDUCE))    ocrAddDependence(DEPV(driver,myData,guid),driverEDT, SLOT(driver,myData), DB_MODE_RW);
 
     return NULL_GUID;
 }
