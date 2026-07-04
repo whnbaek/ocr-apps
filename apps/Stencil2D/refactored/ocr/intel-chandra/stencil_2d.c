@@ -152,6 +152,9 @@ ocrGuid_t FNC_globalInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     _idep = 0;
     ocrAddDependence( DBK_cmdLineArgs, TS_init_globalParamH.EDT, _idep++, DB_MODE_RO );
+    /* Release precedes any exposure of the block: the add-dependence below
+     * publishes it to the initializer. */
+    ocrDbRelease( PTR_globalH->DBK_globalParamH );
     ocrAddDependence( PTR_globalH->DBK_globalParamH, TS_init_globalParamH.EDT, _idep++, DB_MODE_RW );
 
     ocrGuid_t DBK_globalParamH = PTR_globalH->DBK_globalParamH;

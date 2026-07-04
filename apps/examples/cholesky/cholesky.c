@@ -113,6 +113,8 @@ ocrGuid_t sequential_cholesky_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDe
         }
     }
 
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease(out_lkji_kkkp1_db_guid);
     ocrEventSatisfy(out_lkji_kkkp1_event_guid, out_lkji_kkkp1_db_guid);
 
     return NULL_GUID;
@@ -156,6 +158,8 @@ ocrGuid_t trisolve_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         }
     }
 
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease(out_lkji_jkkp1_db_guid);
     ocrEventSatisfy(out_lkji_jkkp1_event_guid, out_lkji_jkkp1_db_guid);
 
     return NULL_GUID;
@@ -189,6 +193,8 @@ ocrGuid_t update_diagonal_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t 
         }
     }
 
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(out_lkji_jjkp1_event_guid, depv[0].guid);
 
     return NULL_GUID;
@@ -223,6 +229,8 @@ ocrGuid_t update_nondiagonal_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep
         }
     }
 
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(out_lkji_jikp1_event_guid, depv[0].guid);
 
     return NULL_GUID;
@@ -377,7 +385,7 @@ inline static void trisolve_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j, u
                  2, NULL, PROPERTIES, NULL_HINT /* db_hint*/, NULL);
 
     ocrAddDependence(lkji_event_guids[j][k][k], trisolve_task_guid, 0, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[k][k][k+1], trisolve_task_guid, 1, DB_MODE_RW);
+    ocrAddDependence(lkji_event_guids[k][k][k+1], trisolve_task_guid, 1, DB_MODE_RO);
 }
 
 inline static void update_nondiagonal_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j, u32 i, u32 tileSize,
@@ -397,8 +405,8 @@ inline static void update_nondiagonal_task_prescriber ( ocrGuid_t edtTemp, u32 k
                  3, NULL, PROPERTIES, NULL_HINT /* db_hint*/, NULL);
 
     ocrAddDependence(lkji_event_guids[j][i][k], update_nondiagonal_task_guid, 0, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[j][k][k+1], update_nondiagonal_task_guid, 1, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[i][k][k+1], update_nondiagonal_task_guid, 2, DB_MODE_RW);
+    ocrAddDependence(lkji_event_guids[j][k][k+1], update_nondiagonal_task_guid, 1, DB_MODE_RO);
+    ocrAddDependence(lkji_event_guids[i][k][k+1], update_nondiagonal_task_guid, 2, DB_MODE_RO);
 }
 
 
@@ -419,7 +427,7 @@ inline static void update_diagonal_task_prescriber ( ocrGuid_t edtTemp, u32 k, u
                  2, NULL, PROPERTIES, NULL_HINT /* db_hint*/, NULL);
 
     ocrAddDependence(lkji_event_guids[j][j][k], update_diagonal_task_guid, 0, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[j][k][k+1], update_diagonal_task_guid, 1, DB_MODE_RW);
+    ocrAddDependence(lkji_event_guids[j][k][k+1], update_diagonal_task_guid, 1, DB_MODE_RO);
 }
 
 inline static void wrap_up_task_prescriber ( ocrGuid_t edtTemp, u32 numTiles, u32 tileSize,
@@ -440,7 +448,7 @@ inline static void wrap_up_task_prescriber ( ocrGuid_t edtTemp, u32 numTiles, u3
     for ( i = 0; i < numTiles; ++i ) {
         k = 1;
         for ( j = 0; j <= i; ++j ) {
-            ocrAddDependence(lkji_event_guids[i][j][k], wrap_up_task_guid, index++, DB_MODE_RW);
+            ocrAddDependence(lkji_event_guids[i][j][k], wrap_up_task_guid, index++, DB_MODE_RO);
             ++k;
         }
     }
@@ -490,8 +498,9 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize,
                      FLAGS, NULL_HINT /*db_hint*/, NO_ALLOC);
 
             fread(temp_db, sizeof(double)*tileSize*tileSize, 1, fin);
-            ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
+            /* Release precedes any exposure of the block. */
             ocrDbRelease(db_guid);
+            ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
         }
     }
     fclose(fin);
@@ -527,6 +536,8 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize, double** matr
                     temp2D[ T_i ][ T_j ] = matrix[ A_i ][ A_j ];
                 }
             }
+            /* Release precedes any exposure of the block. */
+            ocrDbRelease(db_guid);
             ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
             ocrDbDestroy(tmpdb_guid);
         }

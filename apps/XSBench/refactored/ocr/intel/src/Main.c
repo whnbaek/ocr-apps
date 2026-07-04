@@ -144,6 +144,8 @@ ocrGuid_t FNC_globalInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( TS_init_InputsH.OET, TS_init_InputsH_OET, 0, DB_MODE_NULL );
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( PTR_globalH->DBK_InputsH );
     ocrAddDependence( DBK_InputsH_0, TS_init_InputsH.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( PTR_globalH->DBK_InputsH, TS_init_InputsH.EDT, _idep++, DB_MODE_RW );
 
@@ -165,6 +167,9 @@ ocrGuid_t FNC_globalInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                   EDT_PROP_NONE, NULL_HINT, NULL ); //Fires up individual EDTs to allocate subdomain DBs, EDTs
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( PTR_globalH->DBK_InputsHs );
+    ocrDbRelease( PTR_globalH->DBK_rankHs );
     ocrAddDependence( PTR_globalH->DBK_InputsH, TS_rankInitSpawner.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( PTR_globalH->DBK_InputsHs, TS_rankInitSpawner.EDT, _idep++, DB_MODE_RW );
     ocrAddDependence( PTR_globalH->DBK_rankHs, TS_rankInitSpawner.EDT, _idep++, DB_MODE_RW );
@@ -231,6 +236,9 @@ ocrGuid_t FNC_rankInitSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
                       EDT_PROP_NONE, NULL_HINT, NULL );
 
         _idep = 0;
+        /* Release precedes any exposure of the block. */
+        ocrDbRelease( PTR_InputsHs[i] );
+        ocrDbRelease( PTR_rankHs[i] );
         ocrAddDependence( DBK_InputsH, TS_rankInit.EDT, _idep++, DB_MODE_CONST );
         ocrAddDependence( PTR_InputsHs[i], TS_rankInit.EDT, _idep++, DB_MODE_RW );
         ocrAddDependence( PTR_rankHs[i], TS_rankInit.EDT, _idep++, DB_MODE_RW );
@@ -266,6 +274,8 @@ ocrGuid_t FNC_rankInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( TS_init_InputsH.OET, TS_init_InputsH_OET, 0, DB_MODE_NULL );
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( DBK_InputsH );
     ocrAddDependence( DBK_InputsH_0, TS_init_InputsH.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_InputsH, TS_init_InputsH.EDT, _idep++, DB_MODE_RW );
 
@@ -291,6 +301,10 @@ ocrGuid_t FNC_rankInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                   EDT_PROP_NONE, NULL_HINT, NULL );
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( PTR_rankH->DBK_settingsH );
+    ocrDbRelease( PTR_rankH->DBK_dataH );
+    ocrDbRelease( PTR_rankH->DBK_templatesH );
     ocrAddDependence( DBK_InputsH, TS_init_rankH.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( PTR_rankH->DBK_settingsH, TS_init_rankH.EDT, _idep++, DB_MODE_RW );
     ocrAddDependence( PTR_rankH->DBK_dataH, TS_init_rankH.EDT, _idep++, DB_MODE_RW );
@@ -357,6 +371,14 @@ ocrGuid_t FNC_init_rankH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                   EDT_PROP_NONE, NULL_HINT, NULL );
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( DBK_settingsH );
+    ocrDbRelease( PTR_dataH->DBK_nuclide_grids );
+    ocrDbRelease( PTR_dataH->DBK_uEnergy );
+    ocrDbRelease( PTR_dataH->DBK_uEnergy_grid );
+    ocrDbRelease( PTR_dataH->DBK_mat_num_nucs );
+    ocrDbRelease( PTR_dataH->DBK_mat_nucl_index_list_guids );
+    ocrDbRelease( PTR_dataH->DBK_nucl_concs_list_guids );
     ocrAddDependence( DBK_InputsH, TS_init_dataH.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_settingsH, TS_init_dataH.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( PTR_dataH->DBK_nuclide_grids, TS_init_dataH.EDT, _idep++, DB_MODE_RW );
@@ -430,6 +452,8 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         {
             PTR_uEnergy[i*n_gridpoints + j] = PTR_nuclide_data[j].energy;
         }
+        /* This grid block is fully written: release precedes any exposure. */
+        ocrDbRelease( PTR_nuclide_grids[i] );
     }
 
     qsort( PTR_uEnergy, n_isotopes*n_gridpoints, sizeof(double), cmp );
@@ -464,6 +488,13 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                   EDT_PROP_FINISH, NULL_HINT, NULL );
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( DBK_nuclide_grids );
+    ocrDbRelease( DBK_uEnergy );
+    ocrDbRelease( DBK_uEnergy_grid );
+    ocrDbRelease( DBK_mat_num_nucs );
+    ocrDbRelease( DBK_mat_nucl_index_list_guids );
+    ocrDbRelease( DBK_nucl_concs_list_guids );
     ocrAddDependence( DBK_InputsH, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_settingsH, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_nuclide_grids, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
@@ -1196,6 +1227,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( TS_settingsInit.OET, TS_settingsInit_OET, 0, DB_MODE_NULL );
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( DBK_InputsH_0 );
     ocrAddDependence( DBK_InputsH_0, TS_settingsInit.EDT, _idep++, DB_MODE_RW );
 
     ocrGuid_t DBK_globalH;
@@ -1223,6 +1256,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( TS_globalInit.OET, TS_globalInit_OET, 0, DB_MODE_NULL );
 
     _idep = 0;
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( DBK_globalH );
     ocrAddDependence( DBK_InputsH_0, TS_globalInit.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_globalH, TS_globalInit.EDT, _idep++, DB_MODE_RW );
     ocrAddDependence( TS_settingsInit_OET, TS_globalInit.EDT, _idep++, DB_MODE_NULL );
@@ -1252,7 +1287,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( TS_globalFinalize.OET, TS_globalFinalize_OET, 0, DB_MODE_NULL);
 
     _idep = 0;
-    ocrAddDependence( DBK_globalH, TS_globalFinalize.EDT, _idep++, DB_MODE_RW );
+    ocrAddDependence( DBK_globalH, TS_globalFinalize.EDT, _idep++, DB_MODE_RO );
     ocrAddDependence( TS_globalCompute_OET, TS_globalFinalize.EDT, _idep++, DB_MODE_NULL);
 
     return NULL_GUID;

@@ -60,6 +60,10 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     inDep = fibParamvIn->completeGuid;
 
     u32 n = *(u32*)(depv[0].ptr);
+    /* This EDT only reads the argument block; release it before any
+     * satisfy/add-dependence exposes it — the release is the publication
+     * point consumers are entitled to observe. */
+    ocrDbRelease(depv[0].guid);
     ocrPrintf("Starting fibEdt(%u)\n", n);
     if (n < 2) {
         ocrPrintf("In fibEdt(%d) -- done (sat "GUIDF")\n", n, GUIDA(inDep));
@@ -85,8 +89,10 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     /* create the events that the completion EDT will "wait" on */
     ocrEventCreate(&fibDone[0], OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG);
     ocrEventCreate(&fibDone[1], OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG);
-    ocrAddDependence(fibDone[0], comp, 0, DB_DEFAULT_MODE);
-    ocrAddDependence(fibDone[1], comp, 1, DB_DEFAULT_MODE);
+    /* Slots 0/1 deliver the children's result blocks, which complete() only
+     * reads: the mode declares that intent. */
+    ocrAddDependence(fibDone[0], comp, 0, DB_MODE_RO);
+    ocrAddDependence(fibDone[1], comp, 1, DB_MODE_RO);
     /* allocate the argument to pass to fib(n-1) */
 
     ocrDbCreate(&fibArg[0], (void**)&ptr, sizeof(u32), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
@@ -97,13 +103,15 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     fibPRM_t fibParamv0;
     {
         fibParamv0.completeGuid = fibDone[0];
-        ocrGuid_t depv = fibArg[0];
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
-        ocrEdtCreate(&fib0, templateGuid, PRMNUM(fib), (u64 *)&fibParamv0, 1, &depv, EDT_PROP_NONE,
+        ocrEdtCreate(&fib0, templateGuid, PRMNUM(fib), (u64 *)&fibParamv0, 1, NULL, EDT_PROP_NONE,
                      NULL_HINT, NULL);
         ocrEdtTemplateDestroy(templateGuid);
+        /* The child only reads its argument; wire it RO, after the release
+         * above published the value. */
+        ocrAddDependence(fibArg[0], fib0, 0, DB_MODE_RO);
     }
 
     ocrPrintf("In fibEdt(%u) -- spawned first sub-part EDT GUID "GUIDF"\n", n, GUIDA(fib0));
@@ -115,13 +123,15 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     fibPRM_t fibParamv1;
     {
         fibParamv1.completeGuid = fibDone[1];
-        ocrGuid_t depv = fibArg[1];
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
-        ocrEdtCreate(&fib1, templateGuid, PRMNUM(fib), (u64 *)&fibParamv1, 1, &depv, EDT_PROP_NONE,
+        ocrEdtCreate(&fib1, templateGuid, PRMNUM(fib), (u64 *)&fibParamv1, 1, NULL, EDT_PROP_NONE,
                      NULL_HINT, NULL);
         ocrEdtTemplateDestroy(templateGuid);
+        /* The child only reads its argument; wire it RO, after the release
+         * above published the value. */
+        ocrAddDependence(fibArg[1], fib1, 0, DB_MODE_RO);
     }
     ocrPrintf("In fibEdt(%u) -- spawned first sub-part EDT GUID "GUIDF"\n", n, GUIDA(fib1));
 
@@ -189,20 +199,23 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrDbRelease(fibArg);
     /* and an event for when the results are finished */
     ocrEventCreate(&totallyDoneEvent, OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG);
-    ocrAddDependence(totallyDoneEvent, absFinalEdt, 0, DB_DEFAULT_MODE);
+    /* The final checker only reads the delivered result block. */
+    ocrAddDependence(totallyDoneEvent, absFinalEdt, 0, DB_MODE_RO);
 
     fibPRM_t fibParamv;
 
     /* create the EDT with the done_event as the argument */
     {
         fibParamv.completeGuid = totallyDoneEvent;
-        ocrGuid_t depv = fibArg;
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
-        ocrEdtCreate(&fibC, templateGuid, PRMNUM(fib), (u64 *)&fibParamv, 1, &depv, EDT_PROP_NONE,
+        ocrEdtCreate(&fibC, templateGuid, PRMNUM(fib), (u64 *)&fibParamv, 1, NULL, EDT_PROP_NONE,
                      NULL_HINT, NULL);
         ocrEdtTemplateDestroy(templateGuid);
+        /* The child only reads its argument; wire it RO, after the release
+         * above published the value. */
+        ocrAddDependence(fibArg, fibC, 0, DB_MODE_RO);
     }
 
     return NULL_GUID;

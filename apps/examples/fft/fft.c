@@ -100,6 +100,8 @@ ocrGuid_t fftIterationEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     startParamv.x_in_offset = 0;
     startParamv.serialBlockSize = serialBlockSize;
 
+    /* This EDT only reads the block; release precedes any exposure of it. */
+    ocrDbRelease(depv[0].guid);
     ocrGuid_t dependencies[1] = { depv[0].guid };
 
     ocrGuid_t edtGuid;
@@ -166,6 +168,9 @@ ocrGuid_t fftStartEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
                      &finishEventGuid2);
             ocrPrintf("finishEventGuid after create: 0x"GUIDF"\n", GUIDA(finishEventGuid));
 
+        /* This branch only spawned readers/writers of the block and wrote
+         * nothing itself; release precedes any exposure of it below. */
+        ocrDbRelease(dataGuid);
         ocrGuid_t endDependencies[3] = { dataGuid, finishEventGuid, finishEventGuid2 };
         // Do calculations after having divided and conquered
         ocrEdtCreate(&endEdtGuid, endGuid, EDT_PARAM_DEF, paramv, 3,
@@ -197,6 +202,9 @@ ocrGuid_t fftEndEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     float *X_imag = (float*)(data+offset + 2*N*step);
 
         ocrPrintf("Reached end phase for step %d\n",step);
+    /* The combine work happens in the slaves; this EDT only reads the block.
+     * Release precedes any exposure of it via the slave creates below. */
+    ocrDbRelease(dataGuid);
     u64 *slaveParamv;
 
     if(N/2 > serialBlockSize) {
@@ -390,6 +398,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         x[i] = 0;
     }
     x[1] = 1;
+    /* Input is fully written: release precedes any exposure of the block. */
+    ocrDbRelease(dataGuid);
     //x[3] = -3;
     //x[4] = 8;
     //x[5] = 9;
@@ -424,13 +434,16 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     printParamv.endTempGuid = endTempGuid;
     printParamv.endSlaveTempGuid = endSlaveTempGuid;
 
-    ocrGuid_t finishDependencies[2] = { edtEventGuid, dataGuid };
     ocrEdtCreate(&printEdtGuid, printTempGuid, EDT_PARAM_DEF, (u64 *)&printParamv,
-                 EDT_PARAM_DEF, finishDependencies, EDT_PROP_NONE, NULL_HINT, NULL);
+                 EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
     ocrEdtTemplateDestroy(printTempGuid);
+    /* The print EDT only reads the result block; the mode declares that. */
+    ocrAddDependence(edtEventGuid, printEdtGuid, 0, DB_MODE_CONST);
+    ocrAddDependence(dataGuid, printEdtGuid, 1, DB_MODE_RO);
 
     edtEventGuid = NULL_GUID;
-    ocrAddDependence(dataGuid, edtGuid, 0, DB_MODE_RW);
+    /* The iteration driver only reads the block; the mode declares that. */
+    ocrAddDependence(dataGuid, edtGuid, 0, DB_MODE_RO);
     ocrAddDependence(edtEventGuid, edtGuid, 1, DB_MODE_CONST);
 
     return NULL_GUID;

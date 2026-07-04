@@ -433,8 +433,11 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     assert(T[0] != NULL);
 
+    // Release the creator's write hold before wiring the init EDT that fills
+    // this block, so the two writers are ordered rather than concurrent.
+    ocrDbRelease(T_ij);
+
     //create randInitEDT
-    //TODO: Move this part to a initializer EDT.
     //Now initialize it
     //Create the task
     ocrGuid_t randInitTmp;
@@ -476,7 +479,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             NO_ALLOC);
 
         assert(T[j] != NULL);
-        // TODO: Move this part to a initializer EDT.
+        ocrDbRelease(T_ij); // release-before-expose (see T tile 0)
         // Now initialize it
 
         ocrGuid_t randInitTEdt;
@@ -515,6 +518,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         NO_ALLOC);
 
     assert(S[0] != NULL);
+    ocrDbRelease(S_ij); // release-before-expose (see T tile 0)
     // Now initialize it
 
     ocrGuid_t randInitSEdt;
@@ -550,6 +554,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             NO_ALLOC);
 
         assert(S[i] != NULL);
+        ocrDbRelease(S_ij); // release-before-expose (see T tile 0)
         // Now initialize it
 
         string_param[0] = block_size;
@@ -587,6 +592,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         NO_ALLOC);
 
     assert(lcs_score[0] != NULL);
+    ocrDbRelease(lcs_score_ij); // release-before-expose (see T tile 0)
 
     //Create the task
     ocrGuid_t scoreInitTmp;
@@ -626,6 +632,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             NO_ALLOC);
 
         assert(lcs_score[t] != NULL);
+        ocrDbRelease(lcs_score_ij); // release-before-expose (see T tile 0)
 
         ocrGuid_t scoreEdt;
 
@@ -658,6 +665,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             NO_ALLOC);
 
         assert(lcs_score[t] != NULL);
+        ocrDbRelease(lcs_score_ij); // release-before-expose (see T tile 0)
 
         ocrGuid_t scoreEdt;
 
