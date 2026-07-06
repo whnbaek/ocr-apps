@@ -47,7 +47,7 @@ int fib(int n) {
 
 ocrGuid_t leaf1(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    //leaf1 does more work
-   ocrPrintf("Hello from leaf1\n");
+   //ocrPrintf("Hello from leaf1\n");
    int i,sum = 0;
    int result = fib(FIBN );
    for(i = 2; i < result+2; i++){
@@ -65,7 +65,7 @@ ocrGuid_t leaf1(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
 
 ocrGuid_t leaf2(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    //leaf2 does less work
-   ocrPrintf("Hello from leaf2\n");
+   //ocrPrintf("Hello from leaf2\n");
    int result = fib(FIBN - 1);
    ocrPrintf("End leaf2, result =%"PRId32"\n",result);
    return NULL_GUID;
@@ -76,7 +76,7 @@ ocrGuid_t spawning_fn2(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    const u64 num = paramv[0];
    int* k;
    u64 _hintVal = 1;
-   ocrPrintf("Start spawning_fn2(%"PRId64")\n", num);
+   //ocrPrintf("Start spawning_fn2(%"PRId64")\n", num);
    ocrGuid_t db_guid, leaf1_template, leaf2_template;
    ocrGuid_t leaf1_edt, leaf2_edt;
    //Create two leaf EDTs
@@ -97,7 +97,7 @@ ocrGuid_t spawning_fn2(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    ocrDbCreate(&db_guid, (void**) &k, sizeof(int), 0, NULL_HINT, NO_ALLOC);
    k[0] = fib(FIBN);
 
-   ocrPrintf("End spawning_fn2(%"PRId64"), sending k=%"PRId32"\n",num,*k);
+   //ocrPrintf("End spawning_fn2(%"PRId64"), sending k=%"PRId32"\n",num,*k);
    return db_guid;
 }
 
@@ -105,7 +105,7 @@ ocrGuid_t spawning_fn3(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    const u64 num = paramv[0];
    int* k;
    u64 _hintVal = 1;
-   ocrPrintf("Start spawning_fn3(%"PRId64")\n", num);
+   //ocrPrintf("Start spawning_fn3(%"PRId64")\n", num);
    ocrGuid_t db_guid, leaf1_template, leaf2_template;
    ocrGuid_t leaf1_edt, leaf2_edt, leaf2_2_edt;
    //Create two leaf EDTs
@@ -129,7 +129,7 @@ ocrGuid_t spawning_fn3(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    ocrDbCreate(&db_guid, (void**) &k, sizeof(int), 0, NULL_HINT, NO_ALLOC);
    k[0] = fib(FIBN);
 
-   ocrPrintf("End spawning_fn3(%"PRId64"), sending k=%"PRId32"\n",num,*k);
+   //ocrPrintf("End spawning_fn3(%"PRId64"), sending k=%"PRId32"\n",num,*k);
    return db_guid;
 }
 
@@ -137,7 +137,7 @@ ocrGuid_t spawning_fn6(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    const u64 num = paramv[0];
    int* k;
    u64 _hintVal = 1;
-   ocrPrintf("Start spawning_fn6(%"PRId64")\n", num);
+   //ocrPrintf("Start spawning_fn6(%"PRId64")\n", num);
    ocrGuid_t db_guid, leaf1_template, leaf2_template;
    ocrGuid_t leaf1_edt, leaf1_1_edt, leaf1_2_edt, leaf2_edt, leaf2_1_edt, leaf2_2_edt;
    //Create two leaf EDTs
@@ -170,7 +170,7 @@ ocrGuid_t spawning_fn6(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    ocrDbCreate(&db_guid, (void**) &k, sizeof(int), 0, NULL_HINT, NO_ALLOC);
    k[0] = fib(FIBN);
 
-   ocrPrintf("End spawning_fn6(%"PRId64"), sending k=%"PRId32"\n",num,*k);
+   //ocrPrintf("End spawning_fn6(%"PRId64"), sending k=%"PRId32"\n",num,*k);
    return db_guid;
 }
 
@@ -191,7 +191,7 @@ ocrGuid_t spawning_fn(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    ocrHintInit(&fn2_hint, OCR_HINT_EDT_T);
    ocrSetHintValue(&fn2_hint, OCR_HINT_EDT_SPAWNING, fn2_hintVal);
 #endif
-   ocrPrintf("Start spawning_fn(%"PRId64")\n", num);
+   //ocrPrintf("Start spawning_fn(%"PRId64")\n", num);
    ocrGuid_t db_guid, leaf1_template, leaf2_template;
    ocrGuid_t edt2_template, edt3_template, edt6_template;
    ocrGuid_t edts[num];
@@ -247,7 +247,7 @@ ocrGuid_t spawning_fn(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    ocrDbCreate(&db_guid, (void**) &k, sizeof(int), 0, NULL_HINT, NO_ALLOC);
    k[0] = fib(FIBN);
 
-   ocrPrintf("End spawning_fn(%"PRId64"), sending k=%"PRId32"\n",num,*k);
+   //ocrPrintf("End spawning_fn(%"PRId64"), sending k=%"PRId32"\n",num,*k);
    return db_guid;
    //return NULL_GUID;
 }

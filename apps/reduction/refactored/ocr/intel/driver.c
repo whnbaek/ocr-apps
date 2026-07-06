@@ -156,7 +156,7 @@ runs T iterations cloning and launching reduction (using F8_ADD  e.g. global sum
 //copy
 
 #ifdef SHOW_RESULTS
-        if(myrank == 0 && timestep <= maxtimestep) {
+        if(myrank == 0 && timestep == maxtimestep) {
             for(i=0;i<ndata;i++)
                 ocrPrintf("C%d T%d i%d %f \n", myrank, timestep, i, b[i]);
         }

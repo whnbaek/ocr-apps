@@ -36,7 +36,7 @@ ocrGuid_t complete(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     in1 = *(u32*)depv[0].ptr;
     in2 = *(u32*)depv[1].ptr;
     out = *(u32*)depv[2].ptr;
-    ocrPrintf("Done with %d (%d + %d)\n", out, in1, in2);
+    //ocrPrintf("Done with %d (%d + %d)\n", out, in1, in2);
     /* we return our answer in the 3rd db passed in as an argument */
     *((u32*)(depv[2].ptr)) = in1 + in2;
 
@@ -64,13 +64,13 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
      * satisfy/add-dependence exposes it — the release is the publication
      * point consumers are entitled to observe. */
     ocrDbRelease(depv[0].guid);
-    ocrPrintf("Starting fibEdt(%u)\n", n);
+    //ocrPrintf("Starting fibEdt(%u)\n", n);
     if (n < 2) {
-        ocrPrintf("In fibEdt(%d) -- done (sat "GUIDF")\n", n, GUIDA(inDep));
+        //ocrPrintf("In fibEdt(%d) -- done (sat "GUIDF")\n", n, GUIDA(inDep));
         ocrEventSatisfy(inDep, depv[0].guid);
         return NULL_GUID;
     }
-    ocrPrintf("In fibEdt(%d) -- spawning children\n", n);
+    //ocrPrintf("In fibEdt(%d) -- spawning children\n", n);
 
     completePRM_t completeParamv;
     /* create the completion EDT and pass it the in/out argument as a dependency */
@@ -96,7 +96,7 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     /* allocate the argument to pass to fib(n-1) */
 
     ocrDbCreate(&fibArg[0], (void**)&ptr, sizeof(u32), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
-    ocrPrintf("In fibEdt(%u) -- created arg DB GUID "GUIDF"\n", n, GUIDA(fibArg[0]));
+    //ocrPrintf("In fibEdt(%u) -- created arg DB GUID "GUIDF"\n", n, GUIDA(fibArg[0]));
     *((u32*)ptr) = n-1;
     ocrDbRelease(fibArg[0]);
     /* sched the EDT, passing the fibDone event as it's argument */
@@ -114,10 +114,10 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrAddDependence(fibArg[0], fib0, 0, DB_MODE_RO);
     }
 
-    ocrPrintf("In fibEdt(%u) -- spawned first sub-part EDT GUID "GUIDF"\n", n, GUIDA(fib0));
+    //ocrPrintf("In fibEdt(%u) -- spawned first sub-part EDT GUID "GUIDF"\n", n, GUIDA(fib0));
     /* then do the exact same thing for n-2 */
     ocrDbCreate(&fibArg[1], (void**)&ptr, sizeof(u32), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
-    ocrPrintf("In fibEdt(%u) -- created arg DB GUID "GUIDF"\n", n, GUIDA(fibArg[1]));
+    //ocrPrintf("In fibEdt(%u) -- created arg DB GUID "GUIDF"\n", n, GUIDA(fibArg[1]));
     *((u32*)ptr) = n-2;
     ocrDbRelease(fibArg[1]);
     fibPRM_t fibParamv1;
@@ -133,9 +133,9 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
          * above published the value. */
         ocrAddDependence(fibArg[1], fib1, 0, DB_MODE_RO);
     }
-    ocrPrintf("In fibEdt(%u) -- spawned first sub-part EDT GUID "GUIDF"\n", n, GUIDA(fib1));
+    //ocrPrintf("In fibEdt(%u) -- spawned first sub-part EDT GUID "GUIDF"\n", n, GUIDA(fib1));
 
-    ocrPrintf("Returning from fibEdt(%u)\n", n);
+    //ocrPrintf("Returning from fibEdt(%u)\n", n);
     return NULL_GUID;
 
 }

@@ -50,21 +50,32 @@ double mysecond()
         return ( (double) tp.tv_sec + (double) tp.tv_usec * 1.e-6 );
 }
 
+/* Runtime-resolved sizes (positional argv in mainEdt); defaults mirror the
+ * compile-time macros so an argument-free run behaves identically. */
+u64 numThreads    = NUM_THREADS;
+u64 arraySize     = ARRAY_SIZE;
+u64 nTimes        = NTIMES;
+u64 buffer        = BUFFER;
+u64 perThreadSize = PER_THREAD_SIZE;
+
 /* TODO: get rid of ugly globals below */
-double times[NUM_THREADS][NTIMES];
+double *times;              /* [numThreads][nTimes] flattened; index via TIMES() */
 ocrGuid_t tmp_producer, tmp_consumer, tmp_loop;
-ocrGuid_t evt_finalize[NUM_THREADS];
+ocrGuid_t *evt_finalize;    /* [numThreads] */
 
 ocrGuid_t mapProdGuid = NULL_GUID;
 ocrGuid_t mapConsGuid = NULL_GUID;
 /* End of ugly globals */
+
+/* Row-major access to the runtime-sized timing matrix. */
+#define TIMES(t, k) times[(u64)(t) * nTimes + (u64)(k)]
 
 ocrGuid_t producer(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
     double *a = (double *)depv[0].ptr;
     u32 i;
 
-    for(i = 0; i<PER_THREAD_SIZE; i++) a[i] = i*i;
+    for(i = 0; i<perThreadSize; i++) a[i] = i*i;
     a[0] = paramv[1];
     return depv[0].guid;
 }
@@ -77,15 +88,15 @@ ocrGuid_t consumer(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t evt1 = NULL_GUID;
     ocrGuid_t evt2 = NULL_GUID;
 
-    ocrGuidFromIndex(&evt1, mapProdGuid, BUFFER*a[0] + paramv[0]%BUFFER);
-    ocrGuidFromIndex(&evt2, mapConsGuid, BUFFER*paramv[1] + paramv[0]%BUFFER);
+    ocrGuidFromIndex(&evt1, mapProdGuid, buffer*a[0] + paramv[0]%buffer);
+    ocrGuidFromIndex(&evt2, mapConsGuid, buffer*paramv[1] + paramv[0]%buffer);
     ocrEventDestroy(evt1);
     ocrEventDestroy(evt2);
-    if(paramv[1] != (((u64)a[0]+SKEW)%NUM_THREADS))
+    if(paramv[1] != (((u64)a[0]+SKEW)%numThreads))
     PRINTF("ID %ld, DB %ld\n", paramv[1], (u64)a[0]);
-    for(i = 0; i<PER_THREAD_SIZE; i++) sum += a[i];
+    for(i = 0; i<perThreadSize; i++) sum += a[i];
     ocrDbDestroy(depv[0].guid);
-    times[paramv[1]][paramv[0]] = mysecond() - times[paramv[1]][paramv[0]];
+    TIMES(paramv[1], paramv[0]) = mysecond() - TIMES(paramv[1], paramv[0]);
     if(sum == 0.0) PRINTF("Hello\n");
     return NULL_GUID;
 }
@@ -106,10 +117,10 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t db_a;
   double *a;
 
-  ocrDbCreate(&db_a, (void **)&a, sizeof(double)*PER_THREAD_SIZE,
+  ocrDbCreate(&db_a, (void **)&a, sizeof(double)*perThreadSize,
                              FLAGS, NULL_HINT, NO_ALLOC);
 
-  times[paramv[1]][iter] = mysecond();
+  TIMES(paramv[1], iter) = mysecond();
   ocrGuid_t prod_output, cons_output;
   ocrGuid_t edt_prod, edt_cons;
   ocrGuid_t evt1 = NULL_GUID;
@@ -121,20 +132,20 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrEdtCreate(&edt_prod, tmp_producer, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &prod_output);
 
-  ocrGuidFromIndex(&evt1, mapProdGuid, BUFFER*paramv[1] + paramv[0]%BUFFER);
+  ocrGuidFromIndex(&evt1, mapProdGuid, buffer*paramv[1] + paramv[0]%buffer);
   ocrEventCreate(&evt1, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
 
-  ocrGuidFromIndex(&evt2, mapConsGuid, BUFFER*((paramv[1]+SKEW) % NUM_THREADS) + paramv[0]%BUFFER);
+  ocrGuidFromIndex(&evt2, mapConsGuid, buffer*((paramv[1]+SKEW) % numThreads) + paramv[0]%buffer);
   ocrEventCreate(&evt2, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
 
-  ocrGuidFromIndex(&evt3, mapConsGuid, BUFFER*paramv[1] + paramv[0]%BUFFER);
+  ocrGuidFromIndex(&evt3, mapConsGuid, buffer*paramv[1] + paramv[0]%buffer);
   ocrEventCreate(&evt3, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
 
   // Phase 2: wire cons_output's waiters first — it is a ONCE event, so all
   // its uses must be registered before any triggering dependency.
   iter++;
   param[0] = iter;
-  if (iter < NTIMES) {  // Spawn another set
+  if (iter < nTimes) {  // Spawn another set
     ocrGuid_t edt_loop;
     param[1] = paramv[1];
     ocrEdtCreate(&edt_loop, tmp_loop, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
@@ -183,8 +194,30 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     u64 i;
     ocrGuid_t tmp_finalize, edt_finalize;
 
-    ocrGuidRangeCreate(&mapProdGuid, BUFFER*NUM_THREADS, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&mapConsGuid, BUFFER*NUM_THREADS, GUID_USER_EVENT_STICKY);
+    // Positional argv: [numThreads] [arraySize] [nTimes]; absent args keep the #define defaults.
+    if(depc >= 1 && depv[0].ptr) {
+        u64 argc = getArgc(depv[0].ptr);
+        if(argc > 1) numThreads = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+        if(argc > 2) arraySize  = strtoull(getArgv(depv[0].ptr, 2), NULL, 10);
+        if(argc > 3) nTimes     = strtoull(getArgv(depv[0].ptr, 3), NULL, 10);
+    }
+    if(numThreads == 0) numThreads = NUM_THREADS;   // guard degenerate counts
+    if(arraySize == 0)  arraySize  = ARRAY_SIZE;
+    if(nTimes == 0)     nTimes     = NTIMES;
+    buffer = numThreads;                            // BUFFER is defined as NUM_THREADS
+    if(arraySize % numThreads != 0)
+        fprintf(stderr,
+                "prodcon: arraySize %llu not a multiple of numThreads %llu; "
+                "truncating to %llu elements/thread (%llu total)\n",
+                (unsigned long long)arraySize, (unsigned long long)numThreads,
+                (unsigned long long)(arraySize / numThreads),
+                (unsigned long long)((arraySize / numThreads) * numThreads));
+    perThreadSize = arraySize / numThreads;
+    times = (double *)calloc(numThreads * nTimes, sizeof(double));
+    evt_finalize = (ocrGuid_t *)malloc(numThreads * sizeof(ocrGuid_t));
+
+    ocrGuidRangeCreate(&mapProdGuid, buffer*numThreads, GUID_USER_EVENT_STICKY);
+    ocrGuidRangeCreate(&mapConsGuid, buffer*numThreads, GUID_USER_EVENT_STICKY);
 
     ocrEdtTemplateCreate(&tmp_mainLet, mainLet, 1, 0);
 
@@ -193,10 +226,10 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrEdtTemplateCreate(&tmp_producer, producer, 2, 1);
     ocrEdtTemplateCreate(&tmp_consumer, consumer, 2, 1);
 
-    ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, NUM_THREADS);
+    ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, numThreads);
     ocrEdtCreate(&edt_finalize, tmp_finalize, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
 
-    for(i = 0; i<NUM_THREADS; i++) {
+    for(i = 0; i<numThreads; i++) {
         ocrEventCreate(&evt_finalize[i], OCR_EVENT_ONCE_T, true);
         ocrAddDependence(evt_finalize[i], edt_finalize, i, DB_MODE_RO);
         ocrEdtCreate(&edt_mainLet, tmp_mainLet, EDT_PARAM_DEF, &i, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
@@ -212,17 +245,17 @@ int printTimes(void)
     double maxtime = 0.0;
     int j, k;
 
-    for (k=1; k<NTIMES; k++) /* note -- skip first iteration */
+    for (k=1; k<nTimes; k++) /* note -- skip first iteration */
         {
-        for (j=0; j<NUM_THREADS; j++)
+        for (j=0; j<numThreads; j++)
             {
-            avgtime = avgtime + times[j][k];
-            mintime = MIN(mintime, times[j][k]);
-            maxtime = MAX(maxtime, times[j][k]);
+            avgtime = avgtime + TIMES(j, k);
+            mintime = MIN(mintime, TIMES(j, k));
+            maxtime = MAX(maxtime, TIMES(j, k));
             }
         }
 
-    PRINTF("%f MB/s %f MB/s %f %f %f\n", 1.0e-06*NTIMES*8*PER_THREAD_SIZE/mintime, 1.0e-06*8*ARRAY_SIZE*NTIMES/avgtime, avgtime/((NTIMES-1)*NUM_THREADS), mintime, maxtime);
+    PRINTF("%f MB/s %f MB/s %f %f %f\n", 1.0e-06*nTimes*8*perThreadSize/mintime, 1.0e-06*8*arraySize*nTimes/avgtime, avgtime/((nTimes-1)*numThreads), mintime, maxtime);
 
     return 0;
 

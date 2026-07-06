@@ -68,10 +68,21 @@ double mysecond()
 void checkSTREAMresults (void);
 void preamble(void);
 int printTimes(void);
-double times[NUM_THREADS][NTIMES];
+
+/* Runtime-resolved sizes (positional argv in mainEdt); defaults mirror the
+ * compile-time macros so an argument-free run behaves identically. */
+u64 streamArraySize = STREAM_ARRAY_SIZE;
+u64 numThreads      = NUM_THREADS;
+u64 nTimes          = NTIMES;
+u64 perThreadSize   = PER_THREAD_SIZE;
+
+double *times;              /* [numThreads][nTimes] flattened; index via TIMES() */
 ocrGuid_t tmp_copy, tmp_scale, tmp_add, tmp_triad, tmp_loop, tmp_finalize;
 ocrGuid_t edt_finalize;
-ocrGuid_t evt_finalize[NUM_THREADS];
+ocrGuid_t *evt_finalize;    /* [numThreads] */
+
+/* Row-major access to the runtime-sized timing matrix. */
+#define TIMES(t, k) times[(u64)(t) * nTimes + (u64)(k)]
 
 ocrGuid_t copy(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
@@ -80,9 +91,9 @@ ocrGuid_t copy(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t db_c;
     u32 i;
 
-    ocrDbCreate(&db_c, (void **)&c, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_c, (void **)&c, sizeof(double)*perThreadSize,
                              FLAGS, NULL_HINT, NO_ALLOC);
-    for(i = 0; i<PER_THREAD_SIZE; i++) c[i] = a[i];
+    for(i = 0; i<perThreadSize; i++) c[i] = a[i];
     return db_c;
 }
 
@@ -93,9 +104,9 @@ ocrGuid_t scale(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t db_b;
     u32 i;
 
-    ocrDbCreate(&db_b, (void **)&b, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_b, (void **)&b, sizeof(double)*perThreadSize,
                              FLAGS, NULL_HINT, NO_ALLOC);
-    for(i = 0; i<PER_THREAD_SIZE; i++) b[i] = scalar*a[i];
+    for(i = 0; i<perThreadSize; i++) b[i] = scalar*a[i];
 
     return db_b;
 }
@@ -109,9 +120,9 @@ ocrGuid_t add(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     u32 i;
 
     ocrDbDestroy(depv[2].guid); // destroy c from copy
-    ocrDbCreate(&db_c, (void **)&c, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_c, (void **)&c, sizeof(double)*perThreadSize,
                              FLAGS, NULL_HINT, NO_ALLOC);
-    for(i = 0; i<PER_THREAD_SIZE; i++) c[i] = a[i] + b[i];
+    for(i = 0; i<perThreadSize; i++) c[i] = a[i] + b[i];
 
     return db_c;
 }
@@ -125,11 +136,11 @@ ocrGuid_t triad(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     u32 i;
 
     ocrDbDestroy(depv[0].guid); // destroy old a
-    ocrDbCreate(&db_a, (void **)&a, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_a, (void **)&a, sizeof(double)*perThreadSize,
                              FLAGS, NULL_HINT, NO_ALLOC);
-    for(i = 0; i<PER_THREAD_SIZE; i++) a[i] = b[i] + scalar*c[i];
+    for(i = 0; i<perThreadSize; i++) a[i] = b[i] + scalar*c[i];
 
-    times[paramv[1]][paramv[0]] = mysecond() - times[paramv[1]][paramv[0]];
+    TIMES(paramv[1], paramv[0]) = mysecond() - TIMES(paramv[1], paramv[0]);
 
     ocrDbDestroy(depv[1].guid); // destroy old b
     ocrDbDestroy(depv[2].guid); // destroy old c
@@ -143,7 +154,7 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
    * on all four kernels executing correctly every iteration. */
   STREAM_TYPE aj = 2.0;  /* initial value from mainLet */
   int k;
-  for (k = 0; k < NTIMES; k++) {
+  for (k = 0; k < nTimes; k++) {
       STREAM_TYPE cj = aj;               /* copy  */
       STREAM_TYPE bj = scalar * aj;      /* scale */
       cj = aj + bj;                      /* add   */
@@ -153,9 +164,9 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
   double epsilon = (sizeof(STREAM_TYPE) == 4) ? 1.e-6 : 1.e-13;
   u64 errCount = 0;
   u32 t, i;
-  for (t = 0; t < NUM_THREADS; t++) {
+  for (t = 0; t < numThreads; t++) {
       double *a = (double *)depv[t].ptr;
-      for (i = 0; i < PER_THREAD_SIZE; i++) {
+      for (i = 0; i < perThreadSize; i++) {
           double relErr = (aj != 0.0) ? fabs((a[i] - aj) / aj) : fabs(a[i]);
           if (relErr > epsilon) errCount++;
       }
@@ -163,7 +174,7 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
   if (errCount == 0)
       PRINTF("Solution Validates: all %d elements match expected value\n",
-             (int)(PER_THREAD_SIZE * NUM_THREADS));
+             (int)(perThreadSize * numThreads));
   else
       PRINTF("Solution FAILED Validation: %llu errors in a[]\n",
              (unsigned long long)errCount);
@@ -182,7 +193,7 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   u64 iter = paramv[0];
   u64 param[2] = { iter, paramv[1] };
 
-  times[paramv[1]][iter] = mysecond();
+  TIMES(paramv[1], iter) = mysecond();
   ocrGuid_t copy_output, scale_output, add_output, triad_output;
   ocrGuid_t edt_copy, edt_scale, edt_add, edt_triad;
 
@@ -206,7 +217,7 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
    * keep the chain-starting addDeps last. */
   iter++;
   param[0] = iter;
-  if (iter < NTIMES) {  // Spawn another set
+  if (iter < nTimes) {  // Spawn another set
     ocrGuid_t edt_loop;
     ocrEdtCreate(&edt_loop, tmp_loop, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
 
@@ -233,11 +244,11 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     u32 i;
     ocrGuid_t edt_loop, output_evt;
 
-    ocrDbCreate(&db_a, (void **)&a, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_a, (void **)&a, sizeof(double)*perThreadSize,
                              FLAGS, NULL_HINT, NO_ALLOC);
 
     // Init them
-    for(i = 0; i<PER_THREAD_SIZE; i++) {
+    for(i = 0; i<perThreadSize; i++) {
         a[i] = 2.0;
     }
 
@@ -251,6 +262,26 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
+    // Positional argv: [streamArraySize] [numThreads] [nTimes]; absent args keep the #define defaults.
+    if(depc >= 1 && depv[0].ptr) {
+        u64 argc = getArgc(depv[0].ptr);
+        if(argc > 1) streamArraySize = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+        if(argc > 2) numThreads      = strtoull(getArgv(depv[0].ptr, 2), NULL, 10);
+        if(argc > 3) nTimes          = strtoull(getArgv(depv[0].ptr, 3), NULL, 10);
+    }
+    if(numThreads == 0)      numThreads      = NUM_THREADS;   // guard degenerate counts
+    if(streamArraySize == 0) streamArraySize = STREAM_ARRAY_SIZE;
+    if(nTimes == 0)          nTimes          = NTIMES;
+    if(streamArraySize % numThreads != 0)
+        fprintf(stderr,
+                "stream: array size %llu not a multiple of %llu threads; "
+                "truncating to %llu elements/thread (%llu total)\n",
+                (unsigned long long)streamArraySize, (unsigned long long)numThreads,
+                (unsigned long long)(streamArraySize / numThreads),
+                (unsigned long long)((streamArraySize / numThreads) * numThreads));
+    perThreadSize = streamArraySize / numThreads;
+    times        = (double *)calloc(numThreads * nTimes, sizeof(double));
+    evt_finalize = (ocrGuid_t *)malloc(numThreads * sizeof(ocrGuid_t));
 
     preamble();
 
@@ -279,10 +310,10 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrEdtTemplateCreate(&tmp_add, add, 2, 3);
     ocrEdtTemplateCreate(&tmp_triad, triad, 2, 3);
 
-    ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, NUM_THREADS);
+    ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, numThreads);
     ocrEdtCreate(&edt_finalize, tmp_finalize, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
 
-    for(i = 0; i<NUM_THREADS; i++) {
+    for(i = 0; i<numThreads; i++) {
         ocrEventCreate(&evt_finalize[i], OCR_EVENT_ONCE_T, true);
         ocrAddDependence(evt_finalize[i], edt_finalize, i, DB_MODE_RO);
         ocrEdtCreate(&edt_mainLet, tmp_mainLet, EDT_PARAM_DEF, &i, EDT_PARAM_DEF, NULL, PROPERTIES, &hint_disperse, NULL);
@@ -315,14 +346,14 @@ void preamble(void)
     PRINTF("*****  WARNING: ******\n");
 #endif
 
-    PRINTF("Array size = %llu (elements), Offset = %d (elements)\n" , (unsigned long long) STREAM_ARRAY_SIZE, OFFSET);
+    PRINTF("Array size = %llu (elements), Offset = %d (elements)\n" , (unsigned long long) streamArraySize, OFFSET);
     PRINTF("Memory per array = %.1f MiB (= %.1f GiB).\n",
-        BytesPerWord * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024.0),
-        BytesPerWord * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024.0/1024.0));
+        BytesPerWord * ( (double) streamArraySize / 1024.0/1024.0),
+        BytesPerWord * ( (double) streamArraySize / 1024.0/1024.0/1024.0));
     PRINTF("Total memory required = %.1f MiB (= %.1f GiB).\n",
-        (3.0 * BytesPerWord) * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024.),
-        (3.0 * BytesPerWord) * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024./1024.));
-    PRINTF("Each kernel will be executed %d times.\n", NTIMES);
+        (3.0 * BytesPerWord) * ( (double) streamArraySize / 1024.0/1024.),
+        (3.0 * BytesPerWord) * ( (double) streamArraySize / 1024.0/1024./1024.));
+    PRINTF("Each kernel will be executed %d times.\n", (int)nTimes);
     PRINTF(" The *best* time for each kernel (excluding the first iteration)\n");
     PRINTF(" will be used to compute the reported bandwidth.\n");
 
@@ -337,18 +368,18 @@ int printTimes(void)
     double maxtime = 0.0;
     int j, k;
 
-    for (k=1; k<NTIMES; k++) /* note -- skip first iteration */
+    for (k=1; k<nTimes; k++) /* note -- skip first iteration */
         {
-        for (j=0; j<NUM_THREADS; j++)
+        for (j=0; j<numThreads; j++)
             {
-            avgtime = avgtime + times[j][k];
-            mintime = MIN(mintime, times[j][k]);
-            maxtime = MAX(maxtime, times[j][k]);
+            avgtime = avgtime + TIMES(j, k);
+            mintime = MIN(mintime, TIMES(j, k));
+            maxtime = MAX(maxtime, TIMES(j, k));
             }
         }
 
     PRINTF(HLINE);
-    PRINTF("%f MB/s %f %f %f\n", 1.0E-06*10*sizeof(STREAM_TYPE)*PER_THREAD_SIZE/mintime, avgtime/((NTIMES-1)*NUM_THREADS), mintime, maxtime);
+    PRINTF("%f MB/s %f %f %f\n", 1.0E-06*10*sizeof(STREAM_TYPE)*perThreadSize/mintime, avgtime/((nTimes-1)*numThreads), mintime, maxtime);
     PRINTF(HLINE);
 
     return 0;

@@ -81,21 +81,35 @@ void checkSTREAMresults (void);
 void preamble(void);
 int printTimes(void);
 
-/* Per-process timing array — write-only on the rank running the
- * sampling EDT.  printTimes() reports rank 0 only. */
-double times[NUM_THREADS][NTIMES];
+/* Runtime-resolved sizes (positional argv in mainEdt); defaults mirror the
+ * compile-time macros so an argument-free run behaves identically.  These
+ * globals are populated only on the rank that runs mainEdt; the per-EDT sizes
+ * that remote ranks need travel through paramv (see the *_PARAMC layouts). */
+u64 streamArraySize = STREAM_ARRAY_SIZE;
+u64 numThreads      = NUM_THREADS;
+u64 nTimes          = NTIMES;
+u64 perThreadSize   = PER_THREAD_SIZE;
 
-/* Cross-rank GUIDs travel through paramv (deep-copied at EDT create),
- * never file-scope statics: statics are per-process, so only the rank
- * that ran mainEdt would see them initialized.
+/* Per-process timing array — allocated only on the rank that runs mainEdt.
+ * Remote ranks leave it NULL; their samples are not reported (printTimes
+ * reports rank 0 only), so every write is guarded by a non-NULL check. */
+double *times;             /* [numThreads][nTimes] flattened; index via TIMES() */
+
+/* Row-major access to the runtime-sized timing matrix. */
+#define TIMES(t, k) times[(u64)(t) * nTimes + (u64)(k)]
+
+/* Cross-rank GUIDs and sizes travel through paramv (deep-copied at EDT
+ * create), never file-scope statics: statics are per-process, so only the
+ * rank that ran mainEdt would see them initialized.
  *
  * paramv layouts:
- *   mainLet (paramc=7): [0] tid, [1] evt_finalize_my,
- *     [2..6] tmp_copy/scale/add/triad/loop
- *   loop (paramc=8): [0] iter, [1] tid, [2] evt_finalize_my,
- *     [3..7] templates */
-#define MAINLET_PARAMC 7
-#define LOOP_PARAMC    8
+ *   mainLet (paramc=9): [0] tid, [1] evt_finalize_my,
+ *     [2..6] tmp_copy/scale/add/triad/loop, [7] perThreadSize, [8] nTimes
+ *   loop (paramc=10): [0] iter, [1] tid, [2] evt_finalize_my,
+ *     [3..7] templates, [8] perThreadSize, [9] nTimes
+ *   kernels (paramc=3): [0] iter, [1] tid, [2] perThreadSize */
+#define MAINLET_PARAMC 9
+#define LOOP_PARAMC    10
 
 /* --- Helper: build EDT affinity hint for a given thread id --- */
 static void getAffinityHints(u64 tid, ocrHint_t *edtHint, ocrHint_t *dbHint)
@@ -132,9 +146,10 @@ ocrGuid_t copy(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
     double *a = (double *)depv[0].ptr;
     double *c = (double *)depv[1].ptr;
+    u64 pts = paramv[2];
     u32 i;
 
-    for(i = 0; i<PER_THREAD_SIZE; i++) c[i] = a[i];
+    for(i = 0; i<pts; i++) c[i] = a[i];
     return depv[1].guid;
 }
 
@@ -142,9 +157,10 @@ ocrGuid_t scale(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
     double *a = (double *)depv[0].ptr;
     double *b = (double *)depv[1].ptr;
+    u64 pts = paramv[2];
     u32 i;
 
-    for(i = 0; i<PER_THREAD_SIZE; i++) b[i] = scalar*a[i];
+    for(i = 0; i<pts; i++) b[i] = scalar*a[i];
 
     return depv[1].guid;
 }
@@ -154,9 +170,10 @@ ocrGuid_t add(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     double *a = (double *)depv[0].ptr;
     double *b = (double *)depv[1].ptr;
     double *c = (double *)depv[2].ptr;
+    u64 pts = paramv[2];
     u32 i;
 
-    for(i = 0; i<PER_THREAD_SIZE; i++) c[i] = a[i] + b[i];
+    for(i = 0; i<pts; i++) c[i] = a[i] + b[i];
 
     return depv[2].guid;
 }
@@ -166,11 +183,12 @@ ocrGuid_t triad(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     double *a = (double *)depv[0].ptr;
     double *b = (double *)depv[1].ptr;
     double *c = (double *)depv[2].ptr;
+    u64 pts = paramv[2];
     u32 i;
 
-    for(i = 0; i<PER_THREAD_SIZE; i++) a[i] = b[i] + scalar*c[i];
+    for(i = 0; i<pts; i++) a[i] = b[i] + scalar*c[i];
 
-    times[paramv[1]][paramv[0]] = mysecond() - times[paramv[1]][paramv[0]];
+    if(times) TIMES(paramv[1], paramv[0]) = mysecond() - TIMES(paramv[1], paramv[0]);
     return depv[0].guid;
 }
 
@@ -182,7 +200,7 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
    * a's final value encodes all four kernels over all iterations. */
   STREAM_TYPE aj = 2.0;  /* initial value from mainLet */
   int k;
-  for (k = 0; k < NTIMES; k++) {
+  for (k = 0; k < nTimes; k++) {
       STREAM_TYPE cj = aj;               /* copy  */
       STREAM_TYPE bj = scalar * aj;      /* scale */
       cj = aj + bj;                      /* add   */
@@ -192,9 +210,9 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
   double epsilon = (sizeof(STREAM_TYPE) == 4) ? 1.e-6 : 1.e-13;
   u64 errCount = 0;
   u32 t, i;
-  for (t = 0; t < NUM_THREADS; t++) {
+  for (t = 0; t < numThreads; t++) {
       double *a = (double *)depv[t].ptr;
-      for (i = 0; i < PER_THREAD_SIZE; i++) {
+      for (i = 0; i < perThreadSize; i++) {
           double relErr = (aj != 0.0) ? fabs((a[i] - aj) / aj) : fabs(a[i]);
           if (relErr > epsilon) errCount++;
       }
@@ -204,7 +222,7 @@ ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
   if (errCount == 0)
       PRINTF("Solution Validates: all %d elements match expected value\n",
-             PER_THREAD_SIZE * NUM_THREADS);
+             (int)(perThreadSize * numThreads));
   else
       PRINTF("Solution FAILED Validation: %llu errors in a[]\n",
              (unsigned long long)errCount);
@@ -235,17 +253,19 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t tmp_add_g   = (ocrGuid_t){.guid = (intptr_t)paramv[5]};
   ocrGuid_t tmp_triad_g = (ocrGuid_t){.guid = (intptr_t)paramv[6]};
   ocrGuid_t tmp_loop_g  = (ocrGuid_t){.guid = (intptr_t)paramv[7]};
+  u64 pts    = paramv[8];
+  u64 ntimes = paramv[9];
 
   /* Build affinity hint for this thread's target node */
   ocrHint_t edtHint;
   getAffinityHints(tid, &edtHint, NULL);
 
-  times[tid][iter] = mysecond();
+  if(times) TIMES(tid, iter) = mysecond();
   ocrGuid_t copy_output, scale_output, add_output, triad_output;
   ocrGuid_t edt_copy, edt_scale, edt_add, edt_triad;
 
-  /* Child kernel paramv: [iter, tid] (existing 2-slot template). */
-  u64 child_param[2] = { iter, tid };
+  /* Child kernel paramv: [iter, tid, perThreadSize]. */
+  u64 child_param[3] = { iter, tid, pts };
   ocrEdtCreate(&edt_copy,  tmp_copy_g,  EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &copy_output);
   ocrEdtCreate(&edt_scale, tmp_scale_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &scale_output);
   ocrEdtCreate(&edt_add,   tmp_add_g,   EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &add_output);
@@ -265,11 +285,11 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
    * source EDT becomes runnable, so wire the output-event waiters here and
    * keep the chain-starting addDeps last. */
   iter++;
-  if (iter < NTIMES) {
+  if (iter < ntimes) {
     /* Forward all paramv slots to the next iteration. */
     u64 next_param[LOOP_PARAMC] = {
       iter, tid, paramv[2], paramv[3], paramv[4],
-      paramv[5], paramv[6], paramv[7]
+      paramv[5], paramv[6], paramv[7], pts, ntimes
     };
     ocrGuid_t edt_loop;
     ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, next_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, NULL);
@@ -306,6 +326,8 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t tmp_add_g       = (ocrGuid_t){.guid = (intptr_t)paramv[4]};
     ocrGuid_t tmp_triad_g     = (ocrGuid_t){.guid = (intptr_t)paramv[5]};
     ocrGuid_t tmp_loop_g      = (ocrGuid_t){.guid = (intptr_t)paramv[6]};
+    u64 pts    = paramv[7];
+    u64 ntimes = paramv[8];
 
     ocrGuid_t db_a, db_b, db_c;
     double *a, *b, *c;
@@ -317,21 +339,21 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     getAffinityHints(tid, &edtHint, &dbHint);
 
     /* Create DBs with DB affinity hint (placed on target node) */
-    ocrDbCreate(&db_a, (void **)&a, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_a, (void **)&a, sizeof(double)*pts,
                              FLAGS, &dbHint, NO_ALLOC);
-    ocrDbCreate(&db_b, (void **)&b, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_b, (void **)&b, sizeof(double)*pts,
                              FLAGS, &dbHint, NO_ALLOC);
-    ocrDbCreate(&db_c, (void **)&c, sizeof(double)*PER_THREAD_SIZE,
+    ocrDbCreate(&db_c, (void **)&c, sizeof(double)*pts,
                              FLAGS, &dbHint, NO_ALLOC);
 
     /* Initialize arrays */
-    for(i = 0; i<PER_THREAD_SIZE; i++) {
+    for(i = 0; i<pts; i++) {
         a[i] = 2.0;
         b[i] = 2.0;
         c[i] = 0.0;
     }
 
-    /* Forward all GUIDs to loop via paramv. */
+    /* Forward all GUIDs and runtime sizes to loop via paramv. */
     u64 param[LOOP_PARAMC] = {
       0 /*iter*/, tid,
       paramv[1] /*evt_finalize_my*/,
@@ -339,7 +361,8 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       paramv[3] /*tmp_scale*/,
       paramv[4] /*tmp_add*/,
       paramv[5] /*tmp_triad*/,
-      paramv[6] /*tmp_loop*/
+      paramv[6] /*tmp_loop*/,
+      pts, ntimes
     };
     ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL,
                  EDT_PROP_FINISH, &edtHint, &output_evt);
@@ -355,6 +378,26 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
+    // Positional argv: [streamArraySize] [numThreads] [nTimes]; absent args keep the #define defaults.
+    if(depc >= 1 && depv[0].ptr) {
+        u64 argc = getArgc(depv[0].ptr);
+        if(argc > 1) streamArraySize = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+        if(argc > 2) numThreads      = strtoull(getArgv(depv[0].ptr, 2), NULL, 10);
+        if(argc > 3) nTimes          = strtoull(getArgv(depv[0].ptr, 3), NULL, 10);
+    }
+    if(numThreads == 0)      numThreads      = NUM_THREADS;   // guard degenerate counts
+    if(streamArraySize == 0) streamArraySize = STREAM_ARRAY_SIZE;
+    if(nTimes == 0)          nTimes          = NTIMES;
+    if(streamArraySize % numThreads != 0)
+        fprintf(stderr,
+                "stream_dist: array size %llu not a multiple of %llu threads; "
+                "truncating to %llu elements/thread (%llu total)\n",
+                (unsigned long long)streamArraySize, (unsigned long long)numThreads,
+                (unsigned long long)(streamArraySize / numThreads),
+                (unsigned long long)((streamArraySize / numThreads) * numThreads));
+    perThreadSize = streamArraySize / numThreads;
+    times = (double *)calloc(numThreads * nTimes, sizeof(double));
+
     preamble();
 
     ocrGuid_t tmp_mainLet, tmp_loop, tmp_copy, tmp_scale, tmp_add, tmp_triad;
@@ -366,15 +409,15 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
      * to children through paramv so cross-rank EDTs can use the same
      * GUIDs without per-rank template recreation. */
     ocrEdtTemplateCreate(&tmp_mainLet, mainLet, MAINLET_PARAMC, 0);
-    ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, NUM_THREADS);
-    ocrEdtTemplateCreate(&tmp_copy,  copy,  2, 2);
-    ocrEdtTemplateCreate(&tmp_scale, scale, 2, 2);
-    ocrEdtTemplateCreate(&tmp_add,   add,   2, 3);
-    ocrEdtTemplateCreate(&tmp_triad, triad, 2, 3);
+    ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, numThreads);
+    ocrEdtTemplateCreate(&tmp_copy,  copy,  3, 2);
+    ocrEdtTemplateCreate(&tmp_scale, scale, 3, 2);
+    ocrEdtTemplateCreate(&tmp_add,   add,   3, 3);
+    ocrEdtTemplateCreate(&tmp_triad, triad, 3, 3);
     ocrEdtTemplateCreate(&tmp_loop,  loop,  LOOP_PARAMC, 3);
     ocrEdtCreate(&edt_finalize, tmp_finalize, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
 
-    for(i = 0; i<NUM_THREADS; i++) {
+    for(i = 0; i<numThreads; i++) {
         /* Build per-thread EDT affinity hint */
         ocrHint_t edtHint;
         getAffinityHints(i, &edtHint, NULL);
@@ -390,7 +433,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
           (u64)tmp_scale.guid,
           (u64)tmp_add.guid,
           (u64)tmp_triad.guid,
-          (u64)tmp_loop.guid
+          (u64)tmp_loop.guid,
+          perThreadSize, nTimes
         };
         ocrEdtCreate(&edt_mainLet, tmp_mainLet, EDT_PARAM_DEF, mainLet_param,
                      EDT_PARAM_DEF, NULL,
@@ -417,13 +461,13 @@ void preamble(void)
     PRINTF(HLINE);
 
     PRINTF("Array size = %llu (elements), Offset = %d (elements)\n",
-           (unsigned long long) STREAM_ARRAY_SIZE, OFFSET);
+           (unsigned long long) streamArraySize, OFFSET);
     PRINTF("Memory per array = %.1f MiB (= %.1f GiB).\n",
-        BytesPerWord * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024.0),
-        BytesPerWord * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024.0/1024.0));
+        BytesPerWord * ( (double) streamArraySize / 1024.0/1024.0),
+        BytesPerWord * ( (double) streamArraySize / 1024.0/1024.0/1024.0));
     PRINTF("Total memory required = %.1f MiB (= %.1f GiB).\n",
-        (3.0 * BytesPerWord) * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024.),
-        (3.0 * BytesPerWord) * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024./1024.));
+        (3.0 * BytesPerWord) * ( (double) streamArraySize / 1024.0/1024.),
+        (3.0 * BytesPerWord) * ( (double) streamArraySize / 1024.0/1024./1024.));
 
 #ifdef ENABLE_EXTENSION_AFFINITY
     {
@@ -432,14 +476,14 @@ void preamble(void)
         PRINTF("Data is distributed across %llu node(s)\n",
                (unsigned long long) affCount);
         PRINTF("   %d threads total, ~%d threads per node\n",
-               NUM_THREADS, NUM_THREADS / (int)affCount);
+               (int)numThreads, (int)(numThreads / affCount));
         PRINTF("   Per-thread partition = %d elements (%.1f MiB)\n",
-               PER_THREAD_SIZE,
-               BytesPerWord * ((double)PER_THREAD_SIZE / 1024.0/1024.0));
+               (int)perThreadSize,
+               BytesPerWord * ((double)perThreadSize / 1024.0/1024.0));
     }
 #endif
 
-    PRINTF("Each kernel will be executed %d times.\n", NTIMES);
+    PRINTF("Each kernel will be executed %d times.\n", (int)nTimes);
     PRINTF(" The *best* time for each kernel (excluding the first iteration)\n");
     PRINTF(" will be used to compute the reported bandwidth.\n");
     PRINTF("The SCALAR value used for this run is %f\n", (double)SCALAR);
@@ -454,20 +498,20 @@ int printTimes(void)
     double maxtime = 0.0;
     int j, k;
 
-    for (k=1; k<NTIMES; k++) /* note -- skip first iteration */
+    for (k=1; k<nTimes; k++) /* note -- skip first iteration */
         {
-        for (j=0; j<NUM_THREADS; j++)
+        for (j=0; j<numThreads; j++)
             {
-            avgtime = avgtime + times[j][k];
-            mintime = MIN(mintime, times[j][k]);
-            maxtime = MAX(maxtime, times[j][k]);
+            avgtime = avgtime + TIMES(j, k);
+            mintime = MIN(mintime, TIMES(j, k));
+            maxtime = MAX(maxtime, TIMES(j, k));
             }
         }
 
     PRINTF(HLINE);
     PRINTF("%f MB/s %f %f %f\n",
-           1.0E-06*10*sizeof(STREAM_TYPE)*PER_THREAD_SIZE/mintime,
-           avgtime/((NTIMES-1)*NUM_THREADS), mintime, maxtime);
+           1.0E-06*10*sizeof(STREAM_TYPE)*perThreadSize/mintime,
+           avgtime/((nTimes-1)*numThreads), mintime, maxtime);
     PRINTF(HLINE);
 
     return 0;

@@ -1,8 +1,9 @@
 #include <ocr.h>
+#include <stdlib.h>
 #include "macros.h"
 
 #define CACHE_LINE_SIZE 64
-//Size of array to be sorted
+//Size of array to be sorted (compile-time default; overridable at runtime)
 #define ARRAY_SIZE 1000
 //Range of numbers to be sorted.
 #define RANGE 1000000
@@ -166,18 +167,29 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     qsortPRM_t  qsortParamv;
     finishPRM_t finishParamv;
 
+    // Positional argv: [arraySize] [range]; absent args keep the #define defaults.
+    u64 arraySize = ARRAY_SIZE;
+    u64 range = RANGE;
+    if(depc >= 1 && depv[0].ptr) {
+        u64 argc = getArgc(depv[0].ptr);
+        if(argc > 1) arraySize = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+        if(argc > 2) range     = strtoull(getArgv(depv[0].ptr, 2), NULL, 10);
+    }
+    if(arraySize == 0) arraySize = ARRAY_SIZE;   // guard degenerate size
+    if(range == 0)     range     = RANGE;
+
     ocrEdtTemplateCreate(&qsortTemplate, qsortTask, PRMNUM(qsort), 1);
 
-    ocrDbCreate(&dataDb, (void**)&data, sizeof(u64) * (ARRAY_SIZE),
+    ocrDbCreate(&dataDb, (void**)&data, sizeof(u64) * (arraySize),
         /*flags=*/0, /*location=*/NULL_HINT, NO_ALLOC);
 
     u64 i;
-    for(i = 0; i < ARRAY_SIZE; i++)
-        data[i] = getRandNum(i) % RANGE;
+    for(i = 0; i < arraySize; i++)
+        data[i] = getRandNum(i) % range;
     ocrDbRelease(dataDb);
 
     qsortParamv.low = 0;
-    qsortParamv.high = ARRAY_SIZE-1;
+    qsortParamv.high = arraySize-1;
     qsortParamv.qsortTemplate = qsortTemplate;
 
     ocrEdtCreate(&qsortEdt, qsortTemplate, EDT_PARAM_DEF, (u64 *)&qsortParamv,
@@ -194,7 +206,7 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrGuid_t finishTemplate;
     ocrGuid_t finishEdt;
 
-    finishParamv.arraySize = ARRAY_SIZE;
+    finishParamv.arraySize = arraySize;
 
     ocrGuid_t finishDepv[2] = {dataDb, coordEvt};
     ocrEdtTemplateCreate(&finishTemplate, finishTask, PRMNUM(finish), 2);
