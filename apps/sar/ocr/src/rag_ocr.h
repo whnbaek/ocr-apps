@@ -199,6 +199,25 @@ void DRAMtoDRAM(void *out, void *in, size_t size);
  	retval = ocrAddDependence(dbg,scg,slot,DB_MODE_RW); assert(retval==0); \
 	rag_printf("DEF_PASS "GUIDF" \n",GUIDA(dbg));rag_flush;
 
+// Read-only counterparts of the wiring macros above.  A dependency whose EDT
+// body never writes the block must be declared DB_MODE_RO: under an ownership
+// coherence protocol RW forces per-node-exclusive acquisition (the block's
+// lease migrates to whichever node runs the task), whereas RO lets every node
+// hold a shared copy of the last committed version concurrently.  Use these at
+// a site only when the consuming EDT provably does not mutate that block;
+// keep the RW macros for producers, scatter-writers, and shared counters.
+#define RAG_DEF_MACRO_SPAD_RO(scg,no_type,no_var,no_ptr,no_lcl,dbg,slot) \
+ 	retval = ocrAddDependence(dbg,scg,slot,DB_MODE_RO); assert(retval==0); \
+	rag_printf("DEF_SPAD_RO "GUIDF" \n",GUIDA(dbg));rag_flush;
+
+#define RAG_DEF_MACRO_BSM_RO(scg,no_type,no_var,no_ptr,no_lcl,dbg,slot) \
+ 	retval = ocrAddDependence(dbg,scg,slot,DB_MODE_RO); assert(retval==0); \
+	rag_printf("DEF_BSM_RO  "GUIDF" \n",GUIDA(dbg));rag_flush;
+
+#define RAG_DEF_MACRO_PASS_RO(scg,no_type,no_var,no_ptr,no_lcl,dbg,slot) \
+ 	retval = ocrAddDependence(dbg,scg,slot,DB_MODE_RO); assert(retval==0); \
+	rag_printf("DEF_PASS_RO "GUIDF" \n",GUIDA(dbg));rag_flush;
+
 #define RAG_REF_MACRO_SPAD(type,var,ptr_var,lcl_var,dbg,slot) \
 	ocrGuid_t dbg = depv[slot].guid; \
 	type *var, *ptr_var= (void *)depv[slot].ptr, lcl_var; \
@@ -214,6 +233,48 @@ void DRAMtoDRAM(void *out, void *in, size_t size);
 #define RAG_REF_MACRO_PASS(no_type,no_var,no_ptr,no_lcl,dbg,slot) \
 	ocrGuid_t dbg = depv[slot].guid; \
 	rag_printf("REF_PASS "GUIDF" \n",GUIDA(dbg));rag_flush;
+
+// A "packed" 2D DataBlock lays a table of row pointers ahead of its element
+// payload: [ nrows row pointers ][ nrows*stride elements ], with each pointer
+// row[r] pointing at &payload[r*stride].  Those pointers are absolute and are
+// only valid for the base address the table had when it was built.  A runtime
+// that relocates the block — e.g. clones it into another address space when an
+// EDT on a different node acquires it — leaves the table pointing at the old
+// base, so any row[r][c] access dereferences a stale address.
+//
+// RAG_REMAP_2D rebuilds the table into EDT-local storage and re-points the
+// caller's row-pointer variable at it.  The local entries point into the
+// block's *payload* (row_data[r*stride]), so element reads and writes still land
+// in the block; only the private view is rebuilt.  The block's own row-pointer
+// table is left untouched — deliberately, so an EDT that merely reads the
+// elements does not dirty the block (which would force a spurious write-back and
+// serialize otherwise-parallel readers under an ownership protocol).  `rows`
+// must be an assignable pointer variable; `elem_t` is the element type.
+#define RAG_REMAP_2D(rows,nrows,stride,elem_t) \
+	elem_t *_rag_view_##rows[(size_t)(nrows)]; \
+	do { \
+		elem_t *_rag_base = (elem_t *)&(rows)[(nrows)]; \
+		for(size_t _rag_r = 0; _rag_r < (size_t)(nrows); _rag_r++) \
+			_rag_view_##rows[_rag_r] = _rag_base + _rag_r*(size_t)(stride); \
+		(rows) = _rag_view_##rows; \
+	} while(0)
+
+// image_params->xr / ->yr are absolute pointers into sibling axis-vector
+// DataBlocks that are not carried as EDT dependencies, so a relocated copy of
+// image_params leaves them stale.  The axis vectors are pure functions of
+// (Ix,Iy,dr) — identical to how mainEdt builds them — so an EDT that reads them
+// rebuilds them into local storage and re-points its private image_params copy.
+// `ip` is a struct ImageParams*; `xrbuf`/`yrbuf` are caller-owned arrays of
+// length ip->Ix / ip->Iy.
+#define RAG_REBUILD_AXIS(ip,xrbuf,yrbuf) \
+	do { \
+		for(int _rag_i = 0; _rag_i < (ip)->Ix; _rag_i++) \
+			(xrbuf)[_rag_i] = (_rag_i - floorf((float)(ip)->Ix/2))*(ip)->dr; \
+		for(int _rag_i = 0; _rag_i < (ip)->Iy; _rag_i++) \
+			(yrbuf)[_rag_i] = (_rag_i - floorf((float)(ip)->Iy/2))*(ip)->dr; \
+		(ip)->xr = (xrbuf); \
+		(ip)->yr = (yrbuf); \
+	} while(0)
 
 #ifndef RAG_NEW_BLK_SIZE
 static int blk_size(int n,int max_blk_size) {

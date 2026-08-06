@@ -28,6 +28,21 @@ ocrGuid_t backproject_async_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc
   RAG_REF_MACRO_BSM( float **,platpos,NULL,NULL,platpos_dbg,4);
   RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,4);
 
+  // Rebuild the row-pointer tables against this node's copies before any
+  // image[m][n] / Xin[k][b] / platpos[k][c] access.  Xin is X (P3==P1 rows,
+  // S4==S1 stride when F==1) or the upsampled Xup (P3 rows, S4 stride) — both
+  // covered by (P3, S4).
+  RAG_REMAP_2D(image,   image_params->Iy, image_params->Ix, struct complexData);
+  RAG_REMAP_2D(Xin,     image_params->P3, image_params->S4, struct complexData);
+  RAG_REMAP_2D(platpos, image_params->P1, 3,                float);
+
+  // Rebuild image_params->xr / ->yr locally (stale sibling-DB pointers under
+  // relocation) before the xr/yr reads in the distance computation below.
+  float rag_xr[image_params->Ix];
+  float rag_yr[image_params->Iy];
+  RAG_REBUILD_AXIS(image_params, rag_xr, rag_yr);
+
+
   struct complexData sample, acc, arg;
 
 #ifdef GANESH_STRENGTH_RED_OPT
@@ -545,12 +560,12 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
 			NULL);			// *outputEvent
 	assert(retval==0);
 
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
 	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,image_dbg,2);
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,Xup_dbg,3); // Xup
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,Pt_dbg,4);  // Platform Position
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,Tp_dbg,5);  // Platform Position
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Xup_dbg,3); // Xup
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Pt_dbg,4);  // Platform Position
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Tp_dbg,5);  // Platform Position
       } // for n
     } // for m
 #ifndef TG_ARCH
@@ -623,12 +638,12 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
 			NULL);			// *outputEvent
 	assert(retval==0);
 
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
 	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,image_dbg,2);
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,Xin_dbg,3); // Xin
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,Pt_dbg,4);  // Platform Position
-	RAG_DEF_MACRO_PASS(backproject_async_scg,NULL,NULL,NULL,NULL,Tp_dbg,5);  // Time Pulse
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Xin_dbg,3); // Xin
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Pt_dbg,4);  // Platform Position
+	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Tp_dbg,5);  // Time Pulse
       } // for n
     } // for m
   } // if F

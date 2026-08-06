@@ -12,11 +12,17 @@ ocrGuid_t post_CFAR_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdt
 #ifdef TRACE_LVL_2
 ocrPrintf("//// enter post_CFAR_edt\n");RAG_FLUSH;
 #endif
-	assert(paramc==1);
+	assert(paramc==PRMNUM(postCFAR));
 #ifdef TG_ARCH
        void *pOutFile = postCFARParamvIn->pOutFile;
 #else
-       FILE *pOutFile = postCFARParamvIn->pOutFile;
+       /* The paramv carries the detects path by value; open it on the node
+        * this task executes on (a FILE* would be process-local). */
+       FILE *pOutFile = fopen(postCFARParamvIn->out_detects, "wb");
+       if( pOutFile == NULL ) {
+              ocrPrintf("Error opening %s\n", postCFARParamvIn->out_detects);RAG_FLUSH;
+              xe_exit(1);
+       }
 #endif
 #ifdef TRACE_LVL_2
 ocrPrintf("//// pOutFile = %lx\n",pOutFile);RAG_FLUSH;
@@ -53,6 +59,9 @@ ocrPrintf("//// Output to file %d detects\n",Nd);RAG_FLUSH;
 			 *(uint32_t *)&Y[m].x, *(uint32_t *)&Y[m].y, *(uint32_t *)&Y[m].p);
 #endif
 	} // for m
+#ifndef TG_ARCH
+	fclose(pOutFile);
+#endif
 
 	bsm_free(p_Nd,Nd_dbg);
 #ifdef TRACE_LVL_2
@@ -131,6 +140,15 @@ RAG_REF_MACRO_SPAD(struct CfarParams,cfar_params,cfar_parms_ptr,cfar_parms_lcl,c
 RAG_REF_MACRO_BSM( struct point **,corr_map,NULL,NULL,corr_map_dbg,2);
 RAG_REF_MACRO_BSM( struct detects *,Y,NULL,NULL,Y_dbg,3);
 RAG_REF_MACRO_BSM( int *,p_Nd,NULL,NULL,Nd_dbg,4);
+	// Rebuild corr_map's row-pointer table against this node's copy before the
+	// corr_map[i][j] reads below; (Iy-Ncor+1) rows of (Ix-Ncor+1) elements.
+	RAG_REMAP_2D(corr_map, image_params->Iy-image_params->Ncor+1,
+	                       image_params->Ix-image_params->Ncor+1, struct point);
+	// image_params->xr / ->yr are read below to fill the detect coordinates;
+	// rebuild them locally (stale sibling-DB pointers under relocation).
+	float rag_xr[image_params->Ix];
+	float rag_yr[image_params->Iy];
+	RAG_REBUILD_AXIS(image_params, rag_xr, rag_yr);
 
 	int T,cnt;
 	int mIndex, nIndex;
@@ -262,8 +280,8 @@ ocrPrintf("//// Mwins == %d and Nwins == %d, Ncfar == %d, Ncor == %d\n",Mwins,Nw
 #ifdef TRACE_LVL_2
 ocrPrintf("//// satisfy non event guids for post_CFAR_scg\n");RAG_FLUSH;
 #endif
-RAG_DEF_MACRO_PASS(post_CFAR_scg,NULL,NULL,NULL,NULL,Y_dbg,0);
-RAG_DEF_MACRO_PASS(post_CFAR_scg,NULL,NULL,NULL,NULL,Nd_dbg,1);
+RAG_DEF_MACRO_PASS_RO(post_CFAR_scg,NULL,NULL,NULL,NULL,Y_dbg,0);
+RAG_DEF_MACRO_PASS_RO(post_CFAR_scg,NULL,NULL,NULL,NULL,Nd_dbg,1);
 
 #ifdef TRACE_LVL_2
 ocrPrintf("//// create a template for cfar_async function\n");RAG_FLUSH;
@@ -312,9 +330,9 @@ ocrPrintf("////// create an edt for cfar_async\n");RAG_FLUSH;
 					NULL);			// *outputEvent
 			assert(retval==0);
 
-RAG_DEF_MACRO_PASS(cfar_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_PASS(cfar_async_scg,NULL,NULL,NULL,NULL,cfar_params_dbg,1);
-RAG_DEF_MACRO_PASS(cfar_async_scg,NULL,NULL,NULL,NULL,corr_map_dbg,2);
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,cfar_params_dbg,1);
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,corr_map_dbg,2);
 RAG_DEF_MACRO_PASS(cfar_async_scg,NULL,NULL,NULL,NULL,Y_dbg,3);
 RAG_DEF_MACRO_PASS(cfar_async_scg,NULL,NULL,NULL,NULL,Nd_dbg,4);
 		} // for n

@@ -147,33 +147,46 @@ ocrPrintf("allocate AffineParams\n");RAG_FLUSH;
 		xe_exit(1);
 	}
 
+	/* The detects output is written by every build flavor; input paths exist
+	 * only in the runtime-input build. */
+	const char *out_detects = argv_4;
 #ifndef RAG_IMPLICIT_INPUTS
+	/* Data paths: compiled defaults (argv.h macros). */
+	const char *in_data = argv_1, *in_platpos = argv_2;
+	const char *in_pulsetime = argv_3;
+	/* Validation opens only — fail fast on a bad path.  The handles are not
+	 * kept: a FILE* is process-local, so the consuming tasks (ReadData_edt,
+	 * post_CFAR_edt) reopen the files on whichever node they execute on;
+	 * only the paths travel (file_args block / post_CFAR paramv). */
 	pInFile  = NULL;
 	pInFile2 = NULL;
 	pInFile3 = NULL;
 #ifdef TRACE_LVL_1
 ocrPrintf("// SAR data\n");RAG_FLUSH;
 #endif
-	if( (pInFile = fopen(argv_1, "rb")) == NULL ) {
-		ocrPrintf("Error opening %s\n", argv_1);
+	if( (pInFile = fopen(in_data, "rb")) == NULL ) {
+		ocrPrintf("Error opening %s\n", in_data);
 		xe_exit(1);
 	}
+	fclose(pInFile);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// Platform positions\n");RAG_FLUSH;
 #endif
-	if( (pInFile2 = fopen(argv_2, "rb")) == NULL ) {
-		ocrPrintf("Error opening %s\n", argv_2);
+	if( (pInFile2 = fopen(in_platpos, "rb")) == NULL ) {
+		ocrPrintf("Error opening %s\n", in_platpos);
 		xe_exit(1);
 	}
+	fclose(pInFile2);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// Pulse transmission timestamps\n");RAG_FLUSH;
 #endif
-	if( (pInFile3 = fopen(argv_3, "rb")) == NULL ) {
-		ocrPrintf("Error opening %s\n", argv_3);
+	if( (pInFile3 = fopen(in_pulsetime, "rb")) == NULL ) {
+		ocrPrintf("Error opening %s\n", in_pulsetime);
 		xe_exit(1);
 	}
+	fclose(pInFile3);
 
 #endif // RAG_IMPLICIT_INPUTS
 
@@ -196,10 +209,12 @@ ocrPrintf("// Pulse transmission timestamps\n");RAG_FLUSH;
 #ifdef TRACE_LVL_1
 ocrPrintf("// Detects.txt\n");RAG_FLUSH;
 #endif
-	if( (pOutFile = fopen(argv_4, "wb")) == NULL ) {
-		ocrPrintf("Error opening %s\n", argv_4);
+	/* Validation open only — post_CFAR_edt reopens the path on its node. */
+	if( (pOutFile = fopen(out_detects, "wb")) == NULL ) {
+		ocrPrintf("Error opening %s\n", out_detects);
 		xe_exit(1);
 	}
+	fclose(pOutFile);
 #endif // TG_ARCH
 
 #ifdef TRACE_LVL_1
@@ -538,10 +553,21 @@ ocrPrintf("// Allocate memory for detection list\n");RAG_FLUSH;
 
 	struct file_args_t file_args_lcl, *file_args_ptr;
 	ocrGuid_t file_args_dbg;
+#ifdef TG_ARCH
 	file_args_lcl.pInFile  = pInFile;
 	file_args_lcl.pInFile2 = pInFile2;
 	file_args_lcl.pInFile3 = pInFile3;
 	file_args_lcl.pOutFile = pOutFile;
+#else
+	/* Paths only — each consuming task reopens on its own node. */
+	memset(&file_args_lcl, 0, sizeof(file_args_lcl));
+#ifndef RAG_IMPLICIT_INPUTS
+	strncpy(file_args_lcl.in_data,      in_data,      RAG_PATH_MAX-1);
+	strncpy(file_args_lcl.in_platpos,   in_platpos,   RAG_PATH_MAX-1);
+	strncpy(file_args_lcl.in_pulsetime, in_pulsetime, RAG_PATH_MAX-1);
+#endif
+	strncpy(file_args_lcl.out_detects,  out_detects,  RAG_PATH_MAX-1);
+#endif
 	file_args_ptr = (struct file_args_t *)bsm_malloc(&file_args_dbg,sizeof(struct file_args_t));
 	if(file_args_ptr == NULL) {
 		ocrPrintf("Error allocating memory for file_args.\n");RAG_FLUSH;
@@ -585,20 +611,20 @@ ocrPrintf("// create an edt for post_main_edt\n");RAG_FLUSH;
 ocrPrintf("// provide the arguments to post_main_edt.\n");RAG_FLUSH;
 #endif
 
-RAG_DEF_MACRO_PASS(post_main_scg,struct detects *,NULL,NULL,NULL,Y_dbg,0);
-RAG_DEF_MACRO_SPAD(post_main_scg,struct ImageParams *,NULL,NULL,NULL,image_params_dbg,1);
-RAG_DEF_MACRO_PASS(post_main_scg,float *,NULL,NULL,NULL,image_params_yr_dbg,2);
-RAG_DEF_MACRO_PASS(post_main_scg,float *,NULL,NULL,NULL,image_params_xr_dbg,3);
-RAG_DEF_MACRO_SPAD(post_main_scg,struct RadarParams *,NULL,NULL,NULL,radar_params_dbg,4);
-RAG_DEF_MACRO_SPAD(post_main_scg,struct AffineParams *,NULL,NULL,NULL,affine_params_dbg,5);
-RAG_DEF_MACRO_SPAD(post_main_scg,struct Cfar_params *,NULL,NULL,NULL,cfar_params_dbg,6);
-RAG_DEF_MACRO_BSM( post_main_scg,struct complexData **,curImage,NULL,NULL,curImage_dbg,7);
-RAG_DEF_MACRO_BSM( post_main_scg,struct complexData **,refImage,NULL,NULL,refImage_dbg,8);
-RAG_DEF_MACRO_BSM( post_main_scg,struct point **,corr_map,NULL,NULL,corr_map_dbg,9);
-RAG_DEF_MACRO_BSM( post_main_scg,struct complexData **,NULL,NULL,NULL,X_dbg,10);
-RAG_DEF_MACRO_BSM( post_main_scg,struct float **,NULL,NULL,NULL,Pt_dbg,11);
-RAG_DEF_MACRO_BSM( post_main_scg,struct float *,NULL,NULL,NULL,Tp_dbg,12);
-RAG_DEF_MACRO_SPAD(post_main_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,13);
+RAG_DEF_MACRO_PASS_RO(post_main_scg,struct detects *,NULL,NULL,NULL,Y_dbg,0);
+RAG_DEF_MACRO_SPAD_RO(post_main_scg,struct ImageParams *,NULL,NULL,NULL,image_params_dbg,1);
+RAG_DEF_MACRO_PASS_RO(post_main_scg,float *,NULL,NULL,NULL,image_params_yr_dbg,2);
+RAG_DEF_MACRO_PASS_RO(post_main_scg,float *,NULL,NULL,NULL,image_params_xr_dbg,3);
+RAG_DEF_MACRO_SPAD_RO(post_main_scg,struct RadarParams *,NULL,NULL,NULL,radar_params_dbg,4);
+RAG_DEF_MACRO_SPAD_RO(post_main_scg,struct AffineParams *,NULL,NULL,NULL,affine_params_dbg,5);
+RAG_DEF_MACRO_SPAD_RO(post_main_scg,struct Cfar_params *,NULL,NULL,NULL,cfar_params_dbg,6);
+RAG_DEF_MACRO_BSM_RO( post_main_scg,struct complexData **,curImage,NULL,NULL,curImage_dbg,7);
+RAG_DEF_MACRO_BSM_RO( post_main_scg,struct complexData **,refImage,NULL,NULL,refImage_dbg,8);
+RAG_DEF_MACRO_BSM_RO( post_main_scg,struct point **,corr_map,NULL,NULL,corr_map_dbg,9);
+RAG_DEF_MACRO_BSM_RO( post_main_scg,struct complexData **,NULL,NULL,NULL,X_dbg,10);
+RAG_DEF_MACRO_BSM_RO( post_main_scg,struct float **,NULL,NULL,NULL,Pt_dbg,11);
+RAG_DEF_MACRO_BSM_RO( post_main_scg,struct float *,NULL,NULL,NULL,Tp_dbg,12);
+RAG_DEF_MACRO_SPAD_RO(post_main_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,13);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for main_body_edt function\n");RAG_FLUSH;
@@ -641,18 +667,18 @@ ocrPrintf("// main_body_scg = %ld\n",main_body_scg);RAG_FLUSH;
 ocrPrintf("// provide the arguments to main_body_edt.\n");RAG_FLUSH;
 #endif
 
-RAG_DEF_MACRO_BSM( main_body_scg,struct complexData **,curImage,NULL,NULL,curImage_dbg,0);
-RAG_DEF_MACRO_BSM( main_body_scg,struct complexData **,refImage,NULL,NULL,refImage_dbg,1);
-RAG_DEF_MACRO_SPAD(main_body_scg,struct ImageParams *,image_params,image_params_ptr,image_params_lcl,image_params_dbg,2);
-RAG_DEF_MACRO_SPAD(main_body_scg,struct RadarParams *,radar_params,radar_params_ptr,radar_params_lcl,radar_params_dbg,3);
-RAG_DEF_MACRO_SPAD(main_body_scg,struct AffineParams *,affine_params,affine_params_ptr,affine_params_lcl,affine_params_dbg,4);
-RAG_DEF_MACRO_SPAD(main_body_scg,struct Cfar_params *,NULL,NULL,NULL,cfar_params_dbg,5);
-RAG_DEF_MACRO_BSM( main_body_scg,struct point **,corr_map,NULL,NULL,corr_map_dbg,6);
-RAG_DEF_MACRO_BSM( main_body_scg,struct complexData **,NULL,NULL,NULL,X_dbg,7);
-RAG_DEF_MACRO_BSM( main_body_scg,float **,NULL,NULL,NULL,Pt_dbg,8);
-RAG_DEF_MACRO_BSM( main_body_scg,float *,NULL,NULL,NULL,Tp_dbg,9);
-RAG_DEF_MACRO_PASS(main_body_scg,struct detects *,NULL,NULL,NULL,Y_dbg,10);
-RAG_DEF_MACRO_BSM( main_body_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,11);
+RAG_DEF_MACRO_BSM_RO( main_body_scg,struct complexData **,curImage,NULL,NULL,curImage_dbg,0);
+RAG_DEF_MACRO_BSM_RO( main_body_scg,struct complexData **,refImage,NULL,NULL,refImage_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(main_body_scg,struct ImageParams *,image_params,image_params_ptr,image_params_lcl,image_params_dbg,2);
+RAG_DEF_MACRO_SPAD_RO(main_body_scg,struct RadarParams *,radar_params,radar_params_ptr,radar_params_lcl,radar_params_dbg,3);
+RAG_DEF_MACRO_SPAD_RO(main_body_scg,struct AffineParams *,affine_params,affine_params_ptr,affine_params_lcl,affine_params_dbg,4);
+RAG_DEF_MACRO_SPAD_RO(main_body_scg,struct Cfar_params *,NULL,NULL,NULL,cfar_params_dbg,5);
+RAG_DEF_MACRO_BSM_RO( main_body_scg,struct point **,corr_map,NULL,NULL,corr_map_dbg,6);
+RAG_DEF_MACRO_BSM_RO( main_body_scg,struct complexData **,NULL,NULL,NULL,X_dbg,7);
+RAG_DEF_MACRO_BSM_RO( main_body_scg,float **,NULL,NULL,NULL,Pt_dbg,8);
+RAG_DEF_MACRO_BSM_RO( main_body_scg,float *,NULL,NULL,NULL,Tp_dbg,9);
+RAG_DEF_MACRO_PASS_RO(main_body_scg,struct detects *,NULL,NULL,NULL,Y_dbg,10);
+RAG_DEF_MACRO_BSM_RO( main_body_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,11);
 
 RAG_DEF_MACRO_BSM( post_main_scg,NULL,NULL,NULL,NULL,main_body_evg,14);
 
@@ -798,14 +824,26 @@ ocrPrintf("// create a template for post_CFAR function\n");RAG_FLUSH;
 ocrPrintf("// create an edt for post_CFAR\n");RAG_FLUSH;
 #endif
 #ifdef TRACE_LVL_1
+#ifdef TG_ARCH
 ocrPrintf("// main pOutFile = %lx\n",file_args_lcl.pOutFile);RAG_FLUSH;
+#else
+ocrPrintf("// main out_detects = %s\n",file_args_lcl.out_detects);RAG_FLUSH;
+#endif
 #endif
 	ocrGuid_t post_CFAR_scg, post_CFAR_evg;
+	postCFARPRM_t postCFARParamv;
+#ifdef TG_ARCH
+	postCFARParamv.pOutFile = file_args_lcl.pOutFile;
+#else
+	/* Path by value: post_CFAR_edt opens the detects file on its own node. */
+	memcpy(postCFARParamv.out_detects, file_args_lcl.out_detects,
+	       sizeof(postCFARParamv.out_detects));
+#endif
 	retval = ocrEdtCreate(
 			&post_CFAR_scg,		// *created_edt_guid
 			 post_CFAR_clg,		// edt_template_guid
 			EDT_PARAM_DEF,		// paramc
-			(uint64_t *)&file_args_lcl.pOutFile,	// *paramv
+			(uint64_t *)&postCFARParamv,	// *paramv
 			EDT_PARAM_DEF,		// depc
 			NULL,			// *depv
 			EDT_PROP_FINISH,	// properties
@@ -1020,7 +1058,7 @@ ocrPrintf("// create an edt for refImage ReadData_edt\n");RAG_FLUSH;
 ocrPrintf("// Read first set of input data\n");RAG_FLUSH;
 #endif
 RAG_DEF_MACRO_SPAD(refReadData_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_SPAD(refReadData_scg,NULL,NULL,NULL,NULL,file_args_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(refReadData_scg,NULL,NULL,NULL,NULL,file_args_dbg,1);
 RAG_DEF_MACRO_BSM( refReadData_scg,NULL,NULL,NULL,NULL,X_dbg,2);
 RAG_DEF_MACRO_BSM( refReadData_scg,NULL,NULL,NULL,NULL,Pt_dbg,3);
 RAG_DEF_MACRO_BSM( refReadData_scg,NULL,NULL,NULL,NULL,Tp_dbg,4);
@@ -1028,8 +1066,8 @@ RAG_DEF_MACRO_BSM( refReadData_scg,NULL,NULL,NULL,NULL,Tp_dbg,4);
 #ifdef TRACE_LVL_1
 ocrPrintf("// Form first image\n");RAG_FLUSH;
 #endif
-RAG_DEF_MACRO_SPAD(refFormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_SPAD(refFormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(refFormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+RAG_DEF_MACRO_SPAD_RO(refFormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
 RAG_DEF_MACRO_BSM (refFormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
 #ifdef RAG_TG_ARCH_NULL_GUID_WORKAROUND
 RAG_DEF_MACRO_BSM (refFormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,3);
@@ -1058,7 +1096,7 @@ RAG_DEF_MACRO_SPAD(refFormImage_scg,NULL,NULL,NULL,NULL,dig_spot_dbg,7);
 ocrPrintf("// Read second set of input data\n");RAG_FLUSH;
 #endif
 RAG_DEF_MACRO_SPAD(ReadData_scg,struct ImageParams *,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_SPAD(ReadData_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(ReadData_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,1);
 //RAG_DEF_MACRO_BSM( ReadData_scg,struct Complex **,NULL,NULL,NULL,X_dbg,2);
 //comming from refFormImage
 //RAG_DEF_MACRO_BSM( ReadData_scg,float **,NULL,NULL,NULL,Pt_dbg,3);
@@ -1070,8 +1108,8 @@ RAG_DEF_MACRO_SPAD(ReadData_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,
 #ifdef TRACE_LVL_1
 ocrPrintf("// Form second image (image_id=%d)\n",image);RAG_FLUSH;
 #endif
-RAG_DEF_MACRO_SPAD(FormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_SPAD(FormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(FormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+RAG_DEF_MACRO_SPAD_RO(FormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
 RAG_DEF_MACRO_SPAD(FormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
 RAG_DEF_MACRO_SPAD(FormImage_scg,NULL,NULL,NULL,NULL,refImage_dbg,3);
 //RAG_DEF_MACRO_BSM( FormImage_scg,NULL,NULL,NULL,NULL,X_dbg,4);
@@ -1097,9 +1135,9 @@ ocrPrintf("// Affine registration\n");RAG_FLUSH;
 #endif
 //RAG_DEF_MACRO_SPAD(Affine_scg,NULL,NULL,NULL,NULL,curImage_dbg,0);
 // done by FormImage_edt
-RAG_DEF_MACRO_SPAD(Affine_scg,NULL,NULL,NULL,NULL,refImage_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(Affine_scg,NULL,NULL,NULL,NULL,refImage_dbg,1);
 RAG_DEF_MACRO_SPAD(Affine_scg,NULL,NULL,NULL,NULL,affine_params_dbg,2);
-RAG_DEF_MACRO_SPAD(Affine_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
+RAG_DEF_MACRO_SPAD_RO(Affine_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
 //		Affine(curImage_dbg,refImage_dbg,affine_params_dbg, image_params_dbg);
 #endif
 
@@ -1107,19 +1145,19 @@ RAG_DEF_MACRO_SPAD(Affine_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
 ocrPrintf("// Coherent Change Detection (Ncor = %d)\n",image_params->Ncor);RAG_FLUSH;
 #endif
 		// Coherent Change Detection
-RAG_DEF_MACRO_SPAD(CCD_scg,NULL,NULL,NULL,NULL,curImage_dbg,0);
-RAG_DEF_MACRO_SPAD(CCD_scg,NULL,NULL,NULL,NULL,refImage_dbg,1);
-RAG_DEF_MACRO_SPAD(CCD_scg,NULL,NULL,NULL,NULL,corr_map_dbg,2);
-RAG_DEF_MACRO_SPAD(CCD_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
+RAG_DEF_MACRO_SPAD_RO(CCD_scg,NULL,NULL,NULL,NULL,curImage_dbg,0);
+RAG_DEF_MACRO_SPAD_RO(CCD_scg,NULL,NULL,NULL,NULL,refImage_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(CCD_scg,NULL,NULL,NULL,NULL,corr_map_dbg,2);
+RAG_DEF_MACRO_SPAD_RO(CCD_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
 //	        CCD(curImage, refImage, corr_map, image_params);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// Constant False Alarm Rate\n");RAG_FLUSH;
 #endif
-RAG_DEF_MACRO_SPAD(CFAR_scg,NULL,NULL,NULL,NULL,corr_map_dbg,0);
-RAG_DEF_MACRO_SPAD(CFAR_scg,NULL,NULL,NULL,NULL,image_params_dbg,1);
-RAG_DEF_MACRO_SPAD(CFAR_scg,NULL,NULL,NULL,NULL,cfar_params_dbg,2);
-RAG_DEF_MACRO_SPAD(CFAR_scg,NULL,NULL,NULL,NULL,Y_dbg,3);
+RAG_DEF_MACRO_SPAD_RO(CFAR_scg,NULL,NULL,NULL,NULL,corr_map_dbg,0);
+RAG_DEF_MACRO_SPAD_RO(CFAR_scg,NULL,NULL,NULL,NULL,image_params_dbg,1);
+RAG_DEF_MACRO_SPAD_RO(CFAR_scg,NULL,NULL,NULL,NULL,cfar_params_dbg,2);
+RAG_DEF_MACRO_SPAD_RO(CFAR_scg,NULL,NULL,NULL,NULL,Y_dbg,3);
 //		CFAR(corr_map, image_params, cfar_params, Y);
 
 RAG_DEF_MACRO_SPAD(post_affine_async_1_scg,NULL,NULL,NULL,NULL,Affine_evg,8);
@@ -1141,11 +1179,6 @@ ocrGuid_t post_main_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdt
 	int retval;
 	assert(paramc==0);
 	assert(depc==15); // 15th is finish edt event
-#ifndef TG_ARCH
-	FILE *pInFile, *pInFile2, *pInFile3, *pOutFile;
-#else
-	void *pInFile, *pInFile2, *pInFile3, *pOutFile;
-#endif
 #ifdef TRACE_LVL_1
 ocrPrintf("// enter post_main_edt\n");RAG_FLUSH;
 #endif
@@ -1164,16 +1197,19 @@ RAG_REF_MACRO_BSM( struct point **,Pt,NULL,NULL,Pt_dbg,11);
 RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,12);
 RAG_REF_MACRO_SPAD(struct file_args_t,file_args,file_args_ptr,file_args_lcl,file_args_dbg,13);
 
-	pInFile  = file_args_lcl.pInFile;
-	pInFile2 = file_args_lcl.pInFile2;
-	pInFile3 = file_args_lcl.pInFile3;
-	pOutFile = file_args_lcl.pOutFile;
+	/* No handles to close: file-touching tasks open and close their own. */
 
 #ifdef DEBUG_SSCP
 #ifdef TRACE_LVL_1
 ocrPrintf("// Output Images to .bin files\n");RAG_FLUSH;
 #endif
     {
+	// Rebuild the row-pointer tables against this node's copies before the
+	// curImage/refImage/corr_map dumps below.
+	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(refImage, image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(corr_map, image_params->Iy-image_params->Ncor+1,
+	                       image_params->Ix-image_params->Ncor+1, struct point);
 #ifndef TG_ARCH
         FILE *pOutImg = fopen("images_debug.bin", "wb");
         FILE *pOutCorr = fopen("corr_debug.bin", "wb");
@@ -1215,15 +1251,6 @@ ocrPrintf("// Output Images to .bin files\n");RAG_FLUSH;
 #endif
     }
 #endif // DEBUG_SSCP
-
-#ifndef RAG_IMPLICIT_INPUTS
-	fclose(pInFile);
-	fclose(pInFile2);
-	fclose(pInFile3);
-#endif
-#ifndef TG_ARCH
-	fclose(pOutFile);
-#endif
 
 	bsm_free(Y,Y_dbg);
 

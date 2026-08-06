@@ -51,6 +51,13 @@ RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,0);
 RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,1);
 RAG_REF_MACRO_BSM( struct point **,corr_map,NULL,NULL,corr_map_dbg,2);
 RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,3);
+	// Rebuild the row-pointer tables against this node's copies before the
+	// curImage/refImage reads and the corr_map write below.  corr_map has
+	// (Iy-Ncor+1) rows of (Ix-Ncor+1) elements.
+	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(refImage, image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(corr_map, image_params->Iy-image_params->Ncor+1,
+	                       image_params->Ix-image_params->Ncor+1, struct point);
 	int Ncor = image_params->Ncor;
         int Ncor_sqr = Ncor * Ncor;
 #ifdef DEBUG
@@ -191,10 +198,10 @@ ocrPrintf("//// create an edt for ccd_async\n");RAG_FLUSH;
 					NULL);			// *outputEvent
 			assert(retval==0);
 
-RAG_DEF_MACRO_PASS(ccd_async_scg,NULL,NULL,NULL,NULL,curImage_dbg,0);
-RAG_DEF_MACRO_PASS(ccd_async_scg,NULL,NULL,NULL,NULL,refImage_dbg,1);
+RAG_DEF_MACRO_PASS_RO(ccd_async_scg,NULL,NULL,NULL,NULL,curImage_dbg,0);
+RAG_DEF_MACRO_PASS_RO(ccd_async_scg,NULL,NULL,NULL,NULL,refImage_dbg,1);
 RAG_DEF_MACRO_PASS(ccd_async_scg,NULL,NULL,NULL,NULL,corr_map_dbg,2);
-RAG_DEF_MACRO_PASS(ccd_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
+RAG_DEF_MACRO_PASS_RO(ccd_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
 
 		} /* for n */
 	} /* for m */

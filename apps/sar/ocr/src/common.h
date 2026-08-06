@@ -101,9 +101,21 @@ struct DigSpotVars {
 	struct complexData *tmpVector;
 };
 
+#ifndef TG_ARCH
+#define RAG_PATH_MAX 1024
+#endif
+
+// FILE* handles are process-local: a task placed on another node cannot use a
+// handle opened here.  Carry the file PATHS instead; every task that touches a
+// file (re)opens it on the node it executes on (ReadData_edt seeks to its
+// image's slice, post_CFAR_edt opens the detects output).  Requires the paths
+// to be visible on every node (shared or replicated filesystem).
 struct file_args_t {
 #ifndef TG_ARCH
-	FILE *pInFile, *pInFile2, *pInFile3, *pOutFile;
+	char in_data[RAG_PATH_MAX];       // SAR pulse data
+	char in_platpos[RAG_PATH_MAX];    // platform positions
+	char in_pulsetime[RAG_PATH_MAX];  // pulse transmission timestamps
+	char out_detects[RAG_PATH_MAX];   // detects output
 #else
 	void *pInFile, *pInFile2, *pInFile3, *pOutFile;
 #endif
@@ -170,7 +182,9 @@ typedef struct{
 #ifdef TG_ARCH
     void* pOutFile;
 #else
-    FILE* pOutFile;
+    // Detects output path, by value: post_CFAR_edt opens it on whichever node
+    // it executes on (a FILE* would be process-local).
+    char out_detects[RAG_PATH_MAX];
 #endif
 } postCFARPRM_t;
 

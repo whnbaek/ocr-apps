@@ -41,7 +41,7 @@ RAG_DEF_MACRO_SPAD(arg_scg,NULL,NULL,NULL,NULL,Tp_dbg,4);	// ReadData_edt
 #ifdef TRACE_LVL_2
 ocrPrintf("//// refImage_dbg == struct complexData ** (next guid = "GUIDF") "GUIDF"\n",GUIDA(arg_scg),GUIDA(curImage_dbg));RAG_FLUSH;
 #endif
-RAG_DEF_MACRO_SPAD(arg_scg,NULL,NULL,NULL,NULL,curImage_dbg,0);	// Affine_edt
+RAG_DEF_MACRO_SPAD_RO(arg_scg,NULL,NULL,NULL,NULL,curImage_dbg,0);	// Affine_edt
 	}
 #ifdef TRACE_LVL_2
 ocrPrintf("//// leave post_FormImage_edt\n");RAG_FLUSH;
@@ -109,21 +109,25 @@ ocrPrintf("//// create an edt for post_FormImage\n");RAG_FLUSH;
 			NULL);			// *outputEvent
 	assert(retval==0);
 
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,refImage_dbg,3);
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,Xin_dbg,4);
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
+RAG_DEF_MACRO_PASS_RO(post_FormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+RAG_DEF_MACRO_PASS_RO(post_FormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
+RAG_DEF_MACRO_PASS_RO(post_FormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
+RAG_DEF_MACRO_PASS_RO(post_FormImage_scg,NULL,NULL,NULL,NULL,refImage_dbg,3);
+RAG_DEF_MACRO_PASS_RO(post_FormImage_scg,NULL,NULL,NULL,NULL,Xin_dbg,4);
+RAG_DEF_MACRO_PASS_RO(post_FormImage_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
+RAG_DEF_MACRO_PASS_RO(post_FormImage_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
 #ifdef RAG_DIG_SPOT
 RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,dig_spot_dbg,7);
 #endif
+	// curImage is written below (memset, and the copy into refImage); rebuild
+	// its row-pointer table in case this block was relocated to this node.
+	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
 #ifdef RAG_TG_ARCH_NULL_GUID_WORKAROUND
 	if(refImage != curImage) {	// RAG NULL_GUID FSIM BUG WORKAROUND
 #else
 	if(refImage != NULL) {		// RAG NULL_GUID FSIM BUG WORKAROUND
 #endif
+	RAG_REMAP_2D(refImage, image_params->Iy, image_params->Ix, struct complexData);
 #ifdef TRACE_LVL_2
 ocrPrintf("//// Copy curImage to refImage\n");RAG_FLUSH;
 #endif
@@ -256,13 +260,13 @@ ocrPrintf("//// create an edt for BackProj\n");RAG_FLUSH;
 				&BackProj_evg);		// *outputEvent
 		assert(retval==0);
 
-RAG_DEF_MACRO_PASS(BackProj_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_PASS(BackProj_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
-RAG_DEF_MACRO_PASS(BackProj_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
-RAG_DEF_MACRO_PASS(BackProj_scg,NULL,NULL,NULL,NULL,refImage_dbg,3);
-RAG_DEF_MACRO_PASS(BackProj_scg,NULL,NULL,NULL,NULL,Xin_dbg,4);
-RAG_DEF_MACRO_PASS(BackProj_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
-RAG_DEF_MACRO_PASS(BackProj_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,refImage_dbg,3);
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,Xin_dbg,4);
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
 #ifdef RAG_DIG_SPOT
 RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,BackProj_evg,8);
 #else

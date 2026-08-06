@@ -102,10 +102,10 @@ typedef struct {
 /** Name of this program (for debugging, etc.) */
 char *programName = "xeonNumaSize";
 
-/** Array of DBs, one per worker EDT to store results. */
+/** Array of DBs, one per worker EDT to store results.  Written only on the rank
+ *  that runs mainEdt; workers and finishEdt reach their DBs through the
+ *  dependence chain (depv), not this array. */
 ocrGuid_t *dbGuids;
-/** Pointers to memory of DBs in array dbGuids. */
-WorkerData **dbPtrs;
 
 
 /** Test the cache line allocation offset problem.
@@ -113,7 +113,7 @@ WorkerData **dbPtrs;
  * @param results  pointer to preallocated results structure
  * @return  0 if successful or -1 if there was an error.
  */
-int testCacheOffset(TestResults *results) {
+int testCacheOffset(struct CmdLineVals clVals, TestResults *results) {
     if (clVals.cacheLineLoops == 0) {
         ocrPrintf("ERROR! testCacheOffset() - clVals.cacheLineLoops == 0!\n");
         return -1;
@@ -198,7 +198,7 @@ int testCacheOffset(TestResults *results) {
  * @param results  pointer to preallocated results structure
  * @return  0 if successful or -1 if there was an error.
  */
-int testRealCacheOffset(TestResults *results) {
+int testRealCacheOffset(struct CmdLineVals clVals, TestResults *results) {
     if (clVals.cacheAllocLoops == 0) {
         ocrPrintf("ERROR! testRealCacheOffset() - clVals.cacheAllocLoops == 0!\n");
         return -1;
@@ -293,7 +293,7 @@ int testRealCacheOffset(TestResults *results) {
  * @param results  pointer to preallocated results structure
  * @return  0 if successful or -1 if there was an error.
  */
-int testReadingMem(int kind, TestResults *results) {
+int testReadingMem(struct CmdLineVals clVals, int kind, TestResults *results) {
     u64 size;
 
     // Allocate memory in this node's DRAM
@@ -371,7 +371,7 @@ int testReadingMem(int kind, TestResults *results) {
  * @param results  pointer to preallocated results structure
  * @return  0 if successful or -1 if there was an error.
  */
-int testReadingRandMem(int kind, TestResults *results) {
+int testReadingRandMem(struct CmdLineVals clVals, int kind, TestResults *results) {
     u64 size;
 
     // Allocate memory in this node's DRAM
@@ -471,60 +471,67 @@ int testReadingRandMem(int kind, TestResults *results) {
 
 /** Run tests on a specific CPU. */
 ocrGuid_t workerEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-    u32 i, j;
-    u64 workerNum = paramv[0];
+    WorkerData *out = (WorkerData *)depv[0].ptr;
+    struct CmdLineVals clVals;
+    memcpy(&clVals, depv[1].ptr, sizeof(clVals));
 
     TestResults results;
 
     if (clVals.dramRLoops > 0) {
-        testReadingMem(0, &results);
-        dbPtrs[workerNum]->dramSeqIterations = results.numIterations;
-        dbPtrs[workerNum]->dramSeqTimeNs = results.timeNs;
-        dbPtrs[workerNum]->dramSeqRejects = results.numRejects;
+        testReadingMem(clVals, 0, &results);
+        out->dramSeqIterations = results.numIterations;
+        out->dramSeqTimeNs = results.timeNs;
+        out->dramSeqRejects = results.numRejects;
     }
     if (clVals.mcdramRLoops > 0) {
-        testReadingMem(1, &results);
-        dbPtrs[workerNum]->mcdramSeqIterations = results.numIterations;
-        dbPtrs[workerNum]->mcdramSeqTimeNs = results.timeNs;
-        dbPtrs[workerNum]->mcdramSeqRejects = results.numRejects;
+        testReadingMem(clVals, 1, &results);
+        out->mcdramSeqIterations = results.numIterations;
+        out->mcdramSeqTimeNs = results.timeNs;
+        out->mcdramSeqRejects = results.numRejects;
     }
     if (clVals.dramRLoopRand > 0) {
-        testReadingRandMem(0, &results);
-        dbPtrs[workerNum]->dramRandIterations = results.numIterations;
-        dbPtrs[workerNum]->dramRandTimeNs = results.timeNs;
-        dbPtrs[workerNum]->dramRandRejects = results.numRejects;
+        testReadingRandMem(clVals, 0, &results);
+        out->dramRandIterations = results.numIterations;
+        out->dramRandTimeNs = results.timeNs;
+        out->dramRandRejects = results.numRejects;
     }
     if (clVals.mcdramRLoopRand > 0) {
-        testReadingRandMem(1, &results);
-        dbPtrs[workerNum]->mcdramRandIterations = results.numIterations;
-        dbPtrs[workerNum]->mcdramRandTimeNs = results.timeNs;
-        dbPtrs[workerNum]->mcdramRandRejects = results.numRejects;
+        testReadingRandMem(clVals, 1, &results);
+        out->mcdramRandIterations = results.numIterations;
+        out->mcdramRandTimeNs = results.timeNs;
+        out->mcdramRandRejects = results.numRejects;
     }
     if (clVals.cacheLineLoops > 0) {
-        int iRet = testCacheOffset(&results);
-        dbPtrs[workerNum]->cacheOffIterations = results.numIterations;
-        dbPtrs[workerNum]->cacheOffTimeNs = results.timeNs;
-        dbPtrs[workerNum]->cacheOffRejects = results.numRejects;
+        int iRet = testCacheOffset(clVals, &results);
+        out->cacheOffIterations = results.numIterations;
+        out->cacheOffTimeNs = results.timeNs;
+        out->cacheOffRejects = results.numRejects;
     }
     if (clVals.cacheAllocLoops > 0) {
-        int iRet = testRealCacheOffset(&results);
-        dbPtrs[workerNum]->cacheOffIterations = results.numIterations;
-        dbPtrs[workerNum]->cacheOffTimeNs = results.timeNs;
-        dbPtrs[workerNum]->cacheOffRejects = results.numRejects;
+        int iRet = testRealCacheOffset(clVals, &results);
+        out->cacheOffIterations = results.numIterations;
+        out->cacheOffTimeNs = results.timeNs;
+        out->cacheOffRejects = results.numRejects;
     }
 
-
-    return NULL_GUID;
+    // Returning the DB hands its filled results to finishEdt through the
+    // worker's output event.
+    return depv[0].guid;
 }
 
 ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     struct timeval tv;
     int i;
+    /* depv[0] carries the serialized command line values (struct followed by
+     * the runCpus array); depv[1..numCpus] carry the per-worker results DBs. */
+    struct CmdLineVals clVals;
+    memcpy(&clVals, depv[0].ptr, sizeof(clVals));
+    clVals.runCpus = (int *)((char *)depv[0].ptr + sizeof(struct CmdLineVals));
 
     if (clVals.dramRLoops > 0) {
         ocrPrintf("\nRunning DRAM sequential read test:\n");
         for (i=0; i<clVals.numCpus; i++) {
-            WorkerData *data = dbPtrs[i];
+            WorkerData *data = (WorkerData *)depv[1+i].ptr;
             ocrPrintf("    CPU %03d : %d iterations over %ld bytes took %ld ns, "
                    "with %d bad iterations\n",
                    clVals.runCpus[i], data->dramSeqIterations,
@@ -535,7 +542,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     if (clVals.dramRLoopRand > 0) {
         ocrPrintf("\nRunning DRAM random read test:\n");
         for (i=0; i<clVals.numCpus; i++) {
-            WorkerData *data = dbPtrs[i];
+            WorkerData *data = (WorkerData *)depv[1+i].ptr;
             ocrPrintf("    CPU %03d : %d iterations over %ld bytes took %ld ns, "
                    "with %d bad iterations\n",
                    clVals.runCpus[i], data->dramRandIterations,
@@ -547,7 +554,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     if (clVals.mcdramRLoops > 0) {
         ocrPrintf("\nRunning MCDRAM sequential read test:\n");
         for (i=0; i<clVals.numCpus; i++) {
-            WorkerData *data = dbPtrs[i];
+            WorkerData *data = (WorkerData *)depv[1+i].ptr;
             ocrPrintf("    CPU %03d : %d iterations over %ld bytes took %ld ns, "
                    "with %d bad iterations\n",
                    clVals.runCpus[i], data->mcdramSeqIterations,
@@ -558,7 +565,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     if (clVals.mcdramRLoopRand > 0) {
         ocrPrintf("\nRunning MCDRAM random read test:\n");
         for (i=0; i<clVals.numCpus; i++) {
-            WorkerData *data = dbPtrs[i];
+            WorkerData *data = (WorkerData *)depv[1+i].ptr;
             ocrPrintf("    CPU %03d : %d iterations over %ld bytes took %ld ns, "
                    "with %d bad iterations\n",
                    clVals.runCpus[i], data->mcdramRandIterations,
@@ -570,7 +577,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrPrintf("\nRunning cache line offset test with offset = %ld:\n",
                clVals.cacheLineOffset);
         for (i=0; i<clVals.numCpus; i++) {
-            WorkerData *data = dbPtrs[i];
+            WorkerData *data = (WorkerData *)depv[1+i].ptr;
             ocrPrintf("    CPU %03d : %d iterations over %ld bytes took %ld ns, "
                    "with %d bad iterations\n",
                    clVals.runCpus[i], data->cacheOffIterations,
@@ -583,7 +590,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
                "offset = %ld, large = %ld\n",
                clVals.cacheLineOffset, clVals.cacheLineMinLarge);
         for (i=0; i<clVals.numCpus; i++) {
-            WorkerData *data = dbPtrs[i];
+            WorkerData *data = (WorkerData *)depv[1+i].ptr;
             ocrPrintf("    CPU %03d : %d iterations over %ld bytes took %ld ns, "
                    "with %d bad iterations\n",
                    clVals.runCpus[i], data->cacheOffIterations,
@@ -677,34 +684,43 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
                    (clVals.numCpus * sizeof(ocrGuid_t)));
             EXIT;
         }
-        dbPtrs = (WorkerData **)malloc(clVals.numCpus * sizeof(u8 *));
-        if (dbPtrs == NULL) {
-            ocrPrintf("ERROR: mainEdt() failed to malloc(%d) for worker pointers!\n",
-                   (clVals.numCpus * sizeof(u8 *)));
-        }
         // Fill array with DBs
         for (wkr=0; wkr<clVals.numCpus; wkr++) {
             ptr = myDbCreate(&(dbGuids[wkr]),sizeof(WorkerData));
             if (ptr == NULL)
                 EXIT;
-            dbPtrs[wkr] = (WorkerData *)ptr;
         }
 
-        ocrPrintf("There are %d cpus to be created\n", clVals.numCpus);
-        ocrEdtTemplateCreate(&finishTemplate, finishEdt, 0, clVals.numCpus);
-        ocrEdtCreate(&finishGuid, finishTemplate, 0, NULL, clVals.numCpus,
-                     NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+        // Serialize the parsed command line values into a data block so worker
+        // and finish EDTs (which may run on a different rank than mainEdt) read
+        // them from a dependence instead of a file-scope struct.  The runCpus
+        // array is appended after the struct and repointed on the reader side.
+        ocrGuid_t clValsDb;
+        void *clPtr;
+        u64 clSize = sizeof(struct CmdLineVals) + (u64)clVals.numCpus * sizeof(int);
+        ocrDbCreate(&clValsDb, &clPtr, clSize, DB_PROP_NONE, NULL_HINT, NO_ALLOC);
+        memcpy(clPtr, &clVals, sizeof(struct CmdLineVals));
+        memcpy((char *)clPtr + sizeof(struct CmdLineVals), clVals.runCpus,
+               (u64)clVals.numCpus * sizeof(int));
 
-        ocrEdtTemplateCreate(&workerTemplate, workerEdt, 1, 1);
+        ocrPrintf("There are %d cpus to be created\n", clVals.numCpus);
+        // Slot 0 of finishEdt carries the command line values; slots
+        // 1..numCpus carry each worker's results DB.
+        ocrEdtTemplateCreate(&finishTemplate, finishEdt, 0, clVals.numCpus + 1);
+        ocrEdtCreate(&finishGuid, finishTemplate, 0, NULL, clVals.numCpus + 1,
+                     NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+        ocrAddDependence(clValsDb, finishGuid, 0, DB_MODE_CONST);
+
+        ocrEdtTemplateCreate(&workerTemplate, workerEdt, 1, 2);
         for (wkr=0; wkr<clVals.numCpus; wkr++) {
             paramv[0] = wkr;
             /* An EDT output event is ONCE (auto-destroyed on satisfaction), so
              * every waiter must be linked before the producer becomes runnable:
              * create the worker unsatisfied, link, then satisfy its slots. */
-            ocrGuid_t workerDep = UNINITIALIZED_GUID;
             ocrEdtCreate(&workerGuid, workerTemplate, 1, paramv,
-                         1, &workerDep, EDT_PROP_NONE, NULL_HINT, &event);
-            ocrAddDependence(event, finishGuid, wkr, DB_MODE_NULL);
+                         2, NULL, EDT_PROP_NONE, NULL_HINT, &event);
+            ocrAddDependence(event, finishGuid, 1+wkr, DB_MODE_CONST);
+            ocrAddDependence(clValsDb, workerGuid, 1, DB_MODE_CONST);
             ocrAddDependence(dbGuids[wkr], workerGuid, 0, DB_DEFAULT_MODE);
         }
     }

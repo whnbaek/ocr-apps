@@ -1,5 +1,10 @@
 #include <stdint.h>
 
+/* Radar-parameters file consumed by the runtime-input build; the working-
+ * directory default matches the historical behavior, callers may point it
+ * at any parameter file before ReadParams(). */
+const char *rag_params_path = "Parameters.txt";
+
 #include "ocr.h"
 #include "rag_ocr.h"
 #include "common.h"
@@ -36,7 +41,7 @@ int ReadParams(struct RadarParams *radar_params, struct ImageParams *image_param
   FILE *pFile;
   char param[80];
 
-  pFile = fopen("Parameters.txt", "r");
+  pFile = fopen(rag_params_path, "r");
 
   if(pFile == NULL) {
     return 1;
@@ -223,16 +228,38 @@ ocrGuid_t ReadData_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
   RAG_REF_MACRO_BSM( struct complexData **,X,NULL,NULL,X_dbg,2);
   RAG_REF_MACRO_BSM( float **,Pt,NULL,NULL,Pt_dbg,3);
   RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,4);
-  assert((void *)&X[0][0] == (void *)&X[image_params_lcl.P1]);   // check to see if Datablocks are getting relocated
-  assert((void *)&Pt[0][0] == (void *)&Pt[image_params_lcl.P1]); // if they are then need to remap 2D array
+  // The row-pointer tables are absolute and go stale when the block is
+  // relocated into this EDT's address space; rebuild them against the current
+  // base before writing the pulse/platform rows below.
+  RAG_REMAP_2D(X,  image_params_lcl.P1, image_params_lcl.S1, struct complexData);
+  RAG_REMAP_2D(Pt, image_params_lcl.P1, 3,                    float);
 #ifdef TG_ARCH
   void *pInFile  = file_args_lcl.pInFile;
   void *pInFile2 = file_args_lcl.pInFile2;
   void *pInFile3 = file_args_lcl.pInFile3;
 #else
-  FILE *pInFile  = file_args_lcl.pInFile;
-  FILE *pInFile2 = file_args_lcl.pInFile2;
-  FILE *pInFile3 = file_args_lcl.pInFile3;
+  FILE *pInFile = NULL, *pInFile2 = NULL, *pInFile3 = NULL;
+#ifndef RAG_IMPLICIT_INPUTS
+  /* A FILE* is process-local, so open the inputs on the node this task
+   * executes on and seek to the current image's slice: image i occupies the
+   * i-th contiguous block of P1 rows in each of the three files. */
+  {
+    const long img = image_params_lcl.imageNumber;
+    const long P1  = image_params_lcl.P1;
+    const long S1  = image_params_lcl.S1;
+    pInFile  = fopen(file_args_lcl.in_data,      "rb");
+    pInFile2 = fopen(file_args_lcl.in_platpos,   "rb");
+    pInFile3 = fopen(file_args_lcl.in_pulsetime, "rb");
+    if( pInFile == NULL || pInFile2 == NULL || pInFile3 == NULL ) {
+      ocrPrintf("Error opening %s / %s / %s\n", file_args_lcl.in_data,
+                file_args_lcl.in_platpos, file_args_lcl.in_pulsetime);RAG_FLUSH;
+      xe_exit(1);
+    }
+    fseek(pInFile,  img*P1*S1*(long)sizeof(struct complexData), SEEK_SET);
+    fseek(pInFile2, img*P1*3L*(long)sizeof(float),              SEEK_SET);
+    fseek(pInFile3, img*P1*(long)sizeof(float),                 SEEK_SET);
+  }
+#endif
 #endif
 #ifdef DEBUG
   ocrPrintf("file descripters are %ld %ld %ld\n",(uint64_t)pInFile, (uint64_t)pInFile2, (uint64_t) pInFile3);RAG_FLUSH;
@@ -247,15 +274,31 @@ ocrGuid_t ReadData_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
 
   ReadData(image_params, pInFile, pInFile2, pInFile3, X, Pt, Tp);
 
+#if !defined(TG_ARCH) && !defined(RAG_IMPLICIT_INPUTS)
+  fclose(pInFile);
+  fclose(pInFile2);
+  fclose(pInFile3);
+#endif
+
 #ifdef TG_ARCH
   SPADtoBSM(image_params_ptr,image_params,sizeof(struct ImageParams));
 #else
   memcpy(image_params_ptr,image_params,sizeof(struct ImageParams));
 #endif
 
-  RAG_DEF_MACRO_SPAD(arg_scg,NULL,NULL,NULL,NULL,X_dbg,4);
-  RAG_DEF_MACRO_SPAD(arg_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
-  RAG_DEF_MACRO_SPAD(arg_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
+  // Release the freshly written blocks BEFORE wiring them into the successor:
+  // a data-block dependence satisfies the pre-slot immediately, so the
+  // successor may start (and acquire) before this task's implicit end-of-task
+  // release — and the memory model only guarantees visibility of writes whose
+  // release ordered before the reader's acquire.
+  retval = ocrDbRelease(image_params_dbg); assert(retval==0);
+  retval = ocrDbRelease(X_dbg);            assert(retval==0);
+  retval = ocrDbRelease(Pt_dbg);           assert(retval==0);
+  retval = ocrDbRelease(Tp_dbg);           assert(retval==0);
+
+  RAG_DEF_MACRO_SPAD_RO(arg_scg,NULL,NULL,NULL,NULL,X_dbg,4);
+  RAG_DEF_MACRO_SPAD_RO(arg_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
+  RAG_DEF_MACRO_SPAD_RO(arg_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
 
 #ifdef TRACE_LVL_2
   ocrPrintf("//// leave ReadData_edt\n");RAG_FLUSH;
@@ -335,9 +378,10 @@ void ReadData(struct ImageParams *image_params, void *pFile1, void *pFile2, void
     } // endif image
   } // for m (P1)
 #endif
-#ifdef RAG_IMPLICIT_INPUTS
+  /* Advance to the next image: the runtime-input build seeks to this index's
+   * file slice, the implicit build selects the matching embedded arrays.  The
+   * caller writes ImageParams back, so the ordered next ReadData sees it. */
   image_params->imageNumber++;
-#endif
 #ifdef TRACE_LVL_2
   ocrPrintf("//// leave ReadData()\n");RAG_FLUSH;
 #endif

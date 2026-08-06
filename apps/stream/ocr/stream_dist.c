@@ -196,6 +196,13 @@ ocrGuid_t triad(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
 ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
+  /* Runtime sizes travel through paramv; file-scope globals are per-process
+   * under fork-launched multinode runtimes and unset on ranks other than the
+   * one that ran mainEdt. */
+  u64 nTimes        = paramv[0];
+  u64 numThreads    = paramv[1];
+  u64 perThreadSize = paramv[2];
+
   /* Validate a[] — same approach as checkSTREAMresults() in reference STREAM.
    * a's final value encodes all four kernels over all iterations. */
   STREAM_TYPE aj = 2.0;  /* initial value from mainLet */
@@ -409,13 +416,16 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
      * to children through paramv so cross-rank EDTs can use the same
      * GUIDs without per-rank template recreation. */
     ocrEdtTemplateCreate(&tmp_mainLet, mainLet, MAINLET_PARAMC, 0);
-    ocrEdtTemplateCreate(&tmp_finalize, finalize, 0, numThreads);
+    ocrEdtTemplateCreate(&tmp_finalize, finalize, 3, numThreads);
     ocrEdtTemplateCreate(&tmp_copy,  copy,  3, 2);
     ocrEdtTemplateCreate(&tmp_scale, scale, 3, 2);
     ocrEdtTemplateCreate(&tmp_add,   add,   3, 3);
     ocrEdtTemplateCreate(&tmp_triad, triad, 3, 3);
     ocrEdtTemplateCreate(&tmp_loop,  loop,  LOOP_PARAMC, 3);
-    ocrEdtCreate(&edt_finalize, tmp_finalize, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
+    /* finalize paramv: [nTimes, numThreads, perThreadSize] (remote ranks
+     * cannot read the file-scope size globals). */
+    u64 finalize_param[3] = { nTimes, numThreads, perThreadSize };
+    ocrEdtCreate(&edt_finalize, tmp_finalize, EDT_PARAM_DEF, finalize_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
 
     for(i = 0; i<numThreads; i++) {
         /* Build per-thread EDT affinity hint */

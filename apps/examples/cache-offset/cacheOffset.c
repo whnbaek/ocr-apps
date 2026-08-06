@@ -33,8 +33,7 @@ const u64 numCacheLines = 4 * 1024;
  *  16M is small enough that 64 CPUs could be used in each NUMA region and arrays can
  *  still fit in MCDRAM, either as memory or as MCDRAM cache. */
 const u64 sizeOfTestArray = 32 * 1024L * 1024L;
-/** Number of times to run the test, each time this program is executed. */
-const u64 numTestIterations = 1000;
+#define DEFAULT_TEST_ITERATIONS 1000
 
 /** Number of parallel EDTs to run. */
 #define NUM_CPUS 4
@@ -88,7 +87,6 @@ char *programName = "xeonNumaSize";
 ocrGuid_t dbGuids[NUM_CPUS];
 /** Pointers to usable memory in each of the DBs whose GUIDS are
  *  stored in dbGuids. */
-WorkerData *dbPtrs[NUM_CPUS];
 
 
 /** Test the cache line allocation offset problem.
@@ -96,7 +94,7 @@ WorkerData *dbPtrs[NUM_CPUS];
  * @param results  pointer to preallocated results structure
  * @return  0 if successful or -1 if there was an error.
  */
-int testRealCacheOffset(TestResults *results) {
+int testRealCacheOffset(u64 numTestIterations, TestResults *results) {
     // Set up hints
     // Note: Hints not implemented yet, so we cheat and poke values
     // into an internal value in the quick_allocator.[ch] files.
@@ -186,19 +184,21 @@ int testRealCacheOffset(TestResults *results) {
 
 /** Run tests on different CPUs. */
 ocrGuid_t workerEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-    u32 i, j;
     u64 workerNum = paramv[0];
+    WorkerData *out = (WorkerData *)depv[0].ptr;
     ocrPrintf("Start EDT %ld\n", workerNum);
 
     TestResults results;
 
-    int iRet = testRealCacheOffset(&results);
-    dbPtrs[workerNum]->cacheOffIterations = results.numIterations;
-    dbPtrs[workerNum]->cacheOffTimeNs = results.timeNs;
-    dbPtrs[workerNum]->cacheOffRejects = results.numRejects;
+    int iRet = testRealCacheOffset(paramv[1], &results);
+    (void)iRet;
+    out->cacheOffIterations = results.numIterations;
+    out->cacheOffTimeNs = results.timeNs;
+    out->cacheOffRejects = results.numRejects;
 
     ocrPrintf("Finish EDT %ld\n", workerNum);
-    return NULL_GUID;
+    // Returning the DB hands it to the finish EDT through the output event.
+    return depv[0].guid;
 }
 
 ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
@@ -207,7 +207,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrPrintf("Start finishEdt()\n");
 
     for (i=0; i<NUM_CPUS; i++) {
-        WorkerData *data = dbPtrs[i];
+        WorkerData *data = (WorkerData *)depv[i].ptr;
         ocrPrintf("    EDT %03d : %d iterations over %ld bytes took %ld ns, "
                "with %d bad iterations\n",
                i, data->cacheOffIterations, sizeOfTestArray,
@@ -267,6 +267,7 @@ u8 *myDbCreate(ocrGuid_t *db, u64 len) {
  * @return  a NULL GUID
  */
 ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+    u64 numTestIterations = DEFAULT_TEST_ITERATIONS;
     u64 argc = ocrGetArgc(depv[0].ptr);
     u32 i;
     int iRet;
@@ -280,7 +281,7 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrGuid_t finishTemplate, finishGuid;
     ocrGuid_t workerTemplate, workerGuid;
     ocrGuid_t workedt, event;
-    u64 childParamv[1];
+    u64 childParamv[2];
     u8 *ptr;
 
     // Fill array with DBs
@@ -288,7 +289,6 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         ptr = myDbCreate(&(dbGuids[wkr]),sizeof(WorkerData));
         if (ptr == NULL)
             EXIT;
-        dbPtrs[wkr] = (WorkerData *)ptr;
     }
 
     ocrPrintf("There are %d EDTs to be created\n", NUM_CPUS);
@@ -296,12 +296,14 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrEdtCreate(&finishGuid, finishTemplate, 0, NULL, NUM_CPUS,
                  NULL, EDT_PROP_NONE, NULL_HINT, NULL);
 
-    ocrEdtTemplateCreate(&workerTemplate, workerEdt, 1, 1);
+    ocrEdtTemplateCreate(&workerTemplate, workerEdt, 2, 1);
     for (wkr=0; wkr<NUM_CPUS; wkr++) {
         childParamv[0] = wkr;
-        ocrEdtCreate(&workerGuid, workerTemplate, 1, childParamv,
+        childParamv[1] = numTestIterations;
+        ocrEdtCreate(&workerGuid, workerTemplate, 2, childParamv,
                      1, &dbGuids[wkr], EDT_PROP_NONE, NULL_HINT, &event);
-        ocrAddDependence(event, finishGuid, wkr, DB_MODE_NULL);
+        // The worker returns its results DB; acquire it read-only here.
+        ocrAddDependence(event, finishGuid, wkr, DB_MODE_CONST);
     }
 
     return NULL_GUID;

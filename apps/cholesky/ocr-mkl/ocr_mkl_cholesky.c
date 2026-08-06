@@ -10,7 +10,8 @@
 #include <getopt.h>
 #include <string.h>
 #include <math.h>
-#include "mkl.h"
+#include <cblas.h>
+#include <lapacke.h>
 #include <stdbool.h>
 #include <time.h>
 
@@ -26,7 +27,16 @@
 
 #define FLAGS DB_PROP_NONE
 #define PROPERTIES EDT_PROP_NONE
-#define INTEL_BB 64 // Define Intel Byte-Boundary for mkl_alloc
+#define INTEL_BB 64 // kernel-friendly allocation alignment (bytes)
+
+/* Aligned allocation via posix_memalign: the standard CBLAS/LAPACKE kernels
+ * have no allocator of their own, and aligned_alloc() would require the size
+ * to be a multiple of the alignment. */
+static void *aligned_malloc(size_t size, size_t align) {
+    void *p = NULL;
+    if (posix_memalign(&p, align, size)) return NULL;
+    return p;
+}
 
 static double** readMatrix( u32 matrixSize, FILE* in );
 #endif
@@ -59,6 +69,7 @@ ocrGuid_t lapacke_dpotrf_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
         return NULL_GUID;
     }
 
+    ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(out_lkji_kkkp1_event_guid, depv[0].guid);
 
     return NULL_GUID;
@@ -87,6 +98,7 @@ ocrGuid_t cblas_dtrsm_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
                 liBlock, tileSize, // A matrix to solve for x in A x = B
                 aBlock, tileSize); // B matrix, solution put here
 
+    ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(out_lkji_jkkp1_event_guid, depv[0].guid);
 
     return NULL_GUID;
@@ -112,6 +124,7 @@ ocrGuid_t cblas_dsyrk_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
                 l2Block, tileSize, 1.0, // A matrix
                 aBlock, tileSize); // C matrix, solution put here in lower triangle
 
+    ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(out_lkji_jjkp1_event_guid, depv[0].guid);
 
     return NULL_GUID;
@@ -138,6 +151,7 @@ ocrGuid_t cblas_dgemm_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
                 l2Block, tileSize, 1.0, // B matrix
                 aBlock, tileSize); // C matrix, solution put here
 
+    ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(out_lkji_jikp1_event_guid, depv[0].guid);
 
     return NULL_GUID;
@@ -247,6 +261,7 @@ ocrGuid_t wrap_up_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
     return NULL_GUID;
 }
 
+
 inline static void lapacke_dpotrf_task_prescriber (ocrGuid_t edtTemp, u32 k,
                                                    u32 tileSize, ocrGuid_t*** lkji_event_guids) {
     ocrGuid_t seq_cholesky_task_guid;
@@ -276,7 +291,7 @@ inline static void cblas_dtrsm_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
                  PROPERTIES, NULL_HINT, NULL);
 
     ocrAddDependence(lkji_event_guids[j][k][k], cblas_dtrsm_task_guid, 0, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[k][k][k+1], cblas_dtrsm_task_guid, 1, DB_MODE_RW);
+    ocrAddDependence(lkji_event_guids[k][k][k+1], cblas_dtrsm_task_guid, 1, DB_MODE_RO);
 }
 
 inline static void cblas_dgemm_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j, u32 i,
@@ -294,8 +309,8 @@ inline static void cblas_dgemm_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
                  PROPERTIES, NULL_HINT, NULL);
 
     ocrAddDependence(lkji_event_guids[j][i][k], cblas_dgemm_task_guid, 0, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dgemm_task_guid, 1, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[i][k][k+1], cblas_dgemm_task_guid, 2, DB_MODE_RW);
+    ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dgemm_task_guid, 1, DB_MODE_RO);
+    ocrAddDependence(lkji_event_guids[i][k][k+1], cblas_dgemm_task_guid, 2, DB_MODE_RO);
 }
 
 
@@ -314,7 +329,7 @@ inline static void cblas_dsyrk_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
                  PROPERTIES, NULL_HINT, NULL);
 
     ocrAddDependence(lkji_event_guids[j][j][k], cblas_dsyrk_task_guid, 0, DB_MODE_RW);
-    ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dsyrk_task_guid, 1, DB_MODE_RW);
+    ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dsyrk_task_guid, 1, DB_MODE_RO);
 }
 
 inline static void wrap_up_task_prescriber ( ocrGuid_t edtTemp, u32 numTiles, u32 tileSize, u32 outSelLevel,
@@ -335,7 +350,7 @@ inline static void wrap_up_task_prescriber ( ocrGuid_t edtTemp, u32 numTiles, u3
     for ( i = 0; i < numTiles; ++i ) {
         k = 1;
         for ( j = 0; j <= i; ++j ) {
-            ocrAddDependence(lkji_event_guids[i][j][k], wrap_up_task_guid, index++, DB_MODE_RW);
+            ocrAddDependence(lkji_event_guids[i][j][k], wrap_up_task_guid, index++, DB_MODE_RO);
             ++k;
         }
     }
@@ -386,8 +401,8 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize,
                         FLAGS, db_affinity, NO_ALLOC);
 
             fread(temp_db, sizeof(double)*tileSize*tileSize, 1, fin);
-            ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
             ocrDbRelease(db_guid);
+            ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
         }
     }
     hal_fence();
@@ -425,6 +440,7 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize, double** matr
               temp2D[T_i][T_j] = matrix[A_i][A_j];
             }
           }
+            ocrDbRelease(db_guid);
             ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
             ocrDbDestroy(tmpdb_guid);
         }
@@ -512,7 +528,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
                 break;
             case 'd':
                 //ocrPrintf("Option d: fileNameOut with value '%s'\n", optarg);
-                fileNameOut = (char*) mkl_realloc(fileNameOut, sizeof(optarg));
+                fileNameOut = (char*) realloc(fileNameOut, sizeof(optarg));
                 strcpy(fileNameOut, optarg);
                 break;
             case 'e':
@@ -661,10 +677,10 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 #ifndef TG_ARCH
 static double** readMatrix( u32 matrixSize, FILE* in ) {
     u32 i,j;
-    double **A = (double**) mkl_malloc(sizeof(double*)*matrixSize, INTEL_BB);
+    double **A = (double**) aligned_malloc(sizeof(double*)*matrixSize, INTEL_BB);
 
     for( i = 0; i < matrixSize; ++i)
-        A[i] = (double*) mkl_malloc(sizeof(double)*matrixSize, INTEL_BB);
+        A[i] = (double*) aligned_malloc(sizeof(double)*matrixSize, INTEL_BB);
 
     for( i = 0; i < matrixSize; ++i ) {
         for( j = 0; j < matrixSize-1; ++j )

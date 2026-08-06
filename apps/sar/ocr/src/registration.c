@@ -17,6 +17,10 @@ struct async_1_args_t {
 	ocrGuid_t curImage_dbg;
 	ocrGuid_t refImage_dbg;
 	ocrGuid_t post_Affine_scg;
+	// Row count A was allocated with (the control-point count before it is
+	// reset to zero and re-counted).  Needed to rebuild A's row-pointer table
+	// when the block is relocated, since affine_params->Nc no longer holds it.
+	int Nc_alloc;
 };
 
 struct async_2_args_t {
@@ -35,6 +39,11 @@ RAG_REF_MACRO_BSM( struct complexData **,output,NULL,NULL,output_dbg,0);
 RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,1);
 RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,2);
 RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,3);
+
+	// Rebuild the row-pointer tables against this node's copies before the
+	// output[]->curImage[] copy below.
+	RAG_REMAP_2D(output,   image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
 
 #ifdef TRACE_LVL_2
 ocrPrintf("// Overwrite current image with registered image\n");RAG_FLUSH;
@@ -113,6 +122,10 @@ RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,4);
 RAG_REF_MACRO_BSM( int *,Fx,NULL,NULL,Fx_dbg,5);
 RAG_REF_MACRO_BSM( int *,Fy,NULL,NULL,Fy_dbg,6);
 RAG_REF_MACRO_BSM( int **,A,NULL,NULL,A_dbg,7);
+
+	// Rebuild A's row-pointer table against this node's copy before the
+	// A[k][*] reads in the least-squares accumulation below.
+	RAG_REMAP_2D(A, post_affine_async_1_args->Nc_alloc, 6, int);
 
 	int rc;
 	// b = 6 x 2
@@ -295,14 +308,14 @@ ocrGuid_t affine_async_2_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, o
 	SPADtoBSM(async_2_args_ptr->Wcx,Wcx,6*sizeof(float));
 	SPADtoBSM(async_2_args_ptr->Wcy,Wcy,6*sizeof(float));
 
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,affine_params_dbg,0);
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,image_params_dbg,1);
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,post_affine_async_1_args_dbg,3);
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,async_2_args_dbg,4);
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,Fx_dbg,5);
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,Fy_dbg,6);
-	RAG_DEF_MACRO_PASS(post_affine_async_2_scg,NULL,NULL,NULL,NULL,A_dbg,7);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,affine_params_dbg,0);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,image_params_dbg,1);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,post_affine_async_1_args_dbg,3);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,async_2_args_dbg,4);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,Fx_dbg,5);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,Fy_dbg,6);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_2_scg,NULL,NULL,NULL,NULL,A_dbg,7);
 
 #ifdef RAG_NEW_BLK_SIZE
 	for(int m=0; m<Yend; m+=AFFINE_ASYNC_2_BLOCK_SIZE_Y) {
@@ -339,11 +352,11 @@ ocrPrintf("////// create an edt for affine_async_2\n");RAG_FLUSH;
 					NULL);			// *outputEvent
 			assert(retval==0);
 
-RAG_DEF_MACRO_PASS(affine_async_2_scg,NULL,NULL,NULL,NULL,affine_params_dbg,0);
-RAG_DEF_MACRO_PASS(affine_async_2_scg,NULL,NULL,NULL,NULL,image_params_dbg,1);
-RAG_DEF_MACRO_PASS(affine_async_2_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
+RAG_DEF_MACRO_PASS_RO(affine_async_2_scg,NULL,NULL,NULL,NULL,affine_params_dbg,0);
+RAG_DEF_MACRO_PASS_RO(affine_async_2_scg,NULL,NULL,NULL,NULL,image_params_dbg,1);
+RAG_DEF_MACRO_PASS_RO(affine_async_2_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
 RAG_DEF_MACRO_PASS(affine_async_2_scg,NULL,NULL,NULL,NULL,post_affine_async_1_args->output_dbg,3);
-RAG_DEF_MACRO_PASS(affine_async_2_scg,NULL,NULL,NULL,NULL,async_2_args_dbg,4);
+RAG_DEF_MACRO_PASS_RO(affine_async_2_scg,NULL,NULL,NULL,NULL,async_2_args_dbg,4);
 		} // for n
 	} // for m
 
@@ -365,6 +378,12 @@ RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,4);
 RAG_REF_MACRO_BSM( int *,Fx,NULL,NULL,Fx_dbg,5);
 RAG_REF_MACRO_BSM( int *,Fy,NULL,NULL,Fy_dbg,6);
 RAG_REF_MACRO_BSM( int **,A,NULL,NULL,A_dbg,7);
+
+	// Rebuild the row-pointer tables against this node's copies before the
+	// curImage/refImage reads in corr2D and the A[k][*] writes below.
+	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(refImage, image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(A, async_1_args->Nc_alloc, 6, int);
 
 	struct point ctrl_pt = async_1_args->ctrl_pt;
 #ifdef TRACE_LVL_3
@@ -472,6 +491,11 @@ RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,2);
 RAG_REF_MACRO_BSM( struct complexData **,output,NULL,NULL,output_dbg,3);
 RAG_REF_MACRO_SPAD(struct async_2_args_t,async_2_args,async_2_args_ptr,async_2_args_lcl,async_2_args_dbg,4);
 
+	// Rebuild the row-pointer tables against this node's copies before the
+	// curImage[] reads and output[] writes below.
+	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
+	RAG_REMAP_2D(output,   image_params->Iy, image_params->Ix, struct complexData);
+
 	int aa, bb;
 	float Px, Py, w, v;
 
@@ -541,6 +565,11 @@ ocrPrintf("//// Affine registration dynamically allocated variables size = %d\n"
 	int **A;
 	int *Fx, *Fy;
 	struct complexData **output;
+
+	// Capture the control-point count A/Fx/Fy are about to be sized with,
+	// before it is reset to zero below and re-counted via __sync_fetch_and_add.
+	// The async EDTs use it to rebuild A's row-pointer table after relocation.
+	const int Nc_alloc = affine_params->Nc;
 
 	// Fx = Nc x 1
 
@@ -653,18 +682,19 @@ ocrPrintf("//// create a ctrl_pt post_affine_async_1_edt\n");RAG_FLUSH;
 	post_affine_async_1_args_ptr->curImage_dbg     = curImage_dbg;
 	post_affine_async_1_args_ptr->refImage_dbg     = refImage_dbg;
 	post_affine_async_1_args_ptr->post_Affine_scg  = post_Affine_scg;
+	post_affine_async_1_args_ptr->Nc_alloc         = Nc_alloc;
 
 #ifdef TRACE_LVL_2
 ocrPrintf("//// statisy post_affine_async_1_edt\n");RAG_FLUSH;
 #endif
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,post_affine_async_1_args_dbg,0);
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,affine_params_dbg,1);
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,image_params_dbg,2);
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,curImage_dbg,3);
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,output_dbg,4);
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,Fx_dbg,5);
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,Fy_dbg,6);
-	RAG_DEF_MACRO_PASS(post_affine_async_1_scg,NULL,NULL,NULL,NULL,A_dbg,7);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,post_affine_async_1_args_dbg,0);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,affine_params_dbg,1);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,image_params_dbg,2);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,curImage_dbg,3);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,output_dbg,4);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,Fx_dbg,5);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,Fy_dbg,6);
+	RAG_DEF_MACRO_PASS_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,A_dbg,7);
 
 	for(int m=0; m<N; m++) {
 		for(int n=0; n<N; n++) {
@@ -681,6 +711,7 @@ ocrPrintf("//// create an edt for affine_async_1 m=%d n=%d\n",m,n);RAG_FLUSH;
 			async_1_args_ptr->curImage_dbg     = curImage_dbg;
 			async_1_args_ptr->refImage_dbg     = refImage_dbg;
 			async_1_args_ptr->post_Affine_scg  = post_Affine_scg;
+			async_1_args_ptr->Nc_alloc         = Nc_alloc;
 			ocrGuid_t affine_async_1_scg;
 			retval = ocrEdtCreate(
 					&affine_async_1_scg,	// *created_edt_guid
@@ -694,11 +725,11 @@ ocrPrintf("//// create an edt for affine_async_1 m=%d n=%d\n",m,n);RAG_FLUSH;
 					NULL);			// *outputEvent
 			assert(retval==0);
 
-RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,async_1_args_dbg,0);
+RAG_DEF_MACRO_PASS_RO(affine_async_1_scg,NULL,NULL,NULL,NULL,async_1_args_dbg,0);
 RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,affine_params_dbg,1);
-RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,image_params_dbg,2);
-RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,curImage_dbg,3);
-RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,refImage_dbg,4);
+RAG_DEF_MACRO_PASS_RO(affine_async_1_scg,NULL,NULL,NULL,NULL,image_params_dbg,2);
+RAG_DEF_MACRO_PASS_RO(affine_async_1_scg,NULL,NULL,NULL,NULL,curImage_dbg,3);
+RAG_DEF_MACRO_PASS_RO(affine_async_1_scg,NULL,NULL,NULL,NULL,refImage_dbg,4);
 RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,Fx_dbg,5);
 RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,Fy_dbg,6);
 RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,A_dbg,7);
@@ -706,10 +737,10 @@ RAG_DEF_MACRO_PASS(affine_async_1_scg,NULL,NULL,NULL,NULL,A_dbg,7);
 		} // for n
 	} // for m
 
-RAG_DEF_MACRO_PASS(post_Affine_scg,NULL,NULL,NULL,NULL,output_dbg,0);
+RAG_DEF_MACRO_PASS_RO(post_Affine_scg,NULL,NULL,NULL,NULL,output_dbg,0);
 RAG_DEF_MACRO_PASS(post_Affine_scg,NULL,NULL,NULL,NULL,curImage_dbg,1);
-RAG_DEF_MACRO_PASS(post_Affine_scg,NULL,NULL,NULL,NULL,refImage_dbg,2);
-RAG_DEF_MACRO_PASS(post_Affine_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
+RAG_DEF_MACRO_PASS_RO(post_Affine_scg,NULL,NULL,NULL,NULL,refImage_dbg,2);
+RAG_DEF_MACRO_PASS_RO(post_Affine_scg,NULL,NULL,NULL,NULL,image_params_dbg,3);
 #ifdef TRACE_LVL_2
 ocrPrintf("//// leave Affine\n");RAG_FLUSH;
 #endif
