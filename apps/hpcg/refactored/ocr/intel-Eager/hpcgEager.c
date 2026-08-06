@@ -1615,15 +1615,13 @@ if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d return from mg event "GUIDF" \n", m
         ocrAddDependence(rpDBK, hpcgEDT, SLOT(hpcg,reductionPrivateBlock), DB_MODE_RW);
         ocrAddDependence(myDataDBK, hpcgEDT, SLOT(hpcg,myDataBlock), DB_MODE_RW);
         ocrAddDependence(NULL_GUID, hpcgEDT, SLOT(hpcg,returnBlock), DB_MODE_RW);
-#ifdef NO_MG
-        ocrEventSatisfy(hpcgEVT, pbDBK);
-#endif
-
 #ifdef TIMER
     pbPTR->end[pbPTR->timestep][timePhase] = getTime();
 #endif
         ocrDbRelease(pbDBK);
-#ifndef NO_MG
+#ifdef NO_MG
+        ocrEventSatisfy(hpcgEVT, pbDBK);
+#else
         ocrAddDependence(pbDBK, mgEDT, SLOT(mg,privateBlock), DB_MODE_RW);
 #endif
 #ifdef USE_PROFILER

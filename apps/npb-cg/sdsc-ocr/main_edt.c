@@ -57,13 +57,17 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     for(i=0; i<class->na; ++i)
         x[i] = 1;
 
+    /* Writes are only visible to other EDTs after release: release before
+       wiring the consumers. */
+    ocrDbRelease(xid);
+    ocrDbRelease(timerid);
     ocrGuid_t tmp,edt;
     ocrEdtTemplateCreate(&tmp, head_edt, 0, 6);
     ocrEdtCreate(&edt, tmp, 0, NULL, 6, NULL, 0, NULL_HINT, NULL);
     ocrAddDependence(classid, edt, 0, DB_MODE_CONST);
     ocrAddDependence(timerid, edt, 1, DB_MODE_RW);
     ocrAddDependence(aid, edt, 2, DB_MODE_CONST);
-    ocrAddDependence(xid, edt, 3, DB_MODE_CONST);
+    ocrAddDependence(xid, edt, 3, DB_MODE_RW);
     conj_grad(class->na, class->blk, aid, xid, edt, 4);
     ocrEdtTemplateDestroy(tmp);
 
@@ -96,8 +100,16 @@ ocrGuid_t head_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t tmp,edt;
     ocrEdtTemplateCreate(&tmp, loop_top_edt, 1, 4);
     ocrEdtCreate(&edt, tmp, 1, &it, 4, NULL, 0, NULL_HINT, NULL);
-    for(i=0; i<depc-2; ++i)
-        ocrAddDependence(depv[i].guid, edt, i, DB_MODE_RW);
+    /* Release the re-initialized x and the timer before wiring (visibility),
+       and declare the actual access modes: class and the assembled matrix a
+       are read-only from here on; the loop top itself writes only the timer,
+       and x is written next by the loop bottom, not the loop top. */
+    ocrDbRelease(depv[1].guid);
+    ocrDbRelease(depv[3].guid);
+    ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
+    ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
+    ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
+    ocrAddDependence(depv[3].guid, edt, 3, DB_MODE_CONST);
     ocrEdtTemplateDestroy(tmp);
 
     return NULL_GUID;
@@ -115,9 +127,14 @@ ocrGuid_t loop_top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t tmp,edt;
     ocrEdtTemplateCreate(&tmp, loop_bottom_edt, 1, 6);
     ocrEdtCreate(&edt, tmp, 1, paramv, 6, NULL, 0, NULL_HINT, NULL);
-    int i;
-    for(i=0; i<depc; ++i)
-        ocrAddDependence(depv[i].guid, edt, i, DB_MODE_RW);
+    /* Release the timer (possibly started above) before wiring, and declare
+       actual access: class/a are read-only; x is written by the loop bottom
+       (the only x consumer wired RW). */
+    ocrDbRelease(depv[1].guid);
+    ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
+    ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
+    ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
+    ocrAddDependence(depv[3].guid, edt, 3, DB_MODE_RW);
     conj_grad(class->na, class->blk, depv[2].guid, depv[3].guid, edt, 4);
     ocrEdtTemplateDestroy(tmp);
 
@@ -157,12 +174,19 @@ ocrGuid_t loop_bottom_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         ocrEdtTemplateDestroy(tmp);
     }
     else {
+        /* Release before wiring the next iteration so its readers cannot
+           acquire a stale copy. */
+        ocrDbRelease(depv[3].guid);
+        ocrDbRelease(depv[1].guid);
         ocrGuid_t tmp,edt;
         ocrEdtTemplateCreate(&tmp, loop_top_edt, 1, 4);
         ocrEdtCreate(&edt, tmp, 1, paramv, 4, NULL, 0, NULL_HINT, NULL);
-        int i;
-        for(i=0; i<depc-2; ++i)
-            ocrAddDependence(depv[i].guid, edt, i, DB_MODE_RW);
+        /* Actual access modes: class/a read-only; the loop top only passes x
+           through (the next writer is the following loop bottom). */
+        ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
+        ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
+        ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
+        ocrAddDependence(depv[3].guid, edt, 3, DB_MODE_CONST);
         ocrDbDestroy(depv[5].guid);
         ocrEdtTemplateDestroy(tmp);
     }

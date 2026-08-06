@@ -211,7 +211,7 @@ static inline void spawn_pair(ocrGuid_t sim, ocrGuid_t tmp, ocrGuid_t red, ocrGu
   ocrGuid_t edt;
   ocrEdtCreate(&edt, tmp, 2, paramv, 28, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_RW);
-  ocrAddDependence(list[b], edt, 1, DB_MODE_CONST);
+  ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
 
   u32 dep = 1;
   u32 bg[3]; box2grid(b, bg, grid[0], plane);

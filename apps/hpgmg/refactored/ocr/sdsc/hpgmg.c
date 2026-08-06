@@ -56,6 +56,10 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   VERBOSEP("Finished initialization\n");
 
+  /* A DB dependence satisfies immediately and only released writes are
+   * guaranteed visible: release the initialized hierarchy before wiring. */
+  ocrDbRelease(mg);
+
   // start loop
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, top_warm, 0, 1);

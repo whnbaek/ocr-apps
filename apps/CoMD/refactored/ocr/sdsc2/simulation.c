@@ -344,7 +344,6 @@ ocrGuid_t FNC_init( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     u32* lattice = PTR_PRM_FNC_init->lattice;
     real_t delta = PTR_PRM_FNC_init->delta;
     real_t temperature = PTR_PRM_FNC_init->temperature;
-    ocrGuid_t vleaf = PTR_PRM_FNC_init->vleaf;
     ocrGuid_t tleaf = PTR_PRM_FNC_init->tleaf;
     ocrGuid_t uleaf = PTR_PRM_FNC_init->uleaf;
 
@@ -512,9 +511,10 @@ ocrGuid_t FNC_init( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
   ocrAddDependence( mass_g, edt, 1, DB_MODE_RO );
 
   ocrDbRelease( vcm_g );
-  ocrEventSatisfy( vleaf, vcm_g ); //vred_out
-
-  return NULL_GUID;
+  /* Deliver the leaf value through the output event, which fires only after
+   * this EDT's dependences are released — a mid-body satisfy would let
+   * consumers run ahead of those releases. */
+  return vcm_g; //vred_out
 }
 
 //params: grid[0]-grid[1], grid[2]-lattice[0], lattice[1]-lattice[2], delta, temperature
@@ -635,7 +635,11 @@ ocrGuid_t EDT_init_fork( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
         ocrSetHintValue( &HNT_db, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(PDaffinityGuid) );
 #endif
 
-    ocrEdtCreate( &EDT_init, tmp, EDT_PARAM_DEF, (u64*)&PRM_FNC_init, 33, NULL, EDT_PROP_NONE, PICK_1_1(&HNT_edt,PDaffinityGuid), NULL );
+    ocrGuid_t OEVT_init;
+    ocrEdtCreate( &EDT_init, tmp, EDT_PARAM_DEF, (u64*)&PRM_FNC_init, 33, NULL, EDT_PROP_NONE, PICK_1_1(&HNT_edt,PDaffinityGuid), &OEVT_init );
+    /* Output-event waiter registered before any enabling dependence (ONCE
+     * contract); it carries the initializer's returned vcm block. */
+    ocrAddDependence( OEVT_init, leaves_p[leaf], 0, DB_DEFAULT_MODE );
 
     ocrAddDependence( simH_g, EDT_init, 0, DB_MODE_RO );
     ocrAddDependence( simH_p->pot.mass, EDT_init, 1, DB_MODE_RO );

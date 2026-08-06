@@ -72,8 +72,11 @@ ocrGuid_t restrict_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                     (level_type*)depv[2].ptr, (box_type*) depv[o].ptr, o-3,
                     ((level_type*)depv[0].ptr)->box_dim, flag);
   }
-  if(!IS_GUID_NULL(box))
+  if(!IS_GUID_NULL(box)) {
+    // The coarse box was written above; publish only after release.
+    ocrDbRelease(depv[1].guid);
     ocrEventSatisfy(box, depv[1].guid);
+  }
 
   return NULL_GUID;
 }

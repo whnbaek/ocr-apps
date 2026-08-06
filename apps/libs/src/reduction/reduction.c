@@ -419,6 +419,9 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
 
   if (nrank == 1) { // nothing to do
     if (!ocrGuidIsNull(rpPTR->returnEVT)) {
+      /* A DB handed off through a satisfy must be released first: the release
+       * orders the block's writeback ahead of any consumer observing it. */
+      ocrDbRelease(DEPV(reduction, mydata, guid));
       ocrEventSatisfy(rpPTR->returnEVT, DEPV(reduction, mydata, guid));
     }
     return NULL_GUID;
