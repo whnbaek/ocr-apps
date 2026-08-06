@@ -269,6 +269,10 @@ u8 *myDbCreate(ocrGuid_t *db, u64 len) {
 ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     u64 numTestIterations = DEFAULT_TEST_ITERATIONS;
     u64 argc = ocrGetArgc(depv[0].ptr);
+    if (argc > 1) {
+        u64 v = strtoull(ocrGetArgv(depv[0].ptr, 1), NULL, 10);
+        if (v >= 1) numTestIterations = v;
+    }
     u32 i;
     int iRet;
     char *argv[argc];

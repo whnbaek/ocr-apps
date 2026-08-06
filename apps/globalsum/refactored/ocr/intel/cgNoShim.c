@@ -8,8 +8,10 @@ and cannot be distributed without it. This notice cannot be removed or modified.
 //this version of the driver program updates rtrold in the alternate phase (during the pAp computation)
 #include <ocr.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include "ocrGS.h"
+
 typedef struct {
     double x[M];
     double r[M];
@@ -19,6 +21,7 @@ typedef struct {
     double a[M];
     } cgBlock_t;
 typedef struct{
+    u64 T_iters;   /* runtime iteration bound; travels with the block */
     ocrGuid_t cgTemplate;
     } userSharedBlock_t;
 ocrGuid_t cgTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
@@ -89,9 +92,9 @@ depv
 //compute beta
             if(timestep == 0) beta = 0;
                 else beta = SB->sum/SB->rtrold;
-            if(SB->sum/SB->rtr0 < 1e-13 || timestep == T) {
+            if(SB->sum/SB->rtr0 < 1e-13 || timestep == uSB->T_iters) {
                 for(i=0;i<M;i++) ocrPrintf("CG%d T%d  %d value %f \n", mynode, timestep, i, cgdata->x[i]);
-                if(mynode == 0 && M==300 && N==20 && T==100) {
+                if(mynode == 0 && M==300 && N==20 && uSB->T_iters==100) {
                   if(fabs(cgdata->x[0] - 0.462231) < 1e-5) ocrPrintf("PASS\n"); else ocrPrintf("FAIL difference %f is too large\n", cgdata->x[0] - .462231); }
                 return NULL_GUID;
             }
@@ -196,6 +199,7 @@ realMain launches the GS initialization
     userSharedBlock_t * uSB = depv[0].ptr;
     GSsharedBlock_t * SB = depv[1].ptr;
     SB->numnodes = N;  //setting the number of "ranks"   REQUIRED
+    uSB->T_iters = paramv[0];
     ocrEdtTemplateCreate(&(uSB->cgTemplate), cgTask, 3, 4);
     SB->userBlock = depv[0].guid;   //passed through GSiEDT to computeInitEdt
     ocrGuid_t gsBlock, GSi, sticky, dummy;
@@ -216,7 +220,15 @@ ocrGuid_t wrapupEdt(){
     ocrShutdown();
     return NULL_GUID;
     }
-ocrGuid_t mainEdt(){
+ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
+    /* Iteration count: compiled default, overridable by argv[1]; forwarded
+     * to the workers through the user shared block (EDTs may run on any PD). */
+    u64 t_iters = T;
+    u64 argc = getArgc(depv[0].ptr);
+    if (argc > 1) {
+        u64 v = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+        if (v >= 1) t_iters = v;
+    }
 /*
 mainEdt is executed first
 Creates the datablocks
@@ -228,12 +240,12 @@ launches realmain (wrapup waits until realmain is done)
     u64 *dummy;
     ocrGuid_t realMain, GSsharedBlock, userSharedBlock, realMainTemplate, output, wrapup, wrapupTemplate;
     ocrPrintf("conjugate gradient driver WITHOUT shim coming out of computing rtr\n");
-    ocrPrintf("Number of timesteps is %d \n", T);
+    ocrPrintf("Number of timesteps is %d \n", (int)t_iters);
     ocrPrintf("Number of workers is %d \n", N);
     ocrPrintf("Rows per worker %d \n", M);
     ocrEdtTemplateCreate(&wrapupTemplate, wrapupEdt, 0, 1);
-    ocrEdtTemplateCreate(&realMainTemplate, realMainEdt, 0, 2);
-    ocrEdtCreate(&realMain, realMainTemplate, EDT_PARAM_DEF, NULL,
+    ocrEdtTemplateCreate(&realMainTemplate, realMainEdt, 1, 2);
+    ocrEdtCreate(&realMain, realMainTemplate, EDT_PARAM_DEF, &t_iters,
                  EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_HINT, &output);
     ocrDbCreate(&GSsharedBlock, (void **)&dummy, sizeof(GSsharedBlock_t), 0,
                 NULL_HINT, NO_ALLOC);

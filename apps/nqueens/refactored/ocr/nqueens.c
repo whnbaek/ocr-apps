@@ -208,14 +208,19 @@ ocrGuid_t shutdownEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 
 ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 {
-    if( ocrGetArgc(depv[0].ptr) != 3 ) {
-        ocrPrintf("Usage %s size cutoff", ocrGetArgv(depv[0].ptr,0) );
+    u64 argc = ocrGetArgc(depv[0].ptr);
+    if( argc != 3 && argc != 4 ) {
+        ocrPrintf("Usage %s size cutoff [rounds]", ocrGetArgv(depv[0].ptr,0) );
         ocrAbort(EXIT_FAILURE);
     }
 
     u32 n = atoi( ocrGetArgv(depv[0].ptr,1) );
     u32 cutoff = atoi( ocrGetArgv(depv[0].ptr,2) );
     u32 rounds = 1;
+    if( argc == 4 ) {
+        u32 r = atoi( ocrGetArgv(depv[0].ptr,3) );
+        if( r >= 1 ) rounds = r;
+    }
     ocrAssert( 0 < n && n < 31 );
     ocrAssert( cutoff < n );
 

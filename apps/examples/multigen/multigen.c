@@ -22,6 +22,7 @@
  *                                                                                                              */
 
 #include "ocr.h"
+#include <stdlib.h>
 #define NUM_CHILDREN 32
 // larger numbers for FIBN require XE stack be in IPM (xe_ipm_stack  = 128 in config file)
 #define FIBN 25
@@ -97,7 +98,7 @@ ocrGuid_t shutdownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    ocrPrintf("Hello from shutdownEdt\n");
    ocrPrintf("--->  depc is: %"PRId32"\n",depc);
    ocrPrintf("--->  paramc is: %"PRId32"\n",paramc);
-   ocrPrintf("--->  NUM_CHILDREN is: %"PRId32"\n",NUM_CHILDREN);
+   ocrPrintf("--->  NUM_CHILDREN is: %"PRId32"\n",depc);
    int* data;
    int i;
 /** //TODO: Not sure why this doesn't work:
@@ -117,9 +118,17 @@ ocrGuid_t shutdownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
 
 ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    int i;
+   /* Child count: compiled default, overridable by argv[1].  Consumed only in
+    * this EDT (spawn loop + join arity); descendants learn it via depc. */
+   u32 num_children = NUM_CHILDREN;
+   u64 argc = getArgc(depv[0].ptr);
+   if (argc > 1) {
+      u64 v = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+      if (v >= 1 && v <= 4096) num_children = (u32)v;
+   }
    ocrPrintf("Starting mainEdt\n");
    ocrGuid_t edtJoin, edt_template, edtJoin_template;
-   ocrGuid_t edts[NUM_CHILDREN],  outputEvents[NUM_CHILDREN];
+   ocrGuid_t edts[num_children],  outputEvents[num_children];
    u64 _hintVal = 1;
 #ifdef ENABLE_SPAWNING_HINT
    ocrHint_t _spawnHints;
@@ -129,12 +138,12 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
 
    //Create templates for the EDTs
    ocrEdtTemplateCreate(&edt_template, spawning_fn, 1, 1);
-   ocrEdtTemplateCreate(&edtJoin_template, shutdownEdt, 0, NUM_CHILDREN);
+   ocrEdtTemplateCreate(&edtJoin_template, shutdownEdt, 0, num_children);
 
    ocrEdtCreate(&edtJoin, edtJoin_template, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
          EDT_PROP_FINISH, NULL_HINT, NULL);
 
-   for(i = 0; i < NUM_CHILDREN; i++) {
+   for(i = 0; i < num_children; i++) {
       u64 ii = i;
       ocrPrintf("EdtCreate: i is: %"PRId32"\n",i);
    //Create the EDTs
@@ -149,7 +158,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
    }
 
 
-   for(i = 0; i < NUM_CHILDREN; i++) {
+   for(i = 0; i < num_children; i++) {
       ocrPrintf("AddDep: i is: %"PRId32"\n",i);
       //Start execution of the parallel EDTs
       ocrAddDependence(NULL_GUID, edts[i], 0, DB_DEFAULT_MODE);

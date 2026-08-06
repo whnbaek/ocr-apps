@@ -19,11 +19,13 @@
 #define ITER     200
 #endif
 
-struct timeval tv1, tv2;
-
 ocrGuid_t done(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+    // Start time arrives through paramv; a file-scope timeval written by
+    // mainEdt would be unset in this EDT's process on another policy domain.
+    struct timeval tv2;
+    u64 start_sec = paramv[0], start_usec = paramv[1];
     gettimeofday(&tv2, NULL);
-    PRINTF("Time: %d ms\n", ((tv2.tv_sec-tv1.tv_sec)*1000000 + (tv2.tv_usec - tv1.tv_usec))/1000);
+    PRINTF("Time: %d ms\n", (int)(((tv2.tv_sec-(time_t)start_sec)*1000000 + (tv2.tv_usec - (suseconds_t)start_usec))/1000));
     ocrShutdown();
     return NULL_GUID;
 }
@@ -74,6 +76,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     // Per-thread DB guids: heap-sized since the count is now a runtime value.
     ocrGuid_t *dbs = (ocrGuid_t *)malloc(sizeof(ocrGuid_t) * nThreads);
 
+    struct timeval tv1;
     gettimeofday(&tv1, NULL);
 
     ocrHint_t myHint;
@@ -85,8 +88,9 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     // Forward dbSize / iter to work through paramv so they reach the EDT on
     // whichever node it runs (file-scope globals would not cross ranks).
     ocrEdtTemplateCreate(&twork  , work  , 2, 1);
-    ocrEdtTemplateCreate(&tdone , done , 0, nThreads);
-    ocrEdtCreate(&doneedt, tdone , 0, NULL, nThreads, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+    ocrEdtTemplateCreate(&tdone , done , 2, nThreads);
+    u64 dparamv[2] = { (u64)tv1.tv_sec, (u64)tv1.tv_usec };
+    ocrEdtCreate(&doneedt, tdone , 2, dparamv, nThreads, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
     for(i = 0; i < nThreads; i++) {
         u64 wparamv[2] = { dbSize, nIter };
         ocrEdtCreate(&workedt, twork, EDT_PARAM_DEF, wparamv, 1, &dbs[i], EDT_PROP_NONE, NULL_HINT, &event);

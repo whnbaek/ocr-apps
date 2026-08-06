@@ -263,6 +263,11 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
     u32 ntimes = NTIMES;
+    u64 argc = getArgc(depv[0].ptr);
+    if (argc > 1) {
+        u64 v = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+        if (v >= 2 && v <= NTIMES_MAX) ntimes = (u32)v;
+    }
 
     preamble(ntimes);
 

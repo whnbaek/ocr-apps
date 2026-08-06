@@ -292,11 +292,16 @@ ocrAddDependence(pmovesDb, realmain, 2, DB_MODE_RW);
 }
 
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
-//optional argument: search depth in moves; the full puzzle (BOTTOM moves) by default
+//optional arguments: search depth in moves (full puzzle by default), rounds
     u64 depth = BOTTOM;
-    if(ocrGetArgc(depv[0].ptr) > 1) depth = (u64) atoi(ocrGetArgv(depv[0].ptr, 1));
+    u64 argc = ocrGetArgc(depv[0].ptr);
+    if(argc > 1) depth = (u64) atoi(ocrGetArgv(depv[0].ptr, 1));
     if(depth < 1 || depth > BOTTOM) depth = BOTTOM;
     u64 rounds = 1;
+    if(argc > 2) {
+        u64 r = (u64) atoi(ocrGetArgv(depv[0].ptr, 2));
+        if(r >= 1) rounds = r;
+    }
     ocrPrintf("triangle puzzle depth %d \n", depth);
     launch_round(depth, rounds);
     return NULL_GUID;

@@ -76,6 +76,9 @@ ocrPrintf("enter mainEdt paramc %d depc %d\n",paramc,depc);RAG_FLUSH;
 	FILE *pInFile, *pInFile2, *pInFile3, *pOutFile;
 #endif
 	struct detects *Y;			// Detects list
+#ifndef RAG_IMPLICIT_INPUTS
+	extern const char *rag_params_path;
+#endif
 	struct point **corr_map;		// Correlation map
 #ifdef RAG_DIG_SPOT
 	struct DigSpotVars dig_spot;		// Digital spotlight variables
@@ -147,13 +150,27 @@ ocrPrintf("allocate AffineParams\n");RAG_FLUSH;
 		xe_exit(1);
 	}
 
-	/* The detects output is written by every build flavor; input paths exist
-	 * only in the runtime-input build. */
+	/* The detects output is written by every build flavor; input paths and
+	 * their argv overrides exist only in the runtime-input build. */
 	const char *out_detects = argv_4;
 #ifndef RAG_IMPLICIT_INPUTS
-	/* Data paths: compiled defaults (argv.h macros). */
+	/* Data/output paths and the radar-parameter file: compiled defaults
+	 * (argv.h macros / Parameters.txt), overridable by program argv
+	 * [1]=data [2]=platform positions [3]=pulse times [4]=detects out
+	 * [5]=parameter file. */
 	const char *in_data = argv_1, *in_platpos = argv_2;
 	const char *in_pulsetime = argv_3;
+	{
+		uint64_t rag_argc = ocrGetArgc(depv[0].ptr);
+		if( rag_argc >= 5 ) {
+			in_data      = ocrGetArgv(depv[0].ptr, 1);
+			in_platpos   = ocrGetArgv(depv[0].ptr, 2);
+			in_pulsetime = ocrGetArgv(depv[0].ptr, 3);
+			out_detects  = ocrGetArgv(depv[0].ptr, 4);
+		}
+		if( rag_argc >= 6 )
+			rag_params_path = ocrGetArgv(depv[0].ptr, 5);
+	}
 	/* Validation opens only — fail fast on a bad path.  The handles are not
 	 * kept: a FILE* is process-local, so the consuming tasks (ReadData_edt,
 	 * post_CFAR_edt) reopen the files on whichever node they execute on;

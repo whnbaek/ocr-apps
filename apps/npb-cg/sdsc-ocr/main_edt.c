@@ -16,9 +16,10 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     u64 argc = ocrGetArgc(depv[0].ptr);
 
     classdb_t* class; ocrGuid_t classid;
+    u32 niter_override = 0;
     if(argc>1) {
-        if(argc!=3 && argc != 5) {
-            ocrPrintf("cg [-t class] [-b blocking ] (class=T|S|W|A|B|C|D|E; default: -t S, -b 1)\n");
+        if(argc!=3 && argc != 5 && argc != 7) {
+            ocrPrintf("cg [-t class] [-b blocking ] [-i niter] (class=T|S|W|A|B|C|D|E; default: -t S, -b 1)\n");
             ocrShutdown();
             return NULL_GUID;
         }
@@ -29,6 +30,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                 classt = *ocrGetArgv(depv[0].ptr,argc--);
             else if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-b")==0)
                 blocking = atoi(ocrGetArgv(depv[0].ptr,argc--));
+            else if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-i")==0)
+                niter_override = atoi(ocrGetArgv(depv[0].ptr,argc--));
         }
         class_init(&class, &classid, classt, blocking);
         if(class->c == 'U') {
@@ -39,6 +42,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     }
     else
         class_init(&class, &classid, 'S', 1);
+    if(niter_override >= 1)
+        class->niter = niter_override;
 
     timerdb_t* timer; ocrGuid_t timerid;
     timer_init(&timer, &timerid, class, class->on);
