@@ -89,6 +89,7 @@ typedef struct{
     s64 parent;
     u32 maxRefLvl;
     u32 refineFreq;
+    u32 maxTime;
     vec3 pos;
     vec3 size;
     vec3 halfSize;

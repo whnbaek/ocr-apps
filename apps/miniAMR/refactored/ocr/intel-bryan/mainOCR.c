@@ -139,7 +139,7 @@ ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     block_t * PRM_block = depv[0].ptr;
     ocrGuid_t blockGUID, blockTML;
 
-    if( PRM_block->timestep < max_time )
+    if( PRM_block->timestep < PRM_block->maxTime )
     {
         if( PRM_block->id == 0 )
         {
@@ -291,6 +291,7 @@ ocrGuid_t myConnect( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     PRM_block->refLvl = 0;
     PRM_block->maxRefLvl = MAX_REF;
     PRM_block->refineFreq = (u32)rParams[17];
+    PRM_block->maxTime = (u32)rParams[35];
     ocrGuid_t blockGUID;
 
     u64 xDim = PRM_initEdt->edtGridDims[0];
@@ -506,7 +507,7 @@ ocrGuid_t realMainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     range_t * rStruct;
 
-    ocrDbCreate( &DBKArgs, (void **)&params, sizeof( int ) * 35, DB_PROP_NONE, NULL_HINT, NO_ALLOC);
+    ocrDbCreate( &DBKArgs, (void **)&params, sizeof( int ) * 36, DB_PROP_NONE, NULL_HINT, NO_ALLOC);
     ocrDbCreate( &DBKmyRange, (void **)&rStruct, sizeof( range_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
     /* DBKObjects is created only when --num_objects is given; NULL_GUID gives
@@ -676,6 +677,7 @@ ocrGuid_t realMainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
       params[32] = permute;
       params[33] = nonblocking;
       params[34] = refine_ghost;
+      params[35] = max_time;
 
     u64 numRanks = npx * npy * npz;
 
