@@ -486,6 +486,8 @@ ocrGuid_t parallelInitEDT( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]
             EDT_PROP_NONE, NULL_HINT, NULL );
 
 
+    // The release invalidates sharedPTR; capture what the branches below need.
+    u64 last_rank = sharedPTR->nrank - 1;
     ocrDbRelease( sharedGUID );
     ocrAddDependence( sharedGUID, stencilInitGUID, 0, DB_MODE_RO );
     ocrAddDependence( privateDBK, stencilInitGUID, 1, DB_MODE_RW );
@@ -495,7 +497,7 @@ ocrGuid_t parallelInitEDT( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]
     }else{
         ocrAddDependence( NULL_GUID, stencilInitGUID, 2, DB_MODE_RW );
     }
-    if( paramv[0] != sharedPTR->nrank - 1 ){
+    if( paramv[0] != last_rank ){
         ocrDbRelease( rightDBK );
         ocrAddDependence( rightDBK, stencilInitGUID, 3, DB_MODE_RW );
     }else{

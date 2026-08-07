@@ -1219,6 +1219,11 @@ ocrGuid_t establishNewConnections( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep
     }
 
     catalog->disposition = rState->disposition;
+    /* Release created blocks before handing them to the next generation: a
+     * consumer that acquires and destroys the block must not race the
+     * producer's still-pending release writeback (release-before-handoff). */
+    ocrDbRelease( channelListDBK );
+    ocrDbRelease( subSetDBK );
     ocrAddDependence( channelListDBK, refineGUID, 0, DB_MODE_RW );
     ocrAddDependence( depv[1].guid, refineGUID, 7, DB_MODE_RW );
     ocrAddDependence( subSetDBK, refineGUID, 8, DB_MODE_RW );
@@ -1620,6 +1625,7 @@ ocrGuid_t refineControlEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
     ocrAddDependence( willRefineEVT, intentGUID, 0, DB_MODE_RW );
     ocrAddDependence( depv[0].guid, intentGUID, 1, DB_MODE_RW );
 
+    ocrDbRelease( rStateDBK );
     ocrAddDependence( rStateDBK, willRefineGUID, 0, DB_MODE_RW );
     ocrAddDependence( depv[0].guid, willRefineGUID, 1, DB_MODE_RW );
 

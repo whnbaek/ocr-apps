@@ -209,6 +209,12 @@ int makea(classdb_t* class, ocrGuid_t* a)
 
     ocrPrintf("number of nonzeros = %lu\n", nza);
 
+    /* The container and every block sub-DB are fully written: release before
+       the caller wires them into consumers. */
+    for(i=0; i<class->na/class->blk; ++i)
+        ocrDbRelease(a_ptr[i]);
+    ocrDbRelease(*a);
+
     ocrDbDestroy(acolid);
     ocrDbDestroy(aeltid);
     ocrDbDestroy(arowid);

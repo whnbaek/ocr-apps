@@ -352,6 +352,7 @@ ocrGuid_t confirmConsensus( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t * de
                 ocrGuid_t tmpDBK;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, myInfo, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[i*5], tmpDBK );
         }
         else
@@ -362,6 +363,7 @@ ocrGuid_t confirmConsensus( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t * de
                 coarsenInfo_t * tmp;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, myInfo, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[(i*5)+(j+1)], tmpDBK );
             }
         }
@@ -441,6 +443,7 @@ ocrGuid_t doubleCheckConsensus( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t 
                 ocrGuid_t tmpDBK;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, myInfo, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[i*5], tmpDBK );
         }
         else
@@ -451,6 +454,7 @@ ocrGuid_t doubleCheckConsensus( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t 
                 coarsenInfo_t * tmp;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, myInfo, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[(i*5)+(j+1)], tmpDBK );
             }
         }
@@ -528,6 +532,7 @@ ocrGuid_t checkConsensus( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t * depv
                 ocrGuid_t tmpDBK;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, myInfo, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[i*5], tmpDBK );
         }
         else
@@ -538,6 +543,7 @@ ocrGuid_t checkConsensus( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t * depv
                 coarsenInfo_t * tmp;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, myInfo, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[(i*5)+(j+1)], tmpDBK );
             }
         }
@@ -599,6 +605,7 @@ ocrGuid_t coarsenIntent( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t * depv 
                 ocrGuid_t tmpDBK;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, depv[0].ptr, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[i*5], tmpDBK );
         }
         else
@@ -609,6 +616,7 @@ ocrGuid_t coarsenIntent( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t * depv 
                 coarsenInfo_t * tmp;
                 ocrDbCreate( &tmpDBK, (void **)&tmp, sizeof( coarsenInfo_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                 memcpy( tmp, intent, sizeof( coarsenInfo_t ) );
+                ocrDbRelease( tmpDBK );
                 ocrEventSatisfy( PRM_block->rSnd[(i*5)+(j+1)], tmpDBK );
             }
         }

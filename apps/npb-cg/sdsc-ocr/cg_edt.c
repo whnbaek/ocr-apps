@@ -20,6 +20,7 @@ ocrGuid_t alphas_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrDbCreate(&nalpha,(void**)&nalpha_ptr,sizeof(double),0,NULL_HINT,NO_ALLOC);
     *alpha_ptr = *(double*)depv[0].ptr/_dot(paramv[0],depv[1].ptr,depv[2].ptr);
     *nalpha_ptr = -*alpha_ptr;
+    ocrDbRelease(nalpha);
     ocrEventSatisfy((ocrGuid_t){.guid = paramv[1]},nalpha);
 
     return alpha;
@@ -69,6 +70,7 @@ ocrGuid_t update_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t pp; double* pp_ptr;
     ocrDbCreate(&pp,(void**)&pp_ptr,sizeof(double)*paramv[0],0,NULL_HINT,NO_ALLOC);
     _copy(paramv[0],pp_ptr,depv[1].ptr);
+    ocrDbRelease(pp);
     ocrEventSatisfy((ocrGuid_t){.guid = paramv[1]},pp);
     return depv[1].guid;
 }
@@ -86,6 +88,7 @@ ocrGuid_t assign_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         *ptr = ((double*)depv[i].ptr)[j];
       ocrDbDestroy(depv[i].guid);
     }
+    ocrDbRelease(r);
     ocrEventSatisfy((ocrGuid_t){.guid = paramv[1]},r);
 
     return NULL_GUID;

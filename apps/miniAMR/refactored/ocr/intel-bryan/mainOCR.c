@@ -205,6 +205,7 @@ ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     ocrDbCreate( &dataDBK, (void **)&data, sizeof( data_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                     data->data = PRM_block->data;
                     data->id = PRM_block->id;
+                    ocrDbRelease( dataDBK );
                     ocrEventSatisfy( PRM_block->snd[i*5], dataDBK );
                 }
                 else
@@ -216,6 +217,7 @@ ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                         ocrDbCreate( &dataDBK, (void **)&data, sizeof( data_t ), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
                         data->data = PRM_block->data;
                         data->id = PRM_block->id;
+                        ocrDbRelease( dataDBK );
                         ocrEventSatisfy( PRM_block->snd[base+offs], dataDBK );
                     }
                 }
