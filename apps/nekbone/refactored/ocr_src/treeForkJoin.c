@@ -232,21 +232,21 @@ void makeBtForkFOR_text(const char * in_header, unsigned int in_foliationNb, con
     char * p = io_buf;
 
     const char * q = in_header;
-    while( !q && *q !='\0'){
+    while( q && *q !='\0'){
         *p = *q;
         ++p;
         ++q;
     }
 
     q = ntext;
-    while( !q && *q !='\0'){
+    while( q && *q !='\0'){
         *p = *q;
         ++p;
         ++q;
     }
 
     q = in_footer;
-    while( !q && *q !='\0'){
+    while( q && *q !='\0'){
         *p = *q;
         ++p;
         ++q;

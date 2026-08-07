@@ -261,9 +261,9 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     ocrDbDestroy(depv[2].guid);
     /* If this is the last tile (bottom right most tile), finish */
     if ( i == n_tiles_height && j == n_tiles_width ) {
-        ocrPrintf("score: %d\\n", curr_bottom_row[effective_tile_width-1]);
+        ocrPrintf("score: %d\n", curr_bottom_row[effective_tile_width-1]);
         u32 score = smithWatermanParamvIn->score;
-        VERIFY(curr_bottom_row[effective_tile_width-1] == score, "Expected score: %d\\n", score);
+        VERIFY(curr_bottom_row[effective_tile_width-1] == score, "Expected score: %d\n", score);
         ocrShutdown();
     }
     return NULL_GUID;
@@ -388,12 +388,12 @@ static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_ti
 
     *p_string_1 = read_file(file_name_1, &n_char_in_file_1);
     if(*p_string_1 == NULL) return 1;
-    ocrPrintf("Size of input string 1 is %d\\n", n_char_in_file_1 );
+    ocrPrintf("Size of input string 1 is %d\n", n_char_in_file_1 );
     *p_string1_len = (s32)n_char_in_file_1;
 
     *p_string_2 = read_file(file_name_2, &n_char_in_file_2);
     if(*p_string_2 == NULL) return 1;
-    ocrPrintf("Size of input string 2 is %d\\n", n_char_in_file_2 );
+    ocrPrintf("Size of input string 2 is %d\n", n_char_in_file_2 );
     *p_string2_len = (s32)n_char_in_file_2;
 
     *check_score = atoi((char *)read_file(file_name_score, &n_char_in_file_score));
@@ -449,7 +449,7 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         }
     }
 
-    ocrPrintf("Allocated tile matrix\\n");
+    ocrPrintf("Allocated tile matrix\n");
 
     initialize_border_values(tile_matrix, n_tiles_width, n_tiles_height, tile_width, tile_height, string1_len, string2_len);
     ocrGuid_t smith_waterman_task_template_guid;

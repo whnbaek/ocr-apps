@@ -77,9 +77,9 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         /*do the maths here.*/
         if(timestep == 0){
             //initialize!
-        if( private->toDestroy[0] != NULL_GUID )
+        if( !ocrGuidIsNull(private->toDestroy[0]) )
             ocrEventDestroy( private->toDestroy[0] );
-        if( private->toDestroy[1] != NULL_GUID )
+        if( !ocrGuidIsNull(private->toDestroy[1]) )
             ocrEventDestroy( private->toDestroy[1] );
 
             if( m == 1 ){
@@ -129,9 +129,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                         NULL,
                         EDT_PARAM_DEF,
                         NULL,
-                        EDT_PROP_NONE,
-                        NULL_GUID,
-                        NULL_GUID );
+                        EDT_PROP_NONE, NULL_HINT, NULL);
         /*create and paste events*/
 
 
@@ -266,8 +264,7 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
     ocrDbCreate(    &data,
                     (void **)&dummy,
                     2 * private->m * sizeof(double),
-                    0,
-                    NULL_GUID,
+                    0, NULL_HINT,
                     NO_ALLOC );
 
     ocrEdtCreate(   &stencil,
@@ -276,9 +273,7 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                     NULL,
                     EDT_PARAM_DEF,
                     NULL,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     ocrEdtCreate(   &(private->mychild),            //grandchild created here.
                     private->template,
@@ -286,9 +281,7 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                     NULL,
                     EDT_PARAM_DEF,
                     NULL,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     /*set up grandchild deps*/
     ocrGuid_t once;
@@ -381,7 +374,7 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                         3,
                         DB_MODE_RW );
 
-    if( leftsend != NULL_GUID ){
+    if( !ocrGuidIsNull(leftsend) ){
         ocrEventCreate( &leftsend,
                         OCR_EVENT_STICKY_T,
                         DEFAULT_LG_PROPS );
@@ -390,7 +383,7 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                             depv[2].guid );
     }
 
-    if( rightsend != NULL_GUID ){
+    if( !ocrGuidIsNull(rightsend) ){
         ocrEventCreate( &rightsend,
                         OCR_EVENT_STICKY_T,
                         DEFAULT_LG_PROPS );
@@ -425,15 +418,13 @@ ocrGuid_t initEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     ocrDbCreate(    &privateDb,
                     (void **)&dummy,
                     sizeof(private_t),
-                    0,
-                    NULL_GUID,
+                    0, NULL_HINT,
                     NO_ALLOC );
     if( paramv[0] != 0){
         ocrDbCreate(    &leftDb,
                         (void **)&bDummy,
                         sizeof(buffer_t),
-                        0,
-                        NULL_GUID,
+                        0, NULL_HINT,
                         NO_ALLOC );
     }else{
         leftDb = NULL_GUID;
@@ -442,8 +433,7 @@ ocrGuid_t initEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         ocrDbCreate(    &rightDb,
                         (void **)&bDummy,
                         sizeof(buffer_t),
-                        0,
-                        NULL_GUID,
+                        0, NULL_HINT,
                         NO_ALLOC );
     }else{
         rightDb = NULL_GUID;
@@ -460,9 +450,7 @@ ocrGuid_t initEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     paramv,
                     EDT_PARAM_DEF,
                     NULL,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PROP_NONE, NULL_HINT, NULL);
     ocrDbRelease( depv[0].guid );
     ocrAddDependence(   depv[0].guid,
                         stencilInit,
@@ -473,12 +461,12 @@ ocrGuid_t initEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                         stencilInit,
                         1,
                         DB_MODE_RW );
-    if( leftDb != NULL_GUID ) ocrDbRelease( leftDb );
+    if( !ocrGuidIsNull(leftDb) ) ocrDbRelease( leftDb );
     ocrAddDependence(   leftDb,
                         stencilInit,
                         2,
                         DB_MODE_RW );
-    if( rightDb != NULL_GUID )ocrDbRelease( rightDb );
+    if( !ocrGuidIsNull(rightDb) )ocrDbRelease( rightDb );
     ocrAddDependence(   rightDb,
                         stencilInit,
                         3,
@@ -556,17 +544,16 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     wrapupTemplate,
                     EDT_PARAM_DEF,
                     paramv,
-                    EDT_PARAM_DEF,
-                    NULL_GUID,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PARAM_DEF, NULL,
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     shared->wrapup = wrapup;
 
+    // The release invalidates the shared pointer; capture the loop bound first.
+    u64 num_workers = shared->n;
     ocrDbRelease( depv[0].guid );
 
-    for( i = 0; i < shared->n; i++ ){
+    for( i = 0; i < num_workers; i++ ){
 
         ocrEdtCreate(   &init,
                         initTemplate,
@@ -574,9 +561,7 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                         &i,
                         EDT_PARAM_DEF,
                         NULL,
-                        EDT_PROP_NONE,
-                        NULL_GUID,
-                        NULL_GUID );
+                        EDT_PROP_NONE, NULL_HINT, NULL);
 
         ocrAddDependence(   depv[0].guid,
                             init,
@@ -622,8 +607,7 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     ocrDbCreate(    &shared,
                     (void **)&dummy,
                     sizeof( shared_t ),
-                    0,
-                    NULL_GUID,
+                    0, NULL_HINT,
                     NO_ALLOC );
 
 
@@ -636,11 +620,8 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     realMainTemplate,
                     EDT_PARAM_DEF,
                     cmdArgs,
-                    EDT_PARAM_DEF,
-                    NULL_GUID,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PARAM_DEF, NULL,
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     ocrDbRelease( shared );
 

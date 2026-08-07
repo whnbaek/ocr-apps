@@ -122,12 +122,7 @@ int main (int argc, char **argv) {
     int id;
     for ( id = 0; id < Num_procs; id++ ) {
         if (my_ID == id) {
-            for (i = 1; i < nloc + 1; i++) {
-         //if ( i % 5 == 0) printf ( "val [%d} =  %f\n", i, val [i] );
-                printf ( " Local results PID %d val [%d] =  %f\n", id, i, val [i] );
-        //        printf ("DEBUG %d %d\n", i, nloc - 2);
-                fflush (stdout);
-            }
+            /* per-value stdout dump removed: unbounded output for large nx. */
         }
     }
     if ( my_ID == 0 ) {
@@ -153,10 +148,9 @@ int main (int argc, char **argv) {
             results [i] = val [i];
             //printf ( "results [%d] =  %f\n", i, val [i]);
         }
-        for (i = 0; i < nx; i++) {
-            printf ( "results [%d] =  %f\n", i, results [i] );
-            fflush (stdout);
-        }
+        /* full-array dump replaced by a bounded completion marker. */
+        printf ( "Stencil1D done nx = %d results[nx/2] = %f\n", nx, results [nx/2] );
+        fflush (stdout);
     }
     }
     MPI_Finalize();

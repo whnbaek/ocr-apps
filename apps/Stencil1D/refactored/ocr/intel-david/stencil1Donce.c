@@ -285,8 +285,8 @@ note that depv[0] and depv[3*nrank-1] are both NULL_GUID
     u64 pslot = 1;
     u64 rslot = 2;
 
-    ocrEdtCreate(&stencilGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
-    ocrEdtCreate(&myChildGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+    ocrEdtCreate(&stencilGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+    ocrEdtCreate(&myChildGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
 
     ocrAddDependence(NULL_GUID, stencilGUID, 0, DB_MODE_RW);
     ocrAddDependence(NULL_GUID, myChildGUID, 0, DB_MODE_RW);
@@ -322,7 +322,7 @@ note that depv[0] and depv[3*nrank-1] are both NULL_GUID
         ocrAddDependence(leftSendEVT, myChildGUID, 2, DB_MODE_RW);
 
 
-        ocrEdtCreate(&myChildGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+        ocrEdtCreate(&myChildGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
 
         ocrEventCreate(&rightSendEVT, OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG);
         ocrAddDependence(rightSendEVT, myChildGUID, 0, DB_MODE_RW);
@@ -333,7 +333,7 @@ note that depv[0] and depv[3*nrank-1] are both NULL_GUID
         ocrAddDependence(depv[rslot].guid, stencilGUID, 2, DB_MODE_RW);
         rslot +=3;
 
-        ocrEdtCreate(&stencilGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_GUID, NULL_GUID);
+        ocrEdtCreate(&stencilGUID, stencilTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
 
         ocrDbRelease(depv[lslot].guid);
         ocrAddDependence(depv[lslot].guid, stencilGUID, 0, DB_MODE_RW);
@@ -493,6 +493,8 @@ ocrGuid_t parallelInitEDT( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]
     ocrEdtCreate( &stencilInitGUID, stencilInitTML, EDT_PARAM_DEF, &paramv[0], EDT_PARAM_DEF, NULL,
             EDT_PROP_NONE, NULL_HINT, NULL );
 
+    // The release invalidates sharedPTR; capture what the branches below need.
+    u64 last_rank = sharedPTR->nrank - 1;
     ocrDbRelease( sharedGUID );
     ocrAddDependence( sharedGUID, stencilInitGUID, 0, DB_MODE_RO );
     ocrDbRelease( privateDBK );
@@ -505,7 +507,7 @@ ocrGuid_t parallelInitEDT( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]
         ocrAddDependence( NULL_GUID, stencilInitGUID, 2, DB_MODE_RW );
     }
 
-    if( paramv[0] != sharedPTR->nrank - 1 ){
+    if( paramv[0] != last_rank ){
         ocrDbRelease( rightDBK );
         ocrAddDependence( rightDBK, stencilInitGUID, 3, DB_MODE_RW );
     }else{
@@ -613,7 +615,7 @@ creates and launches realMain
     realMainPRM.npoints = npoints;
     realMainPRM.maxt = maxt;
     ocrEdtCreate(&realMainGUID, realMainTML, EDT_PARAM_DEF, (u64 *) &realMainPRM, EDT_PARAM_DEF, NULL,
-          EDT_PROP_NONE, NULL_GUID, NULL);
+          EDT_PROP_NONE, NULL_HINT, NULL);
 
     ocrGuid_t privateDBK, bufferDBK;
 
@@ -622,15 +624,15 @@ creates and launches realMain
 
     for(i=0;i<nrank-1;i++)  {
 
-        ocrDbCreate(&privateDBK, (void**) &dummy, sizeof(private_t) + npoints*sizeof(double), 0, NULL_GUID, NO_ALLOC);
+        ocrDbCreate(&privateDBK, (void**) &dummy, sizeof(private_t) + npoints*sizeof(double), 0, NULL_HINT, NO_ALLOC);
         ocrAddDependence(privateDBK, realMainGUID, slot++, DB_MODE_RW);
 
-        ocrDbCreate(&bufferDBK, (void**) &dummy, sizeof(buffer_t), 0, NULL_GUID, NO_ALLOC);
+        ocrDbCreate(&bufferDBK, (void**) &dummy, sizeof(buffer_t), 0, NULL_HINT, NO_ALLOC);
         ocrAddDependence(bufferDBK, realMainGUID, slot++, DB_MODE_RW);
-        ocrDbCreate(&bufferDBK, (void**) &dummy, sizeof(buffer_t), 0, NULL_GUID, NO_ALLOC);
+        ocrDbCreate(&bufferDBK, (void**) &dummy, sizeof(buffer_t), 0, NULL_HINT, NO_ALLOC);
         ocrAddDependence(bufferDBK, realMainGUID, slot++, DB_MODE_RW);
     }
-    ocrDbCreate(&privateDBK, (void**) &dummy, sizeof(private_t) + npoints*sizeof(double), 0, NULL_GUID, NO_ALLOC);
+    ocrDbCreate(&privateDBK, (void**) &dummy, sizeof(private_t) + npoints*sizeof(double), 0, NULL_HINT, NO_ALLOC);
     ocrAddDependence(privateDBK, realMainGUID, slot++, DB_MODE_RW);
     ocrAddDependence(NULL_GUID, realMainGUID, slot, DB_MODE_RW);
     #endif

@@ -133,9 +133,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                         NULL,
                         EDT_PARAM_DEF,
                         NULL,
-                        EDT_PROP_NONE,
-                        NULL_GUID,
-                        NULL_GUID );
+                        EDT_PROP_NONE, NULL_HINT, NULL);
 
 
 
@@ -262,18 +260,16 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
     private->m = shared->m;
     private->t = shared->t;
 
-    ocrDbCreate(&dataDb, (void **) &dummy, 2 * shared->m * sizeof(double), 0, NULL_GUID, NO_ALLOC );    //slot 0
+    ocrDbCreate(&dataDb, (void **) &dummy, 2 * shared->m * sizeof(double), 0, NULL_HINT, NO_ALLOC );    //slot 0
         ocrDbCreate(    &sendleftDb,            //slot 2
                         (void **) &dummy,
                         sizeof(double),
-                        0,
-                        NULL_GUID,
+                        0, NULL_HINT,
                         NO_ALLOC );
         ocrDbCreate(    &sendrightDb,
                         (void **)&dummy,
                         sizeof(double),
-                        0,
-                        NULL_GUID,
+                        0, NULL_HINT,
                         NO_ALLOC );
 
     ocrEdtTemplateCreate(   &(private->template),
@@ -287,9 +283,7 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                     NULL,
                     EDT_PARAM_DEF,
                     NULL,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     if( private->mynode < (private->n - 1)){
 
@@ -390,9 +384,11 @@ ocrGuid_t initEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     ocrDbCreate(    &privateDb,
                     (void **)&dummy,
                     sizeof(private_t),
-                    0,
-                    NULL_GUID,
+                    0, NULL_HINT,
                     NO_ALLOC );
+    // Release the creator hold before wiring: the consumer's writes must not
+    // race the creator's end-of-task release of this DB.
+    ocrDbRelease( privateDb );
 
     ocrEdtTemplateCreate(   &SITemplate,
                             stencilInitEdt,
@@ -405,9 +401,7 @@ ocrGuid_t initEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     &paramv[0],
                     EDT_PARAM_DEF,
                     NULL,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     ocrAddDependence(   depv[0].guid,
                         temp,
@@ -471,16 +465,20 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     paramv,
                     EDT_PARAM_DEF,
                     NULL,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     ocrEdtTemplateCreate(   &initTemplate,
                             initEdt,
                             1,
                             1 );
 
-    for( i = 0; i < shared->n; i++ ){
+    // Publish the shared-block writes before handing the DB to the init
+    // EDTs; the release invalidates the shared pointer, so capture the
+    // loop bound first.
+    u64 num_workers = shared->n;
+    ocrDbRelease( depv[0].guid );
+
+    for( i = 0; i < num_workers; i++ ){
 
 
         ocrEdtCreate(   &init,
@@ -489,9 +487,7 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                         &i,
                         EDT_PARAM_DEF,
                         &depv[0].guid,
-                        EDT_PROP_NONE,
-                        NULL_GUID,
-                        NULL_GUID );
+                        EDT_PROP_NONE, NULL_HINT, NULL);
 
     }
 
@@ -540,7 +536,10 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     params[1] = chunkSize;
     params[2] = timesteps;
 
-    ocrDbCreate( &sharedDb, (void **)&dummy, sizeof(shared_t), 0, NULL_GUID, NO_ALLOC );
+    ocrDbCreate( &sharedDb, (void **)&dummy, sizeof(shared_t), 0, NULL_HINT, NO_ALLOC );
+    // Release the creator hold before wiring: the consumer's writes must not
+    // race the creator's end-of-task release of this DB.
+    ocrDbRelease( sharedDb );
     ocrEdtTemplateCreate(   &realMainTemplate,
                             realmainEdt,
                             3,
@@ -552,9 +551,7 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     params,
                     EDT_PARAM_DEF,
                     NULL,
-                    EDT_PROP_NONE,
-                    NULL_GUID,
-                    NULL_GUID );
+                    EDT_PROP_NONE, NULL_HINT, NULL);
 
     ocrAddDependence(   sharedDb,
                         realMain,

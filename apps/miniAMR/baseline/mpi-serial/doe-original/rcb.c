@@ -104,11 +104,11 @@ void load_balance(void)
       }
 
    num_moved_lb += m;
-   MPI_Allreduce(&m, &n, 1, MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD);
+   MPI_Allreduce(&m, &n, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
    t4 = timer();
    t2 = t4 - t1;
    if (n) {  // Only move dots and blocks if there is something to move
-      MPI_Alltoall(to, 1, MPI_INTEGER, from, 1, MPI_INTEGER, MPI_COMM_WORLD);
+      MPI_Alltoall(to, 1, MPI_INT, from, 1, MPI_INT, MPI_COMM_WORLD);
 
       move_dots_back();
       t5 = timer();
@@ -162,10 +162,10 @@ void exchange(double *tp, double *tm, double *tu)
                   rb = 1;
                } else
                   rb = 0;
-               MPI_Send(&rb, 1, MPI_INTEGER, start[l], type1, MPI_COMM_WORLD);
+               MPI_Send(&rb, 1, MPI_INT, start[l], type1, MPI_COMM_WORLD);
             }
             if (s < from[start[l]]) {
-               MPI_Recv(&i, 1, MPI_INTEGER, start[l], type1,
+               MPI_Recv(&i, 1, MPI_INT, start[l], type1,
                         MPI_COMM_WORLD, &status);
                if (i) {
                   while (sp < max_active_block && blocks[sp].number < 0 ||
@@ -267,7 +267,7 @@ void sort(int div, int fact, int dir)
    int i, j, sum, total_dots, part, dir1, point1, extra1,
        bin1[fact], point[fact], extra[fact];
 
-   MPI_Allreduce(&num_dots, &total_dots, 1, MPI_INTEGER, MPI_SUM, comms[div]);
+   MPI_Allreduce(&num_dots, &total_dots, 1, MPI_INT, MPI_SUM, comms[div]);
 
    for (i = 0; i < mesh_size[dir]; i++)
       bin[i] = 0;
@@ -276,7 +276,7 @@ void sort(int div, int fact, int dir)
       if (dots[i].number >= 0)
          bin[dots[i].cen[dir]]++;
 
-   MPI_Allreduce(bin, gbin, mesh_size[dir], MPI_INTEGER, MPI_SUM, comms[div]);
+   MPI_Allreduce(bin, gbin, mesh_size[dir], MPI_INT, MPI_SUM, comms[div]);
 
    part = (total_dots+fact-1)/fact;
    for (sum = j = i = 0; i < mesh_size[dir] && j < (fact-1); i++) {
@@ -313,7 +313,7 @@ void sort(int div, int fact, int dir)
          for (i = 0; i < max_active_dot; i++)
             if (dots[i].number >= 0 && dots[i].new_proc == (-1-j))
                bin[dots[i].cen[dir1]]++;
-         MPI_Allreduce(bin, gbin, mesh_size[dir1], MPI_INTEGER, MPI_SUM,
+         MPI_Allreduce(bin, gbin, mesh_size[dir1], MPI_INT, MPI_SUM,
                        comms[div]);
          part = bin1[j] - extra[j];
          for (sum = i = 0; i < mesh_size[dir1]; i++) {
@@ -343,7 +343,7 @@ void sort(int div, int fact, int dir)
             for (i = 0; i < max_active_dot; i++)
                if (dots[i].number >= 0 && dots[i].new_proc == (-1-j))
                   bin[dots[i].cen[dir1]]++;
-            MPI_Allreduce(bin, gbin, mesh_size[dir1], MPI_INTEGER, MPI_SUM,
+            MPI_Allreduce(bin, gbin, mesh_size[dir1], MPI_INT, MPI_SUM,
                           comms[div]);
             part = bin1[j] - extra1;
             for (sum = i = 0; i < mesh_size[dir1]; i++) {
@@ -485,14 +485,14 @@ void move_dots(int div, int fact)
    for (i = 0; i < fact; i++)
       if (i != mg) {
          partner = me[div]%sg + i*sg;
-         MPI_Irecv(&gbin[i], 1, MPI_INTEGER, partner, type, comms[div],
+         MPI_Irecv(&gbin[i], 1, MPI_INT, partner, type, comms[div],
                    &request[i]);
       }
 
    for (i = 0; i < fact; i++)
       if (i != mg) {
          partner = me[div]%sg + i*sg;
-         MPI_Send(&bin[i], 1, MPI_INTEGER, partner, type, comms[div]);
+         MPI_Send(&bin[i], 1, MPI_INT, partner, type, comms[div]);
       }
 
    type = 31;
@@ -502,7 +502,7 @@ void move_dots(int div, int fact)
          err = MPI_Wait(&request[i], &status);
          if (gbin[i] > 0) {
             partner = me[div]%sg + i*sg;
-            MPI_Irecv(&recv_int[off[i]], 6*gbin[i], MPI_INTEGER, partner,
+            MPI_Irecv(&recv_int[off[i]], 6*gbin[i], MPI_INT, partner,
                       type, comms[div], &request[i]);
             off[i+1] = off[i] + 6*gbin[i];
             nr++;
@@ -530,7 +530,7 @@ void move_dots(int div, int fact)
             }
 
          partner = me[div]%sg + i*sg;
-         MPI_Send(send_int, 6*bin[i], MPI_INTEGER, partner, type, comms[div]);
+         MPI_Send(send_int, 6*bin[i], MPI_INT, partner, type, comms[div]);
       }
 
    for (d = i = 0; i < nr; i++) {
@@ -568,7 +568,7 @@ void move_dots_back()
    for (nr = i = 0; i < num_pes; i++)
       if (from[i] > 0) {
          gbin[i+1] = gbin[i] + 2*from[i];
-         MPI_Irecv(&recv_int[gbin[i]], 2*from[i], MPI_INTEGER, i, 50,
+         MPI_Irecv(&recv_int[gbin[i]], 2*from[i], MPI_INT, i, 50,
                    MPI_COMM_WORLD, &request[i]);
          nr++;
       } else {
@@ -583,7 +583,7 @@ void move_dots_back()
                send_int[j++] = dots[d].n;
                send_int[j++] = my_pe;
             }
-         MPI_Send(send_int, 2*to[i], MPI_INTEGER, i, 50, MPI_COMM_WORLD);
+         MPI_Send(send_int, 2*to[i], MPI_INT, i, 50, MPI_COMM_WORLD);
       }
 
    for (i = 0; i < nr; i++) {
@@ -692,7 +692,7 @@ void move_blocks(double *tp, double *tm, double *tu)
       exchange(tp, tm, tu);
       for (n1 = i = 0; i < num_pes; i++)
          n1 += from[i];
-      MPI_Allreduce(&n1, &n, 1, MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD);
+      MPI_Allreduce(&n1, &n, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
       j++;
    } while (n && j < 10);
 

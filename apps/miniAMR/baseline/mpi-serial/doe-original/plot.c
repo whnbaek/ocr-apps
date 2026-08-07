@@ -66,16 +66,16 @@ void plot(int ts)
             fprintf(fp, "%d %d %d %d\n", bp->level, bp->cen[0],
                                          bp->cen[1], bp->cen[2]);
       for (i = 1; i < num_pes; i++) {
-         MPI_Send(&size, 1, MPI_INTEGER, i, 1, MPI_COMM_WORLD);
-         MPI_Recv(&size, 1, MPI_INTEGER, i, 2, MPI_COMM_WORLD, &status);
+         MPI_Send(&size, 1, MPI_INT, i, 1, MPI_COMM_WORLD);
+         MPI_Recv(&size, 1, MPI_INT, i, 2, MPI_COMM_WORLD, &status);
          if (size > buf_size) {
             if (i != 1)
                free(buf);
             buf_size = size;
             buf = (int *)ma_malloc(4*buf_size*sizeof(int), __FILE__, __LINE__);
          }
-         MPI_Irecv(buf, 4*size, MPI_INTEGER, i, 3, MPI_COMM_WORLD, &request[0]);
-         MPI_Send(&size, 1, MPI_INTEGER, i, 4, MPI_COMM_WORLD);
+         MPI_Irecv(buf, 4*size, MPI_INT, i, 3, MPI_COMM_WORLD, &request[0]);
+         MPI_Send(&size, 1, MPI_INT, i, 4, MPI_COMM_WORLD);
          MPI_Wait(&request[0], &status);
          fprintf(fp, "%d\n", size);
          for (n = j = 0; j < size; j++, n += 4)
@@ -95,9 +95,9 @@ void plot(int ts)
             buf[i++] = bp->cen[1];
             buf[i++] = bp->cen[2];
          }
-      MPI_Recv(&size, 1, MPI_INTEGER, 0, 1, MPI_COMM_WORLD, &status);
-      MPI_Send(&total_num_blocks, 1, MPI_INTEGER, 0, 2, MPI_COMM_WORLD);
-      MPI_Recv(&size, 1, MPI_INTEGER, 0, 4, MPI_COMM_WORLD, &status);
-      MPI_Send(buf, 4*total_num_blocks, MPI_INTEGER, 0, 3, MPI_COMM_WORLD);
+      MPI_Recv(&size, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, &status);
+      MPI_Send(&total_num_blocks, 1, MPI_INT, 0, 2, MPI_COMM_WORLD);
+      MPI_Recv(&size, 1, MPI_INT, 0, 4, MPI_COMM_WORLD, &status);
+      MPI_Send(buf, 4*total_num_blocks, MPI_INT, 0, 3, MPI_COMM_WORLD);
    }
 }

@@ -46,7 +46,7 @@ void comm_parent(void)
 
    type = 20;
    for (i = 0; i < par_p.num_comm_part; i++)
-      MPI_Irecv(&recv_int[par_p.index[i]], par_p.comm_num[i], MPI_INTEGER,
+      MPI_Irecv(&recv_int[par_p.index[i]], par_p.comm_num[i], MPI_INT,
                  par_p.comm_part[i], type, MPI_COMM_WORLD, &request[i]);
 
    for (i = 0; i < par_b.num_comm_part; i++) {
@@ -61,10 +61,10 @@ void comm_parent(void)
          else
             send_int[offset+j] = blocks[par_b.comm_b[par_b.index[i]+j]].refine;
       if (nonblocking)
-         MPI_Isend(&send_int[par_b.index[i]], par_b.comm_num[i], MPI_INTEGER,
+         MPI_Isend(&send_int[par_b.index[i]], par_b.comm_num[i], MPI_INT,
                    par_b.comm_part[i], type, MPI_COMM_WORLD, &s_req[i]);
       else
-         MPI_Send(&send_int[0], par_b.comm_num[i], MPI_INTEGER,
+         MPI_Send(&send_int[0], par_b.comm_num[i], MPI_INT,
                   par_b.comm_part[i], type, MPI_COMM_WORLD);
    }
 
@@ -95,7 +95,7 @@ void comm_parent_reverse(void)
 
    type = 21;
    for (i = 0; i < par_b.num_comm_part; i++)
-      MPI_Irecv(&recv_int[par_b.index[i]], par_b.comm_num[i], MPI_INTEGER,
+      MPI_Irecv(&recv_int[par_b.index[i]], par_b.comm_num[i], MPI_INT,
                  par_b.comm_part[i], type, MPI_COMM_WORLD, &request[i]);
 
    for (i = 0; i < par_p.num_comm_part; i++) {
@@ -106,10 +106,10 @@ void comm_parent_reverse(void)
       for (j = 0; j < par_p.comm_num[i]; j++)
          send_int[offset+j] = parents[par_p.comm_p[par_p.index[i]+j]].refine;
       if (nonblocking)
-         MPI_Isend(&send_int[par_p.index[i]], par_p.comm_num[i], MPI_INTEGER,
+         MPI_Isend(&send_int[par_p.index[i]], par_p.comm_num[i], MPI_INT,
                    par_p.comm_part[i], type, MPI_COMM_WORLD, &s_req[i]);
       else
-         MPI_Send(&send_int[0], par_p.comm_num[i], MPI_INTEGER,
+         MPI_Send(&send_int[0], par_p.comm_num[i], MPI_INT,
                   par_p.comm_part[i], type, MPI_COMM_WORLD);
    }
 
@@ -136,7 +136,7 @@ void comm_parent_unrefine(void)
 
    type = 22;
    for (i = 0; i < par_b.num_comm_part; i++)
-      MPI_Irecv(&recv_int[par_b.index[i]], par_b.comm_num[i], MPI_INTEGER,
+      MPI_Irecv(&recv_int[par_b.index[i]], par_b.comm_num[i], MPI_INT,
                  par_b.comm_part[i], type, MPI_COMM_WORLD, &request[i]);
 
    for (i = 0; i < par_p.num_comm_part; i++) {
@@ -147,10 +147,10 @@ void comm_parent_unrefine(void)
       for (j = 0; j < par_p.comm_num[i]; j++)
          send_int[offset+j] = parents[par_p.comm_p[par_p.index[i]+j]].refine;
       if (nonblocking)
-         MPI_Isend(&send_int[par_p.index[i]], par_p.comm_num[i], MPI_INTEGER,
+         MPI_Isend(&send_int[par_p.index[i]], par_p.comm_num[i], MPI_INT,
                    par_p.comm_part[i], type, MPI_COMM_WORLD, &s_req[i]);
       else
-         MPI_Send(&send_int[0], par_p.comm_num[i], MPI_INTEGER,
+         MPI_Send(&send_int[0], par_p.comm_num[i], MPI_INT,
                   par_p.comm_part[i], type, MPI_COMM_WORLD);
    }
 
@@ -218,7 +218,7 @@ void comm_parent_proc(void)
 
    type = 23;
    for (i = 0; i < par_p.num_comm_part; i++)
-      MPI_Irecv(&recv_int[par_p.index[i]], par_p.comm_num[i], MPI_INTEGER,
+      MPI_Irecv(&recv_int[par_p.index[i]], par_p.comm_num[i], MPI_INT,
                  par_p.comm_part[i], type, MPI_COMM_WORLD, &request[i]);
 
    for (i = 0; i < par_b.num_comm_part; i++) {
@@ -234,10 +234,10 @@ void comm_parent_proc(void)
             send_int[offset+j] =
                                blocks[par_b.comm_b[par_b.index[i]+j]].new_proc;
       if (nonblocking)
-         MPI_Isend(&send_int[par_b.index[i]], par_b.comm_num[i], MPI_INTEGER,
+         MPI_Isend(&send_int[par_b.index[i]], par_b.comm_num[i], MPI_INT,
                    par_b.comm_part[i], type, MPI_COMM_WORLD, &s_req[i]);
       else
-         MPI_Send(&send_int[0], par_b.comm_num[i], MPI_INTEGER,
+         MPI_Send(&send_int[0], par_b.comm_num[i], MPI_INT,
                   par_b.comm_part[i], type, MPI_COMM_WORLD);
    }
 

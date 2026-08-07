@@ -371,8 +371,10 @@ ocrGuid_t FNC_rankInitSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
     ocrAffinityCount( AFFINITY_PD, &affinityCount );
     ocrAssert( affinityCount >= 1 );
     ocrPrintf("Using affinity API\n");
+    #if PROBLEM_TYPE==2
     s64 PD_X, PD_Y;
     splitDimension(affinityCount, &PD_X, &PD_Y);
+    #endif
 #else
     ocrPrintf("NOT Using affinity API\n");
 #endif
@@ -382,15 +384,20 @@ ocrGuid_t FNC_rankInitSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
     {
 #ifdef ENABLE_EXTENSION_AFFINITY
         int id_x = i%NR_X;
-        s64 pd_x; getPartitionID(id_x, 0, NR_X-1, PD_X, &pd_x);
-
-        int pd = pd_x;
 
         #if PROBLEM_TYPE==2
+        s64 pd_x; getPartitionID(id_x, 0, NR_X-1, PD_X, &pd_x);
         int id_y = i/NR_X;
         s64 pd_y; getPartitionID(id_y, 0, NR_Y-1, PD_Y, &pd_y);
 
-        pd = globalRankFromCoords(pd_x, pd_y, PD_X, PD_Y);
+        int pd = globalRankFromCoords(pd_x, pd_y, PD_X, PD_Y);
+        #else
+        // A 1-D rank space has no second axis to route through a factored
+        // PD grid: partition the linear rank id across the FULL PD count,
+        // or every rank lands on the PD grid's first column (PD 0 whenever
+        // the PD count has no divisor <= its square root).
+        s64 pd_lin; getPartitionID(id_x, 0, NR_X-1, affinityCount, &pd_lin);
+        int pd = pd_lin;
         #endif
         DEBUG_PRINTF(("rank %d, policy domain %d\n", i, pd));
         ocrAffinityGetAt( AFFINITY_PD, pd, &(currentAffinity) );
@@ -905,8 +912,10 @@ ocrGuid_t FNC_rankComputeSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t 
     s64 affinityCount;
     ocrAffinityCount( AFFINITY_PD, &affinityCount );
     ocrAssert( affinityCount >= 1 );
+    #if PROBLEM_TYPE==2
     s64 PD_X, PD_Y;
     splitDimension(affinityCount, &PD_X, &PD_Y);
+    #endif
 #endif
 
     u64 compute_paramv[3];
@@ -927,15 +936,18 @@ ocrGuid_t FNC_rankComputeSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t 
         //u64 count = 1;
         //ocrAffinityQuery(PTR_rankHs[I], &count, &currentAffinity);
         int id_x = I%NR_X;
-        s64 pd_x; getPartitionID(id_x, 0, NR_X-1, PD_X, &pd_x);
-
-        int pd = pd_x;
 
         #if PROBLEM_TYPE==2
+        s64 pd_x; getPartitionID(id_x, 0, NR_X-1, PD_X, &pd_x);
         int id_y = I/NR_X;
         s64 pd_y; getPartitionID(id_y, 0, NR_Y-1, PD_Y, &pd_y);
 
-        pd = globalRankFromCoords(pd_x, pd_y, PD_X, PD_Y);
+        int pd = globalRankFromCoords(pd_x, pd_y, PD_X, PD_Y);
+        #else
+        // 1-D: partition the linear rank id across the full PD count (no
+        // second axis exists to reach past the PD grid's X factor).
+        s64 pd_lin; getPartitionID(id_x, 0, NR_X-1, affinityCount, &pd_lin);
+        int pd = pd_lin;
         #endif
         DEBUG_PRINTF(("rank %d, policy domain %d\n", I, pd));
         ocrAffinityGetAt( AFFINITY_PD, pd, &(currentAffinity) );
