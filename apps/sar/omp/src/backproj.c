@@ -336,7 +336,7 @@ void BackProj(struct complexData *Xin[], float **platpos, int x1, int x2, int y1
           	        sample.real = (1-w)*left.real + w*right.real;
           	        sample.imag = (1-w)*left.imag + w*right.imag;
 #else
-                        w = bin - floorf(bin);
+                        float w = bin - floorf(bin);
                         sample.real = (1-w)*Xup[k][(int)floorf(bin)].real + w*Xup[k][(int)floorf(bin)+1].real;
                         sample.imag = (1-w)*Xup[k][(int)floorf(bin)].imag + w*Xup[k][(int)floorf(bin)+1].imag;
 #endif
@@ -355,7 +355,7 @@ void BackProj(struct complexData *Xin[], float **platpos, int x1, int x2, int y1
           	        sample.real = (1-w)*left.real + w*right.real;
           	        sample.imag = (1-w)*left.imag + w*right.imag;
 #else
-                        w = bin - floorf(bin);
+                        float w = bin - floorf(bin);
                         sample.real = (1-w)*Xin[k][(int)floorf(bin)].real + w*Xin[k][(int)floorf(bin)+1].real;
                         sample.imag = (1-w)*Xin[k][(int)floorf(bin)].imag + w*Xin[k][(int)floorf(bin)+1].imag;
 #endif
