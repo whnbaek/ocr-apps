@@ -1,4 +1,5 @@
 #include <ocr.h>
+#include <stdlib.h>   /* atoi */
 
 #ifdef ENABLE_EXTENSION_CHANNEL_EVT
 

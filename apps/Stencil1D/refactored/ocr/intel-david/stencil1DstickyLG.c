@@ -13,6 +13,7 @@
 #define ENABLE_EXTENSION_LABELING
 
 #include <ocr.h>
+#include <stdlib.h>   /* atoi */
 #include <stdio.h>
 #include <ocr-std.h>
 #include "stencil1D.h"
