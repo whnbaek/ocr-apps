@@ -4,13 +4,17 @@
  * removed or modified.
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "ocr.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <sched.h>
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 #include "extensions/ocr-labeling.h"
 
 #include <math.h>

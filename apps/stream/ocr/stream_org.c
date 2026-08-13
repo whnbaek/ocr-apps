@@ -5,7 +5,9 @@
  */
 /* Based on stream benchmark at https://www.cs.virginia.edu/stream/FTP/Code/stream.c */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "ocr.h"
 #include <stdlib.h>
 #include <stdio.h>

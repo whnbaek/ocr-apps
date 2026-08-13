@@ -1,5 +1,9 @@
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
+#ifndef ENABLE_EXTENSION_AFFINITY
 #define ENABLE_EXTENSION_AFFINITY
+#endif
 
 #include <ocr.h>
 #include <ocr-std.h>

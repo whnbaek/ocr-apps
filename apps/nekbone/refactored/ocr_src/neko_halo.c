@@ -3,7 +3,9 @@
 #endif
 
 #ifdef NKEBONE_USE_CHANNEL_FOR_HALO_EXCHANGES
+#   ifndef ENABLE_EXTENSION_LABELING
 #   define ENABLE_EXTENSION_LABELING // For labeled GUIDs
+#   endif
 #   include "extensions/ocr-labeling.h" // For labeled GUIDs
 #endif
 

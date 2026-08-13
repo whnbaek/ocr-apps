@@ -56,8 +56,12 @@ January 2017: modified to support EAGER data blocks
 #endif
 //#define RECEIVER_OWNS_CHANNEL_EVENT //undefine to make the sender own it
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
+#ifndef ENABLE_EXTENSION_AFFINITY
 #define ENABLE_EXTENSION_AFFINITY
+#endif
 
 #include "ocr.h"
 #include "stdlib.h"

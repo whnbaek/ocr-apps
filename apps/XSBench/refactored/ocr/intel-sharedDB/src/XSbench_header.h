@@ -10,7 +10,9 @@
 #include<time.h>
 #include<sys/time.h>
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 
 #include "ocr.h"
 #include "extensions/ocr-labeling.h" //currently needed for labeled guids

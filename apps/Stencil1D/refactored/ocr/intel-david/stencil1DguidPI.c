@@ -10,7 +10,9 @@
  * Stencil1D code with no events
  */
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 #include <ocr.h>
 #include <stdlib.h>   /* atoi */
 #include <stdio.h>

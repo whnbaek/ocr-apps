@@ -54,8 +54,10 @@ typedef float real_t;
   #define EMT1 "%f"
 #else
 typedef double real_t;
-  #define FMT1 "%f"
-  #define EMT1 "%f"
+  /* scanf needs the l length modifier to store into a double; printf
+   * accepts %lf as %f (C99), so one format serves both directions. */
+  #define FMT1 "%lf"
+  #define EMT1 "%lf"
 #endif
 
 typedef real_t real3[3];

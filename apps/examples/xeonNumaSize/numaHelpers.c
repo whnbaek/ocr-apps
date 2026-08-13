@@ -3,7 +3,9 @@
 
 #include <errno.h>
 #include <numa.h>
+#ifndef __USE_GNU
 #define __USE_GNU
+#endif
 #include <sched.h>
 
 #include "ocr-std.h"

@@ -2,7 +2,9 @@
 #include "neko_reduction.h"
 #endif
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING  // For labeled GUIDs
+#endif
 #include "extensions/ocr-labeling.h"  // For labeled GUIDs
 
 #include "reduction.h"

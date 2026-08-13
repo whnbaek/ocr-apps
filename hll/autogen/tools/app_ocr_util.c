@@ -2,7 +2,9 @@
 #include "app_ocr_util.h"
 #endif
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 #include "extensions/ocr-labeling.h"
 
 Err_t ocrEdtXCreate(ocrEdt_t in_funcPtr,

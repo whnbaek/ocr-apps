@@ -1,5 +1,7 @@
 #ifndef TG_ARCH
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #endif
 
 #include "macros.h"

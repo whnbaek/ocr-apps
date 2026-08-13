@@ -32,7 +32,7 @@ void print_timers(mdtimer_t* timers_p, u32 atoms, u32 steps)
 #else
       ocrPrintf("%16s %11llu     %8.4f      %8.4f    %8.2f\n",
 #endif
-             timer_name[ii], timers_p[ii].count, total/(double)timers_p[ii].count,
+             timer_name[ii], (unsigned long long)timers_p[ii].count, total/(double)timers_p[ii].count,
              total, total/loop_time*100.0);
   }
   double rate = (double) timers_p[total_timer].total / (atoms * steps);

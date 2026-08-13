@@ -58,8 +58,12 @@ As written this currently tests only the ALLREDUCE version of the reduction libr
 #include <stdlib.h>
 #include <stdio.h>
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
+#ifndef ENABLE_EXTENSION_AFFINITY
 #define ENABLE_EXTENSION_AFFINITY
+#endif
 
 #include "ocr.h"
 #include "extensions/ocr-labeling.h"

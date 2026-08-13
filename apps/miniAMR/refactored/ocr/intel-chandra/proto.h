@@ -27,7 +27,9 @@
 #ifndef __PROTO_H_
 #define __PROTO_H_
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 
 #include "ocr.h"
 #include "extensions/ocr-labeling.h"
@@ -36,7 +38,9 @@
 #include <stddef.h>
 #include "ocrAppUtils.h"
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 
 #ifndef MIN
 #define MIN(x,y) ((x)<(y)?(x):(y))
