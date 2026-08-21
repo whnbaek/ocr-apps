@@ -40,6 +40,12 @@ typedef struct{
     long n_gridpoints;
     int lookups;
     char HM[10];
+    // Lookups per compute-phase sync batch: the batch is a FINISH scope and
+    // the next one starts only when it has drained, so this is the compute
+    // phase's in-flight width -- the program's standing offer of concurrency
+    // to the machine.  A literal would pin that offer at one size however
+    // wide the machine is; the offer has to be a run parameter.
+    int batch;
 } Inputs;
 
 // Function Prototypes

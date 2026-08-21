@@ -103,7 +103,8 @@ ocrGuid_t FNC_settingsInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     PTR_InputsH_0->n_mats = (s64) paramv[2];
     PTR_InputsH_0->n_gridpoints = (s64) paramv[3];
     PTR_InputsH_0->lookups = (s64) paramv[4];
-    strcpy( PTR_InputsH_0->HM, "small" );
+    PTR_InputsH_0->batch = (s32) paramv[5];
+    memcpy( PTR_InputsH_0->HM, &paramv[6], sizeof(PTR_InputsH_0->HM) );
 
     //ocrPrintf("t %d i %ld m %ld g %ld l %ld s %s\n",
     //        PTR_InputsH_0->nthreads, PTR_InputsH_0->n_isotopes, PTR_InputsH_0->n_mats, PTR_InputsH_0->n_gridpoints, PTR_InputsH_0->lookups, PTR_InputsH_0->HM);
@@ -189,6 +190,7 @@ ocrGuid_t FNC_init_InputsH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     PTR_InputsH->n_mats = PTR_InputsH_0->n_mats;
     PTR_InputsH->n_gridpoints = PTR_InputsH_0->n_gridpoints;
     PTR_InputsH->lookups = PTR_InputsH_0->lookups;
+    PTR_InputsH->batch = PTR_InputsH_0->batch;
     strcpy( PTR_InputsH->HM, PTR_InputsH_0->HM );
 
     return NULL_GUID;
@@ -856,7 +858,7 @@ ocrGuid_t FNC_globalComputeSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_
 
     TS_rankCompute.FNC = FNC_rankCompute;
     ocrEdtTemplateCreate( &TS_rankCompute.TML, TS_rankCompute.FNC, _paramc, _depc );
-    u64 ilookup = 0, NL_SYNC = 1024;
+    u64 ilookup = 0, NL_SYNC = (u64) PTR_InputsH->batch;
 
     for( i = 0; i < NR; i++ )
     {
@@ -1213,9 +1215,12 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t TS_settingsInit_OET;
     ocrEventCreate( &TS_settingsInit_OET, OCR_EVENT_STICKY_T, false );
 
-    MyOcrTaskStruct_t TS_settingsInit; _paramc = 5; _depc = 1;
+    MyOcrTaskStruct_t TS_settingsInit; _paramc = 8; _depc = 1;
 
-    u64 settingsInit_paramv[5] = { (u64) in.nthreads, (u64) in.n_isotopes, (u64) in.n_mats, (u64) in.n_gridpoints, (u64) in.lookups };
+    u64 settingsInit_paramv[8] = { (u64) in.nthreads, (u64) in.n_isotopes, (u64) in.n_mats, (u64) in.n_gridpoints, (u64) in.lookups, (u64) in.batch, 0, 0 };
+    // HM (char[10]) has no u64-aligned field of its own -- pack it across the
+    // last two paramv words.
+    memcpy( &settingsInit_paramv[6], in.HM, sizeof(in.HM) );
 
     TS_settingsInit.FNC = FNC_settingsInit;
     ocrEdtTemplateCreate( &TS_settingsInit.TML, TS_settingsInit.FNC, _paramc, _depc );
