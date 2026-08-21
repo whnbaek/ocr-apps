@@ -140,7 +140,7 @@ size_t estimate_mem_usage( Inputs in )
     return memtotal;
 }
 
-void binary_dump(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid)
+void binary_dump(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid, int * xs_grid)
 {
     FILE * fp = fopen("XS_data.dat", "wb");
     // Dump Nuclide Grid Data
@@ -152,14 +152,14 @@ void binary_dump(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide
         // Write energy level
         fwrite(&energy_grid[i].energy, sizeof(double), 1, fp);
 
-        // Write index data array (xs_ptrs array)
-        fwrite(energy_grid[i].xs_ptrs, sizeof(int), n_isotopes, fp);
+        // Write index data array (xs_grid row)
+        fwrite(&xs_grid[i * n_isotopes], sizeof(int), n_isotopes, fp);
     }
 
     fclose(fp);
 }
 
-void binary_read(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid)
+void binary_read(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid, int * xs_grid)
 {
     int stat;
     FILE * fp = fopen("XS_data.dat", "rb");
@@ -172,8 +172,8 @@ void binary_read(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide
         // Write energy level
         stat = fread(&energy_grid[i].energy, sizeof(double), 1, fp);
 
-        // Write index data array (xs_ptrs array)
-        stat = fread(energy_grid[i].xs_ptrs, sizeof(int), n_isotopes, fp);
+        // Write index data array (xs_grid row)
+        stat = fread(&xs_grid[i * n_isotopes], sizeof(int), n_isotopes, fp);
     }
 
     fclose(fp);

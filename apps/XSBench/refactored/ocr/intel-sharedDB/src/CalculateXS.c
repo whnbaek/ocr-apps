@@ -3,7 +3,7 @@
 // Calculates the microscopic cross section for a given nuclide & energy
 void calculate_micro_xs(   double p_energy, int nuc, long n_isotopes,
                            long n_gridpoints,
-                           GridPoint * restrict energy_grid,
+                           int * restrict xs_grid,
                            NuclideGridPoint ** restrict nuclide_grids,
                            int idx, double * restrict xs_vector ){
 
@@ -11,12 +11,13 @@ void calculate_micro_xs(   double p_energy, int nuc, long n_isotopes,
     double f;
     NuclideGridPoint * low, * high;
 
-    // pull ptr from energy grid and check to ensure that
+    // pull the index from the flat xs grid and check to ensure that
     // we're not reading off the end of the nuclide's grid
-    if( energy_grid[idx].xs_ptrs[nuc] == n_gridpoints - 1 )
-        low = &nuclide_grids[nuc][energy_grid[idx].xs_ptrs[nuc] - 1];
+    int xs_idx = xs_grid[(long) idx * n_isotopes + nuc];
+    if( xs_idx == n_gridpoints - 1 )
+        low = &nuclide_grids[nuc][xs_idx - 1];
     else
-        low = &nuclide_grids[nuc][energy_grid[idx].xs_ptrs[nuc]];
+        low = &nuclide_grids[nuc][xs_idx];
 
     high = low + 1;
 
@@ -106,6 +107,7 @@ void calculate_macro_xs( double p_energy, int mat, long n_isotopes,
                          long n_gridpoints, int * restrict num_nucs,
                          double ** restrict concs,
                          GridPoint * restrict energy_grid,
+                         int * restrict xs_grid,
                          NuclideGridPoint ** restrict nuclide_grids,
                          int ** restrict mats,
                          double * restrict macro_xs_vector ){
@@ -134,7 +136,7 @@ void calculate_macro_xs( double p_energy, int mat, long n_isotopes,
         p_nuc = mats[mat][j];
         conc = concs[mat][j];
         calculate_micro_xs( p_energy, p_nuc, n_isotopes,
-                            n_gridpoints, energy_grid,
+                            n_gridpoints, xs_grid,
                             nuclide_grids, idx, xs_vector );
         for( int k = 0; k < 5; k++ )
             macro_xs_vector[k] += xs_vector[k] * conc;

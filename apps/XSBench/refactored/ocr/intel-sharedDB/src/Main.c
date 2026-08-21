@@ -136,12 +136,13 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 	sort_nuclide_grids( nuclide_grids, in.n_isotopes, in.n_gridpoints );
 
 	// Prepare Unionized Energy Grid Framework
+	int * xs_grid;
 	GridPoint * energy_grid = generate_energy_grid( &PTR_rankDataH->DBK_uEnergy_grid, &PTR_rankDataH->DBK_xs_grid, in.n_isotopes,
-	                          in.n_gridpoints, nuclide_grids, mype );
+	                          in.n_gridpoints, nuclide_grids, mype, &xs_grid );
 
-	// Double Indexing. Filling in energy_grid with pointers to the
-	// nuclide_energy_grids.
-	set_grid_ptrs( energy_grid, nuclide_grids, in.n_isotopes, in.n_gridpoints, mype );
+	// Double Indexing. Filling in the flat xs grid with per-nuclide indices
+	// for every unionized-grid point.
+	set_grid_ptrs( energy_grid, xs_grid, nuclide_grids, in.n_isotopes, in.n_gridpoints, mype );
 
 	// Get material data
 	if( mype == 0 )
@@ -235,15 +236,12 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
 
     int n_isotopes = PTR_in->n_isotopes;
     int n_gridpoints = PTR_in->n_gridpoints;
-	long n_unionized_grid_points = n_isotopes*n_gridpoints;
 
     ocrDBK_t DBK_nuclide_grid_ptrs;
     ocrDbCreate( &DBK_nuclide_grid_ptrs, (void **) &nuclide_grids, n_isotopes*sizeof(NuclideGridPoint *),
                     0, NULL_HINT, NO_ALLOC );
 
     assignNuclideGridPtrs( nuclide_grids_linear, nuclide_grids, n_isotopes, n_gridpoints);
-
-    assignEnergyGridXsPtrs( xs_grid, uEnergy_grid, n_unionized_grid_points, n_isotopes);
 
     ocrDBK_t DBK_mat_ptrs, DBK_conc_ptrs;
 	int ** mats;
@@ -292,7 +290,7 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
         // is written over.
         calculate_macro_xs( p_energy, mat, in.n_isotopes,
                             in.n_gridpoints, num_nucs, concs,
-                            uEnergy_grid, nuclide_grids, mats,
+                            uEnergy_grid, xs_grid, nuclide_grids, mats,
                             macro_xs_vector );
 
         // Copy results from above function call onto heap

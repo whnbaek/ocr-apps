@@ -54,16 +54,10 @@ void sort_nuclide_grids( NuclideGridPoint ** nuclide_grids, long n_isotopes,
 	*/
 }
 
-void assignEnergyGridXsPtrs( int* full, GridPoint* energy_grid, long n_unionized_grid_points, int n)
-{
-	for( long i = 0; i < n_unionized_grid_points; i++ )
-		energy_grid[i].xs_ptrs = &full[n * i];
-}
-
 // Allocates unionized energy grid, and assigns union of energy levels
 // from nuclide grids to it.
 GridPoint * generate_energy_grid( ocrDBK_t* DBK_uEnergy_grid,  ocrDBK_t* DBK_xs_grid, long n_isotopes, long n_gridpoints,
-                                  NuclideGridPoint ** nuclide_grids, int mype ) {
+                                  NuclideGridPoint ** nuclide_grids, int mype, int ** PTR_xs_grid ) {
 	if( mype == 0 ) ocrPrintf("Generating Unionized Energy Grid...\n");
 
 	long n_unionized_grid_points = n_isotopes*n_gridpoints;
@@ -107,7 +101,7 @@ GridPoint * generate_energy_grid( ocrDBK_t* DBK_uEnergy_grid,  ocrDBK_t* DBK_xs_
 		ocrPrintf("ERROR - Out Of Memory!\n");
 	}
 
-    assignEnergyGridXsPtrs( full, energy_grid, n_unionized_grid_points, n_isotopes);
+	*PTR_xs_grid = full;
 
 	// debug error checking
 
@@ -120,16 +114,17 @@ GridPoint * generate_energy_grid( ocrDBK_t* DBK_uEnergy_grid,  ocrDBK_t* DBK_xs_
 }
 
 // Searches each nuclide grid for the closest energy level and assigns
-// pointer from unionized grid to the correct spot in the nuclide grid.
+// the index from unionized grid to the correct spot in the nuclide grid.
 // This process is time consuming, as the number of binary searches
 // required is:  binary searches = n_gridpoints * n_isotopes^2
-void set_grid_ptrs( GridPoint * energy_grid, NuclideGridPoint ** nuclide_grids,
+void set_grid_ptrs( GridPoint * energy_grid, int * xs_grid,
+                    NuclideGridPoint ** nuclide_grids,
                     long n_isotopes, long n_gridpoints, int mype )
 {
 	if( mype == 0 ) ocrPrintf("Assigning pointers to Unionized Energy Grid...\n");
 
 	//#pragma omp parallel for default(none) \
-	//shared( energy_grid, nuclide_grids, n_isotopes, n_gridpoints, mype )
+	//shared( energy_grid, xs_grid, nuclide_grids, n_isotopes, n_gridpoints, mype )
 	for( long i = 0; i < n_isotopes * n_gridpoints ; i++ )
 	{
 		double quarry = energy_grid[i].energy;
@@ -140,21 +135,9 @@ void set_grid_ptrs( GridPoint * energy_grid, NuclideGridPoint ** nuclide_grids,
 		{
 			// j is the nuclide i.d.
 			// log n binary search
-			energy_grid[i].xs_ptrs[j] =
+			xs_grid[i * n_isotopes + j] =
 				binary_search( nuclide_grids[j], quarry, n_gridpoints);
 		}
 	}
 	if( mype == 0 ) ocrPrintf("\n");
-
-	//test
-	/*
-	for( int i=0; i < n_isotopes * n_gridpoints; i++ )
-		for( int j = 0; j < n_isotopes; j++ )
-			ocrPrintf("E = %.4lf\tNuclide %d->%p->%.4lf\n",
-			       energy_grid[i].energy,
-                   j,
-				   energy_grid[i].xs_ptrs[j],
-				   (energy_grid[i].xs_ptrs[j])->energy
-				   );
-	*/
 }

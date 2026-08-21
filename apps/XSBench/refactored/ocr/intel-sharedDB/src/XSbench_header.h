@@ -49,9 +49,13 @@ typedef struct{
     double nu_fission_xs;
 } NuclideGridPoint;
 
+/* The unionized grid keeps only energies; a point's per-nuclide index row
+ * lives in the flat xs_grid at stride n_isotopes.  Storing a pointer to that
+ * row here would pin the row's address into shared read-only data, and a DB's
+ * mapping is acquire-relative — every reader would have to re-derive and
+ * re-write the pointers, a write into read-only-acquired memory. */
 typedef struct{
     double energy;
-    int * xs_ptrs;
 } GridPoint;
 
 typedef struct{
@@ -134,9 +138,10 @@ void sort_nuclide_grids( NuclideGridPoint ** nuclide_grids, long n_isotopes,
                          long n_gridpoints );
 
 GridPoint * generate_energy_grid( ocrDBK_t* DBK_uEnergy_grid, ocrDBK_t* DBK_xs_grid, long n_isotopes, long n_gridpoints,
-                                  NuclideGridPoint ** nuclide_grids, int mype);
+                                  NuclideGridPoint ** nuclide_grids, int mype, int ** PTR_xs_grid);
 
-void set_grid_ptrs( GridPoint * energy_grid, NuclideGridPoint ** nuclide_grids,
+void set_grid_ptrs( GridPoint * energy_grid, int * xs_grid,
+                    NuclideGridPoint ** nuclide_grids,
                     long n_isotopes, long n_gridpoints, int mype );
 
 int binary_search( NuclideGridPoint * A, double quarry, int n );
@@ -145,13 +150,14 @@ void calculate_macro_xs(   double p_energy, int mat, long n_isotopes,
                            long n_gridpoints, int * restrict num_nucs,
                            double ** restrict concs,
                            GridPoint * restrict energy_grid,
+                           int * restrict xs_grid,
                            NuclideGridPoint ** restrict nuclide_grids,
                            int ** restrict mats,
                            double * restrict macro_xs_vector );
 
 void calculate_micro_xs(   double p_energy, int nuc, long n_isotopes,
                            long n_gridpoints,
-                           GridPoint * restrict energy_grid,
+                           int * restrict xs_grid,
                            NuclideGridPoint ** restrict nuclide_grids, int idx,
                            double * restrict xs_vector );
 void calculate_micro_xs_new(   double p_energy,
@@ -182,12 +188,11 @@ unsigned long hash(unsigned char *str, int nbins);
 size_t estimate_mem_usage( Inputs in );
 void print_inputs(Inputs in, int nprocs, int version);
 void print_results( Inputs in, int mype, double runtime, int nprocs, u64 vhash );
-void binary_dump(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid);
-void binary_read(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid);
+void binary_dump(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid, int * xs_grid);
+void binary_read(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid, int * xs_grid);
 
 void assign_mats_ptrs( int* num_nucs, int* mats_all, int** mats );
 void assign_concs_ptrs( int* num_nucs, double* concs_all, double** concs );
 void assignNuclideGridPtrs( NuclideGridPoint *full, NuclideGridPoint **M, size_t m, size_t n);
-void assignEnergyGridXsPtrs( int* full, GridPoint* energy_grid, long n_unionized_grid_points, int n);
 
 #endif
