@@ -363,7 +363,6 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 	// Input params and default values.
     long N = 1024; // string length
     long base = 256;	// basecase
-	int num_workers = 16; // maximum number of workers
 
 	if(argc<1)
 	{
@@ -380,11 +379,6 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 	{
 		base = (long) atol(ocrGetArgv(PTR_cmdLineArgs, 2));
 	}
-	if(argc > 3)
-	{
-		num_workers = (s64) atol(ocrGetArgv(PTR_cmdLineArgs, 3));
-		ocrPrintf("WARNING: num_workers has no effect in this port; set the runtime's worker count instead\n");
-	}
 
 
 	// base can not be > N.
@@ -394,7 +388,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 
 
     ocrPrintf("\n");
-    ocrPrintf("Running LCS.\nStrings len: %ld # workers: %d, basecase: %ld\n", N, num_workers, base);
+    ocrPrintf("Running LCS.\nStrings len: %ld  basecase: %ld\n", N, base);
 
     s64 Nplus1 = N + 1;
 	#ifdef CHECK_RESULTS

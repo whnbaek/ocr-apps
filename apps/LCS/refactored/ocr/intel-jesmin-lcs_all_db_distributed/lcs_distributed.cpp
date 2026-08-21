@@ -801,7 +801,6 @@ extern "C" ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     // Input params and default values.
     int N = 1024; // string length
     int base = 256; // basecase
-    int num_workers = 16; // maximum number of workers
 
     if (argc < 1) {
         ocrPrintf("USAGE: please run the program as follows:\n"
@@ -814,9 +813,6 @@ extern "C" ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     }
     if (argc > 2) {
         base = (int)atol(ocrGetArgv(PTR_cmdLineArgs, 2));
-    }
-    if (argc > 3) {
-        num_workers = (int)atol(ocrGetArgv(PTR_cmdLineArgs, 3));
     }
 
     // base can not be > N.
