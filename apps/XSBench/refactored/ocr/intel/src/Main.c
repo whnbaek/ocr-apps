@@ -19,6 +19,59 @@
 #include "XSbench_header.h"
 #include "timers.h"
 
+/* Placement-optimization layer.  Each lookup is a three-task chain --
+ * rankLookup spawns macroxs, macroxs spawns the aggregator -- and as-born
+ * each link round-robins independently, so a chain's intermediate results
+ * cross ranks twice for no reason.  The first link stays round-robin (that
+ * is the load balance across lookups); the two links it spawns pin to the
+ * rank it landed on, so each chain is internally local.  The energy grids
+ * are read-only and replicate per rank on first touch, so chain locality,
+ * not data placement, is what there is to win. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#include <extensions/ocr-affinity.h>
+static inline ocrHint_t * mcChainEdtHint(ocrHint_t *h) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetCurrent(&aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+/* The per-gridpoint plane and the nuclide grids are read by every lookup at
+ * a data-dependent, uniformly random index, so no single placement can make
+ * the reads local — but leaving every one of them homed on the one PD that
+ * happened to run the init EDT makes that PD serve the whole machine's
+ * read traffic.  Spreading the homes round-robin spreads the serving load;
+ * the index is stable arithmetic every rank derives identically. */
+static inline ocrHint_t * mcSpreadDbHint(ocrHint_t *h, u64 i) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, i % pdCount, &aff);
+    ocrHintInit(h, OCR_HINT_DB_T);
+    ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+/* The writer of one spread-homed block runs where that block lives. */
+static inline ocrHint_t * mcSpreadEdtHint(ocrHint_t *h, u64 i) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, i % pdCount, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+#else
+#define mcChainEdtHint(h) NULL_HINT
+#define mcSpreadDbHint(h,i) NULL_HINT
+#define mcSpreadEdtHint(h,i) NULL_HINT
+#endif
+
 #ifndef MIN
 #define MIN(x,y) ((x)<(y)?(x):(y))
 #endif
@@ -221,12 +274,13 @@ ocrGuid_t FNC_rankInitSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
     TS_rankInit.FNC = FNC_rankInit;
     ocrEdtTemplateCreate( &TS_rankInit.TML, TS_rankInit.FNC, _paramc, _depc );
 
+    ocrHint_t spreadHNT;
     s64 i;
     for( i = 0; i < nprocs; i++ )
     {
         Inputs* PTR_InputsH;
         ocrDbCreate( &(PTR_InputsHs[i]), (void **) &PTR_InputsH, sizeof(Inputs),
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64)(8 + i)), NO_ALLOC );
 
         rankH_t *PTR_rankH;
         ocrDbCreate( &(PTR_rankHs[i]), (void **) &PTR_rankH, sizeof(rankH_t),
@@ -281,17 +335,18 @@ ocrGuid_t FNC_rankInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( DBK_InputsH_0, TS_init_InputsH.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_InputsH, TS_init_InputsH.EDT, _idep++, DB_MODE_RW );
 
+    ocrHint_t spreadHNT;
     settingsH_t *PTR_settingsH;
     ocrDbCreate( &(PTR_rankH->DBK_settingsH), (void **) &PTR_settingsH, sizeof(settingsH_t),
                  DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
     dataH_t *PTR_dataH;
     ocrDbCreate( &(PTR_rankH->DBK_dataH), (void **) &PTR_dataH, sizeof(dataH_t),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 6), NO_ALLOC );
 
     rankTemplateH_t *PTR_rankTemplateH;
     ocrDbCreate( &(PTR_rankH->DBK_templatesH), (void **) &PTR_rankTemplateH, sizeof(rankTemplateH_t),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 7), NO_ALLOC );
 
     MyOcrTaskStruct_t TS_init_rankH; _paramc = 1; _depc = 5;
 
@@ -337,24 +392,28 @@ ocrGuid_t FNC_init_rankH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     int n_mats = PTR_InputsH->n_mats;
     int n_gridpoints = PTR_InputsH->n_gridpoints;
 
+    /* Every lookup acquires this whole handle set; each member is a single
+     * DB, so serving cannot be split within one — but homing each member on
+     * a different rank splits the set's aggregate serving load. */
+    ocrHint_t spreadHNT;
     ocrGuid_t *PTR_nuclide_grids, *PTR_uEnergy_grid;
     double* PTR_uEnergy;
     ocrDbCreate( &(PTR_dataH->DBK_nuclide_grids), (void **) &PTR_nuclide_grids, sizeof(ocrGuid_t)*(n_isotopes),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 0), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_uEnergy), (void **) &PTR_uEnergy, sizeof(double)*(n_isotopes*n_gridpoints),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 1), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_uEnergy_grid), (void **) &PTR_uEnergy_grid, sizeof(ocrGuid_t)*(n_isotopes*n_gridpoints),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 2), NO_ALLOC );
 
     int *PTR_mat_num_nucs;
     ocrDbCreate( &(PTR_dataH->DBK_mat_num_nucs), (void **) &PTR_mat_num_nucs, sizeof(int)*(n_mats),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 3), NO_ALLOC );
     ocrGuid_t *PTR_mat_nucl_index_list_guids;
     ocrDbCreate( &(PTR_dataH->DBK_mat_nucl_index_list_guids), (void **) &PTR_mat_nucl_index_list_guids, sizeof(ocrGuid_t)*(n_mats),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 4), NO_ALLOC );
     ocrGuid_t *PTR_nucl_concs_list_guids;
     ocrDbCreate( &(PTR_dataH->DBK_nucl_concs_list_guids), (void **) &PTR_nucl_concs_list_guids, sizeof(ocrGuid_t)*(n_mats),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 5), NO_ALLOC );
 
     _paramc = 2; _depc = 8;
     ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_rankLookup), FNC_rankLookup, _paramc, _depc );
@@ -429,10 +488,12 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     s32 i;
 
+    ocrHint_t spreadHNT;
+
     for( i = 0; i < n_isotopes; i++ )
     {
         ocrDbCreate( &(PTR_nuclide_grids[i]), (void **) &PTR_nuclide_data, sizeof(NuclideGridPoint)*(n_gridpoints),
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, i), NO_ALLOC );
 
         for( long j = 0; j < n_gridpoints; j++ )
         {
@@ -477,7 +538,7 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     for( i = 0; i < n_gridpoints*n_isotopes; i++ )
     {
         ocrDbCreate( &(PTR_uEnergy_grid[i]), (void **) &PTR_xs_indices, sizeof(int)*n_isotopes,
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, i), NO_ALLOC );
     }
 
     MyOcrTaskStruct_t TS_init_uEnergy; _paramc = 0; _depc = 5;
@@ -558,9 +619,10 @@ ocrGuid_t FNC_init_uEnergy(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
         u64* PTR_quarry_u64 = (u64*) &quarry;
         TS_init_uEnergy_i_paramv[0] = i;
         TS_init_uEnergy_i_paramv[1] = *PTR_quarry_u64;
+        ocrHint_t alignHNT;
         ocrEdtCreate( &TS_init_uEnergy_i.EDT, TS_init_uEnergy_i.TML,
                       EDT_PARAM_DEF, TS_init_uEnergy_i_paramv, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_NONE, NULL_HINT, NULL );
+                      EDT_PROP_NONE, mcSpreadEdtHint(&alignHNT, (u64) i), NULL );
 
         _idep = 0;
         ocrAddDependence( DBK_InputsH, TS_init_uEnergy_i.EDT, _idep++, DB_MODE_CONST );
@@ -689,6 +751,8 @@ ocrGuid_t FNC_init_materials(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
 
     int* mats_ptr;
 
+    ocrHint_t spreadHNT;
+
     _idep = 2;
     for( j = 0; j < n_mats; j++ )
     {
@@ -697,11 +761,11 @@ ocrGuid_t FNC_init_materials(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
 
         int* PTR_nucl_index_list;
         ocrDbCreate( &(PTR_mat_nucl_index_list_guids[j]), (void **) &PTR_nucl_index_list, sizeof(int)*num_nucs_j,
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64) j), NO_ALLOC );
 
         double* PTR_nucl_concs_list;;
         ocrDbCreate( &(PTR_nucl_concs_list_guids[j]), (void **) &PTR_nucl_concs_list, sizeof(double)*num_nucs_j,
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64) j), NO_ALLOC );
 
         unsigned long seed = (j+1)*19+17;
         for( int i = 0; i < num_nucs_j; i++ )
@@ -1058,9 +1122,10 @@ ocrGuid_t FNC_rankLookup(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     compute_paramv[1] = (u64) mat;
     compute_paramv[2] = (u64) PTR_mat_num_nucs[mat];
 
+    ocrHint_t chainHNT;
     ocrEdtCreate( &TS_macroxs.EDT, PTR_rankTemplateH->TML_FNC_macroxs,
                   EDT_PARAM_DEF, compute_paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, NULL_HINT, NULL );
+                  EDT_PROP_NONE, mcChainEdtHint(&chainHNT), NULL );
 
     _idep = 0;
     ocrAddDependence( DBK_InputsH, TS_macroxs.EDT, _idep++, DB_MODE_CONST );
@@ -1106,9 +1171,10 @@ ocrGuid_t FNC_macroxs(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     //TS_microxsAggregator.FNC = FNC_microxsAggregator;
     //ocrEdtTemplateCreate( &TS_microxsAggregator.TML, TS_microxsAggregator.FNC, _paramc, _depc );
 
+    ocrHint_t chainHNT;
     ocrEdtCreate( &TS_microxsAggregator.EDT, PTR_rankTemplateH->TML_FNC_microxsAggregator,
                   EDT_PARAM_DEF, paramv, _depc, NULL,
-                  EDT_PROP_NONE, NULL_HINT, NULL );
+                  EDT_PROP_NONE, mcChainEdtHint(&chainHNT), NULL );
 
     _idep = 0;
     ocrAddDependence( DBK_InputsH, TS_microxsAggregator.EDT, _idep++, DB_MODE_CONST );
