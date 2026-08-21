@@ -3,7 +3,9 @@ Author Jesmin Jahan Tithi
 Copyright Intel Corporation 2016
 */
 //export OCR_ASAN=yes
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 
 #include "ocr.h"
 #include "extensions/ocr-labeling.h" //currently needed for labeled guids
@@ -182,12 +184,11 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]){
 		p1.xj = p->xj;
 		p1.n = n;
 
-        if(p->xi>=p->N) p->xi--;
-		if(p->xj>=p->N) p->xj--;
-
+		// a base case spans n columns, and the strings are cut into tiles of
+		// exactly that width, so its corner names one whole tile
 		ocrGuid_t S, T;
-		ocrGuidFromIndex(&S, p->s_guid, p->xi/base);
-		ocrGuidFromIndex(&T, p->t_guid, p->xj/base);
+		ocrGuidFromIndex(&S, p->s_guid, (p->xi-1)/n);
+		ocrGuidFromIndex(&T, p->t_guid, (p->xj-1)/n);
 
 
 		// Create the task template
@@ -449,7 +450,12 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 
 	ocrGuid_t S_guid, T_guid;
 
-	s64 num_labels = N/base;
+	// The recursion halves the problem until it is <= base, so the base cases
+	// are N>>d wide rather than base wide.  Tile the strings at that width:
+	// a narrower tiling would leave a base case straddling two tiles.
+	long tile = N;
+	s64 num_labels = 1;
+	while(tile > base) { tile >>= 1; num_labels <<= 1; }
 
 	ocrGuid_t s_labels, t_labels;
 	ocrGuidRangeCreate(&s_labels, num_labels, GUID_USER_DB);
@@ -480,7 +486,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 	ocrGuid_t T_ij;
 	ocrGuidFromIndex(&T_ij, t_labels, 0);
 
-	long block_size = base+1;
+	long block_size = tile+1;
 	// Create the data block with the guid
 	ocrDbCreate(&T_ij,
 		       (void**) &T[0],
@@ -503,8 +509,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 	#ifdef CHECK_RESULTS
 	int * _Ti = _T+block_size;
 	#endif
-    //case2: block size = base;
-	block_size = base;
+    //case2: block size = tile;
+	block_size = tile;
 
 	for(int j=1; j <num_labels; j++)
 	{
@@ -540,7 +546,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     // First get the already created guids
 	ocrGuid_t S_ij;
 	ocrGuidFromIndex(&S_ij, s_labels, 0);
-	block_size = base+1;
+	block_size = tile+1;
 	// Create the data block with the guid and size
 	ocrDbCreate(&S_ij,
 			   (void**) &S[0],
@@ -567,7 +573,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 	#ifdef CHECK_RESULTS
 	int *_Si = _S + block_size;
 	#endif
-	block_size = base;
+	block_size = tile;
 
 	for(int i=1; i <num_labels; i++)
 	{

@@ -4,7 +4,9 @@ Author Jesmin Jahan Tithi
 Copyright Intel Corporation 2016
 */
 //export OCR_ASAN=yes
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 
 #include "ocr.h"
 #include "extensions/ocr-labeling.h" //currently needed for labeled guids
@@ -152,7 +154,104 @@ ocrGuid_t seqLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     serial_lcs_1D(current, left, above, diag, S, T, p->N, p->xi, p->xj, p->n);
 
+    /* A score block is read by the block to its east (as `left`), the one to
+     * its south (`above`), and the one to its south-east (`diag`).  The third
+     * depends on the first two, so a block reaching THIS point as `diag` has
+     * no reader left anywhere: the other two completed before this task could
+     * be scheduled, and nothing else ever names it.  Each block is the diag of
+     * exactly one successor, so the destroy is single-flight by construction.
+     *
+     * The last row and last column are nobody's diag and so are never freed —
+     * which is correct: the program's answer is the bottom-right cell, read at
+     * shutdown, and there is no traceback that would need the interior.  What
+     * this leaves resident is the wavefront frontier instead of the whole
+     * matrix. */
+    ocrDbDestroy(depv[5].guid);
+
     return NULL_GUID;
+}
+// Contiguous row-band placement for wavefront leaves: rows are split into
+// one contiguous band per rank.  A block's West neighbor shares its row and
+// therefore its rank; North/NW share its band for every row except the
+// nranks-1 band-boundary rows, so the heavy north-south payload stays
+// rank-local almost everywhere.  The anti-diagonal frontier still spreads:
+// once it is at least one band tall it has blocks in every band.  A striped
+// map (row % nranks) spreads the frontier sooner but makes EVERY north
+// neighbor remote, shipping each block's payload across ranks once per
+// south-facing read — bandwidth, not spread, is what limits the wavefront.
+/* Bands per rank: 1 = one contiguous band per rank (longest pipeline
+ * fill/drain, fewest band-boundary rows); k = k cyclic bands per rank
+ * (pipeline fills after rows/(nranks*k) rows at the cost of k times the
+ * boundary crossings). */
+#ifndef LCS_ROW_BANDS_PER_RANK
+#define LCS_ROW_BANDS_PER_RANK 1
+#endif
+/* Labeled-range index for a score block (row-major linear index t over the
+ * block grid).  The runtimes distribute a labeled range's homes round-robin
+ * by index (home = index mod nranks), so under the optimized placement the
+ * index is re-encoded as band(row) + nranks*t: the low residue steers each
+ * block's home onto its wavefront band's rank while distinct t stay distinct
+ * (label uniqueness) — pure index arithmetic, agreed on by every producer
+ * and consumer of the range. */
+static u64 scoreIdx(int t, int gridSide)
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    int bi = t / gridSide;
+    u64 row = (bi > 0) ? (u64)(bi - 1) : 0;
+    u64 rows = (gridSide > 0) ? (u64)gridSide : 1;
+    u64 band_total = nranks * (u64)LCS_ROW_BANDS_PER_RANK;
+    u64 hgt = (rows + band_total - 1) / band_total;
+    u64 band = (row / hgt) % nranks;
+    return band + nranks * (u64)t;
+#else
+    (void)gridSide;
+    return (u64)t;
+#endif
+}
+
+/* Labeled-range index for an S string tile.  Row i's tile is read only by
+ * the leaves of block-row i+1, whose band rank blockRowHint derives from the
+ * same row value -- steering the tile's home there makes every S read
+ * band-local.  Same re-encoding trick as scoreIdx: low residue = home,
+ * distinct rows stay distinct. */
+static u64 sIdx(int row, int blockRows)
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    u64 rows = (blockRows > 0) ? (u64)blockRows : 1;
+    u64 band_total = nranks * (u64)LCS_ROW_BANDS_PER_RANK;
+    u64 hgt = (rows + band_total - 1) / band_total;
+    u64 band = ((u64)row / hgt) % nranks;
+    return band + nranks * (u64)row;
+#else
+    (void)blockRows;
+    return (u64)row;
+#endif
+}
+
+static ocrHint_t * blockRowHint(ocrHint_t * h, int blockRow, int blockRows)
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    u64 row = (blockRow > 0) ? (u64)(blockRow - 1) : 0;
+    u64 rows = (blockRows > 0) ? (u64)blockRows : 1;
+    u64 band_total = nranks * (u64)LCS_ROW_BANDS_PER_RANK;
+    u64 hgt = (rows + band_total - 1) / band_total;
+    u64 band = (row / hgt) % nranks;
+    if (band >= nranks) band = nranks - 1;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, band, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+#else
+    (void)h; (void)blockRow; (void)blockRows;
+    return NULL_HINT;
+#endif
 }
 ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
@@ -172,12 +271,19 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         p1.xj = p->xj;
         p1.n = n;
 
+        int block_i_end = (p->xi - 1) / base + 1;
+        int block_j_end = (p->xj - 1) / base + 1;
+        int block_grid_size = (p->N / base + 1);
+        int current_block = (block_i_end * block_grid_size + block_j_end);
+
         // Create the task template
         ocrGuid_t base_template;
         ocrEdtTemplateCreate(&base_template, seqLCSEdt, sizeof(LCS_base_params) / sizeof(u64), 6);
 
         ocrGuid_t baseEdt, baseoutputEventGuidOnce;
         ocrEventCreate(&baseEdt, OCR_EVENT_STICKY_T, EVT_PROP_TAKES_ARG);
+
+        ocrHint_t baseHint;
 
         ocrEdtCreate(&baseEdt,
             base_template,
@@ -186,39 +292,34 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             NULL,
             EDT_PROP_NONE,
-            NULL_HINT,
+            blockRowHint(&baseHint, block_i_end, block_grid_size),
             &baseoutputEventGuidOnce);
 
         ocrGuid_t S, T;
 
         // Optimization effort.
 
-        ocrGuidFromIndex(&S, p->s_labels, (p->xi - 1) / base);
+        ocrGuidFromIndex(&S, p->s_labels, sIdx((int)((p->xi - 1) / base), block_grid_size));
         ocrGuidFromIndex(&T, p->t_labels, (p->xj - 1) / base);
 
         ocrAddDependence(S, baseEdt, 0, DB_MODE_RO);
         ocrAddDependence(T, baseEdt, 1, DB_MODE_RO);
 
-        int block_i_end = (p->xi - 1) / base + 1;
-        int block_j_end = (p->xj - 1) / base + 1;
-        int block_grid_size = (p->N / base + 1);
-
-        int current_block = (block_i_end * block_grid_size + block_j_end);
         int left_block = (block_i_end * block_grid_size + block_j_end - 1);
         int above_block = ((block_i_end - 1) * block_grid_size + block_j_end);
         int diag_block = ((block_i_end - 1) * block_grid_size + block_j_end - 1);
 
         ocrGuid_t current, left, above, diag;
-        ocrGuidFromIndex(&current, p->score_matrix_labels, current_block);
+        ocrGuidFromIndex(&current, p->score_matrix_labels, scoreIdx(current_block, block_grid_size));
         ocrAddDependence(current, baseEdt, 2, DB_MODE_RW);
 
-        ocrGuidFromIndex(&left, p->score_matrix_labels, left_block);
+        ocrGuidFromIndex(&left, p->score_matrix_labels, scoreIdx(left_block, block_grid_size));
         ocrAddDependence(left, baseEdt, 3, DB_MODE_RO);
 
-        ocrGuidFromIndex(&above, p->score_matrix_labels, above_block);
+        ocrGuidFromIndex(&above, p->score_matrix_labels, scoreIdx(above_block, block_grid_size));
         ocrAddDependence(above, baseEdt, 4, DB_MODE_RO);
 
-        ocrGuidFromIndex(&diag, p->score_matrix_labels, diag_block);
+        ocrGuidFromIndex(&diag, p->score_matrix_labels, scoreIdx(diag_block, block_grid_size));
         ocrAddDependence(diag, baseEdt, 5, DB_MODE_RO);
 
         return NULL_GUID;
@@ -361,6 +462,8 @@ ocrGuid_t randInitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     if (len == base + 1) {
         Ti[0] = 32;
         Ti++;
+        len--; // the leading boundary slot consumed one of the len elements;
+               // the loop below must fill only the remaining len-1
     }
 
     for (int l = 0; l < len; l++) {
@@ -424,18 +527,17 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     int block_size = base + 1;
     // Create the data block with the guid
+    /* NO_ACQUIRE: the creator never touches any block it creates here --
+     * each one is filled by its own init EDT through an RW dependence -- so
+     * the home stays the sole idle owner, the create moves no payload, and
+     * a block whose home is remote is born there instead of materializing
+     * on the creating rank. */
     ocrDbCreate(&T_ij,
         (void**)&T[0],
         sizeof(int) * (block_size),
-        GUID_PROP_IS_LABELED,
+        GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
         NULL_HINT,
         NO_ALLOC);
-
-    assert(T[0] != NULL);
-
-    // Release the creator's write hold before wiring the init EDT that fills
-    // this block, so the two writers are ordered rather than concurrent.
-    ocrDbRelease(T_ij);
 
     //create randInitEDT
     //Now initialize it
@@ -474,12 +576,9 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         ocrDbCreate(&T_ij,
             (void**)&T[j],
             sizeof(int) * block_size,
-            GUID_PROP_IS_LABELED,
+            GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
             NULL_HINT,
             NO_ALLOC);
-
-        assert(T[j] != NULL);
-        ocrDbRelease(T_ij); // release-before-expose (see T tile 0)
         // Now initialize it
 
         ocrGuid_t randInitTEdt;
@@ -507,18 +606,15 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     // First get the already created guids
     ocrGuid_t S_ij;
-    ocrGuidFromIndex(&S_ij, s_labels, 0);
+    ocrGuidFromIndex(&S_ij, s_labels, sIdx(0, grid_block_size));
     block_size = base + 1;
     // Create the data block with the guid and size
     ocrDbCreate(&S_ij,
         (void**)&S[0],
         sizeof(int) * (block_size),
-        GUID_PROP_IS_LABELED,
+        GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
         NULL_HINT,
         NO_ALLOC);
-
-    assert(S[0] != NULL);
-    ocrDbRelease(S_ij); // release-before-expose (see T tile 0)
     // Now initialize it
 
     ocrGuid_t randInitSEdt;
@@ -543,18 +639,15 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     for (int i = 1; i < num_labels; i++) {
         ocrGuid_t S_ij;
         // First get the already created guids
-        ocrGuidFromIndex(&S_ij, s_labels, i);
+        ocrGuidFromIndex(&S_ij, s_labels, sIdx(i, grid_block_size));
 
         // Create the data block with the guid and size
         ocrDbCreate(&S_ij,
             (void**)&S[i],
             sizeof(int) * block_size,
-            GUID_PROP_IS_LABELED,
+            GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
             NULL_HINT,
             NO_ALLOC);
-
-        assert(S[i] != NULL);
-        ocrDbRelease(S_ij); // release-before-expose (see T tile 0)
         // Now initialize it
 
         string_param[0] = block_size;
@@ -582,17 +675,14 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t lcs_score_ij;
     block_size = 1;
     // First get the guid
-    ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, 0);
+    ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, scoreIdx(0, grid_block_size));
     // Create the data block with the guid
     ocrDbCreate(&lcs_score_ij,
         (void**)&lcs_score[0],
         sizeof(int) * 1,
-        GUID_PROP_IS_LABELED,
+        GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
         NULL_HINT,
         NO_ALLOC);
-
-    assert(lcs_score[0] != NULL);
-    ocrDbRelease(lcs_score_ij); // release-before-expose (see T tile 0)
 
     //Create the task
     ocrGuid_t scoreInitTmp;
@@ -622,17 +712,14 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     for (j = 1; j < grid_block_size; j++) {
         t = j;
         // First get the guid
-        ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, t);
+        ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, scoreIdx(t, grid_block_size));
         // Create the data block with the guid
         ocrDbCreate(&lcs_score_ij,
             (void**)&lcs_score[t],
             sizeof(int) * block_size,
-            GUID_PROP_IS_LABELED,
+            GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
             NULL_HINT,
             NO_ALLOC);
-
-        assert(lcs_score[t] != NULL);
-        ocrDbRelease(lcs_score_ij); // release-before-expose (see T tile 0)
 
         ocrGuid_t scoreEdt;
 
@@ -656,16 +743,13 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     for (i = 1; i < grid_block_size; i++) {
         t = i * grid_block_size;
-        ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, t);
+        ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, scoreIdx(t, grid_block_size));
         ocrDbCreate(&lcs_score_ij,
             (void**)&lcs_score[t],
             sizeof(int) * base,
-            GUID_PROP_IS_LABELED,
+            GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
             NULL_HINT,
             NO_ALLOC);
-
-        assert(lcs_score[t] != NULL);
-        ocrDbRelease(lcs_score_ij); // release-before-expose (see T tile 0)
 
         ocrGuid_t scoreEdt;
 
@@ -691,16 +775,15 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
             ocrGuid_t lcs_score_ij;
             // First get the guid
-            ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, t);
+            ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, scoreIdx(t, grid_block_size));
 
             // Create the data block with the guid
             ocrDbCreate(&lcs_score_ij,
                 (void**)&lcs_score[t],
                 sizeof(int) * data_block_size,
-                GUID_PROP_IS_LABELED,
+                GUID_PROP_IS_LABELED | DB_PROP_NO_ACQUIRE,
                 NULL_HINT,
                 NO_ALLOC);
-            assert(lcs_score[t] != NULL);
         }
         // initialize data
     }
@@ -750,9 +833,25 @@ extern "C" ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     int grid_block_size = num_labels + 1;
     int num_blocks = (grid_block_size) * (grid_block_size);
 
-    ocrGuidRangeCreate(&s_labels, num_labels, GUID_USER_DB);
+    u64 s_range = (u64)num_labels;
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    {
+        u64 nranks;
+        ocrAffinityCount(AFFINITY_PD, &nranks);
+        s_range *= nranks;
+    }
+#endif
+    ocrGuidRangeCreate(&s_labels, s_range, GUID_USER_DB);
     ocrGuidRangeCreate(&t_labels, num_labels, GUID_USER_DB);
-    ocrGuidRangeCreate(&score_matrix_labels, num_blocks, GUID_USER_DB);
+    u64 score_range = (u64)num_blocks;
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    {
+        u64 nranks;
+        ocrAffinityCount(AFFINITY_PD, &nranks);
+        score_range *= nranks;
+    }
+#endif
+    ocrGuidRangeCreate(&score_matrix_labels, score_range, GUID_USER_DB);
 
     int **S, **T;
     int** lcs_score;
@@ -996,7 +1095,7 @@ extern "C" ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
         NULL);
 
     ocrGuid_t lcs_score_ij;
-    ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, num_blocks - 1);
+    ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, scoreIdx(num_blocks - 1, grid_block_size));
 
     ocrAddDependence(outputEventGuid2, shutDown_taskGuid, 0, DB_MODE_NULL);
     ocrAddDependence(lcs_score_ij, shutDown_taskGuid, 1, DB_MODE_RO);
