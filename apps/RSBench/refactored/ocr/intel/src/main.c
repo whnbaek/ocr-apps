@@ -103,6 +103,7 @@ ocrGuid_t FNC_settingsInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     PTR_InputsH_0->HM = (HM_size) paramv[6];
     PTR_InputsH_0->numL = (s32) paramv[7];
     PTR_InputsH_0->doppler = (s32) paramv[8];
+    PTR_InputsH_0->batch = (s32) paramv[9];
 
     //ocrPrintf("t %d i %ld m %ld g %ld l %ld s %s\n",
     //        PTR_InputsH_0->nthreads, PTR_InputsH_0->n_nuclides, PTR_InputsH_0->n_mats, PTR_InputsH_0->n_gridpoints, PTR_InputsH_0->lookups, PTR_InputsH_0->HM);
@@ -191,6 +192,7 @@ ocrGuid_t FNC_init_InputsH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     PTR_InputsH->HM = PTR_InputsH_0->HM;
     PTR_InputsH->numL = PTR_InputsH_0->numL;
     PTR_InputsH->doppler = PTR_InputsH_0->doppler;
+    PTR_InputsH->batch = PTR_InputsH_0->batch;
 
     return NULL_GUID;
 }
@@ -545,7 +547,7 @@ ocrGuid_t FNC_globalComputeSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_
 
     TS_rankCompute.FNC = FNC_rankCompute;
     ocrEdtTemplateCreate( &TS_rankCompute.TML, TS_rankCompute.FNC, _paramc, _depc );
-    u64 ilookup = 0, NL_SYNC = 1024;
+    u64 ilookup = 0, NL_SYNC = (u64) PTR_InputsH->batch;
 
     for( i = 0; i < NR; i++ )
     {
@@ -926,11 +928,11 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t TS_settingsInit_OET;
     ocrEventCreate( &TS_settingsInit_OET, OCR_EVENT_STICKY_T, false );
 
-    MyOcrTaskStruct_t TS_settingsInit; _paramc = 9; _depc = 1;
+    MyOcrTaskStruct_t TS_settingsInit; _paramc = 10; _depc = 1;
 
     u64 settingsInit_paramv[] = { (u64) in.nthreads, (u64) in.n_nuclides, (u64) in.n_mats,
                                    (u64) in.lookups, (u64) in.avg_n_poles, (u64) in.avg_n_windows, (u64) in.HM,
-                                   (u64) in.numL, (u64) in.doppler };
+                                   (u64) in.numL, (u64) in.doppler, (u64) in.batch };
 
     TS_settingsInit.FNC = FNC_settingsInit;
     ocrEdtTemplateCreate( &TS_settingsInit.TML, TS_settingsInit.FNC, _paramc, _depc );

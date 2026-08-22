@@ -69,7 +69,9 @@ void fancy_int( int a )
 Inputs read_CLI( int argc, char * argv[] )
 {
     Inputs input;
+    int nthreads_specified = 0;
 
+    input.batch = 1024;
     // defaults to max threads on the system
     input.nthreads = 1; //omp_get_num_procs();
     // defaults to 355 (corresponding to H-M Large benchmark)
@@ -94,10 +96,21 @@ Inputs read_CLI( int argc, char * argv[] )
         char * arg = ocrGetArgv(argv,i);
 
         // nthreads (-t)
-        if( strcmp(arg, "-t") == 0 )
+        // Sync-batch width
+        if( strcmp(arg, "-b") == 0 )
         {
             if( ++i < argc )
+                input.batch = atoi(ocrGetArgv(argv,i));
+            else
+                print_CLI_error();
+        }
+        else if( strcmp(arg, "-t") == 0 )
+        {
+            if( ++i < argc )
+            {
                 input.nthreads = atoi(ocrGetArgv(argv,i));
+                nthreads_specified = 1;
+            }
             else
                 print_CLI_error();
         }
@@ -166,6 +179,12 @@ Inputs read_CLI( int argc, char * argv[] )
     if( input.nthreads < 1 )
         print_CLI_error();
 
+    if( input.batch < 1 )
+        print_CLI_error();
+
+    if( nthreads_specified )
+        ocrPrintf("WARNING: -t <threads> has no effect in this port; task parallelism comes from -l\n");
+
     // Validate n_isotopes
     if( input.n_nuclides < 1 )
         print_CLI_error();
@@ -194,6 +213,7 @@ void print_CLI_error(void)
     ocrPrintf("Usage: ./multibench <options>\n");
     ocrPrintf("Options include:\n");
     ocrPrintf("  -t <threads>     Number of OpenMP threads to run\n");
+    ocrPrintf("  -b <batch>       Lookups per compute-phase sync batch (default 1024)\n");
     ocrPrintf("  -s <size>        Size of H-M Benchmark to run (small, large)\n");
     ocrPrintf("  -l <lookups>     Number of Cross-section (XS) lookups\n");
     ocrPrintf("  -p <poles>       Average Number of Poles per Nuclide\n");

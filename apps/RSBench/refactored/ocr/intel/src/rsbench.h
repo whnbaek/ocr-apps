@@ -26,6 +26,11 @@ typedef struct{
     HM_size HM;
     int numL;
     int doppler;
+    // Lookups per compute-phase sync batch.  The batch is a FINISH scope and
+    // the next one starts only when it has drained, so this is the in-flight
+    // width of the whole compute phase -- it has to be able to track the
+    // machine.
+    int batch;
 } Inputs;
 
 typedef struct{
