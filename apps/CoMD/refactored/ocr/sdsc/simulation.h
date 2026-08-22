@@ -174,6 +174,6 @@ void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
 void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num, real_t step);
 
 void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont,
-              ocrGuid_t list, ocrGuid_t* list_ptr, u32 boxes_num);
+              ocrGuid_t list, ocrGuid_t* list_ptr, u32 boxes_num, real_t dt);
 
 #endif

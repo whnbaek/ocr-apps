@@ -124,7 +124,7 @@ ocrGuid_t top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   profile_start(timestep_timer, depv[0].ptr);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
-  timestep(depv[0].guid, depv[0].ptr, depv[1].guid, edt, depv[2].guid, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.boxes_num);
+  timestep(depv[0].guid, depv[0].ptr, depv[1].guid, edt, depv[2].guid, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.boxes_num, ((simulation*)depv[1].ptr)->dt);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;

@@ -9,7 +9,7 @@ static ocrGuid_t timestep_velocity(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_
 static ocrGuid_t timestep_end(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 static ocrGuid_t timestep_redistribute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
-void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont, ocrGuid_t list, ocrGuid_t* list_ptr, u32 boxes_num)
+void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont, ocrGuid_t list, ocrGuid_t* list_ptr, u32 boxes_num, real_t dt)
 {
   profile_start(velocity_timer, timer_ptr);
 
@@ -19,7 +19,7 @@ void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont, o
   ocrAddDependence(timer, edt, 0, DB_MODE_RW);
   ocrAddDependence(sim, edt, 1, DB_MODE_CONST);
   ocrAddDependence(list, edt, 2, DB_MODE_CONST);
-  fork_advance_velocity(sim, edt, 3, list_ptr, boxes_num, 0.5);
+  fork_advance_velocity(sim, edt, 3, list_ptr, boxes_num, 0.5*dt);
   ocrEdtTemplateDestroy(tmp);
 }
 
@@ -79,12 +79,12 @@ ocrGuid_t timestep_velocity(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   profile_start(velocity_timer, depv[0].ptr);
   simulation* sim = (simulation*)depv[1].ptr;
   ocrGuid_t tmp,edt;
-  real_t dt = 1;
+  real_t dt = sim->dt;
   if((++sim->step)%sim->period)
     ocrEdtTemplateCreate(&tmp, timestep_position, 1, 4);
   else {
     ocrEdtTemplateCreate(&tmp, timestep_end, 1, 4);
-    dt = 0.5;
+    dt *= 0.5;
   }
   ocrEdtCreate(&edt, tmp, 1, paramv, 4, NULL, 0, NULL_HINT, NULL);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
