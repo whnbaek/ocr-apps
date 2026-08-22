@@ -43,8 +43,9 @@ typedef struct HaloExchangeSt
    ///                   being exchanged.
    /// \param [in] face  Specifies the face across which data is being sent.
    /// \param [in] buf   The send buffer to be loaded
+   /// \param [in] bufCapacity The size of the send buffer in bytes.
    /// \return The number of bytes loaded into the send buffer.
-   int  (*loadBuffer)(void* parms, void* data, int face, char* buf);
+   int  (*loadBuffer)(void* parms, void* data, int face, char* buf, int bufCapacity);
    /// Pointer to a sub-class specific function to unload the recv buffer.
    /// \param [in] parms The parms member of the structure.  This is a
    ///                   pointer to a sub-class specific structure that can

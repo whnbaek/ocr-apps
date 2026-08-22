@@ -31,13 +31,20 @@ void initSpecies(SpeciesData* species, BasePotential* pot)
 }
 
 /// Check that the user input meets certain criteria.
-void sanityChecks(u64 id, Command cmd, double cutoff, double latticeConst, char latticeType[8])
+void sanityChecks(u64 id, u64 nRanks, Command cmd, double cutoff, double latticeConst, char latticeType[8])
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
    int failCode = 0;
 
    // Check that domain grid matches number of ranks. (fail code 1)
    int nProcs = cmd.xproc * cmd.yproc * cmd.zproc;
+   if (nProcs != (int)nRanks)
+   {
+      failCode |= 1;
+      if (id==0)
+         ocrPrintf( "\nDomain grid %d x %d x %d does not match the %d ranks of the run. Fatal Error.\n",
+                 cmd.xproc, cmd.yproc, cmd.zproc, (int)nRanks);
+   }
 
    // Check whether simuation is too small (fail code 2)
    double minx = 2*cutoff*cmd.xproc;
@@ -65,8 +72,6 @@ void sanityChecks(u64 id, Command cmd, double cutoff, double latticeConst, char 
          ocrPrintf( "\nOnly FCC Lattice type supported, not %s. Fatal Error.\n",
                  latticeType);
    }
-   int checkCode = failCode;
-   ocrAssert(checkCode == failCode);
 
    if (failCode != 0)
       ocrShutdown();
@@ -105,7 +110,7 @@ void initSimulation(SimFlat* sim, rankH_t* PTR_rankH, u64 id)
       latticeConstant = sim->pot->lat;
 
    // ensure input parameters make sense.
-   sanityChecks(id, cmd, sim->pot->cutoff, latticeConstant, sim->pot->latticeType);
+   sanityChecks(id, PTR_rankH->nRanks, cmd, sim->pot->cutoff, latticeConstant, sim->pot->latticeType);
 
    sim->species = &sim->species_INST;
    initSpecies(sim->species, sim->pot);
@@ -1009,6 +1014,16 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 
     Command cmd = parseCommandLine(argc, argv);
     printCmd(&cmd);
+
+    //The rank grid is the extent of the SPMD fork, so a non-positive extent
+    //forks nothing and no rank is ever left to run sanityChecks.
+    if (cmd.xproc < 1 || cmd.yproc < 1 || cmd.zproc < 1)
+    {
+       ocrPrintf( "\nDomain grid %d x %d x %d must have at least one rank in every direction. Fatal Error.\n",
+               cmd.xproc, cmd.yproc, cmd.zproc );
+       ocrShutdown();
+       return NULL_GUID;
+    }
 
     u64 nRanks = (cmd.xproc)*(cmd.yproc)*(cmd.zproc);
 

@@ -110,7 +110,7 @@ ocrGuid_t exchangeDataEdt(EDT_ARGS);
 ocrGuid_t forceExchangeDataEdt(EDT_ARGS);
 
 static ocrDBK_t mkAtomCellList(int** list_PTR, LinkCell* boxes, enum HaloFaceOrder iFace, const int nCells);
-static int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf);
+static int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf, int bufCapacity);
 ocrGuid_t loadAtomsBufferEdt( EDT_ARGS );
 static void unloadAtomsBuffer(void* vparms, void* data, int face, int bufSize, char* charBuf);
 ocrGuid_t unloadAtomsBufferEdt( EDT_ARGS );
@@ -118,7 +118,7 @@ static void destroyAtomsExchange(void* vparms);
 
 static ocrDBK_t mkForceSendCellList(int** list_PTR, LinkCell* boxes, int face, int nCells);
 static ocrDBK_t mkForceRecvCellList(int** list_PTR, LinkCell* boxes, int face, int nCells);
-static int loadForceBuffer(void* vparms, void* data, int face, char* charBuf);
+static int loadForceBuffer(void* vparms, void* data, int face, char* charBuf, int bufCapacity);
 static void unloadForceBuffer(void* vparms, void* data, int face, int bufSize, char* charBuf);
 static void destroyForceExchange(void* vparms);
 static int sortAtomsById(const void* a, const void* b);
@@ -166,8 +166,7 @@ void initAtomHaloExchange(HaloExchange* hh, Domain* domain, LinkCell* boxes)
    int size0 = (boxes->gridSize[1]+2)*(boxes->gridSize[2]+2);
    int size1 = (boxes->gridSize[0]+2)*(boxes->gridSize[2]+2);
    int size2 = (boxes->gridSize[0]+2)*(boxes->gridSize[1]+2);
-   int maxSize = MAX(size0, size1);
-   maxSize = MAX(size1, size2);
+   int maxSize = MAX(MAX(size0, size1), size2);
    hh->bufCapacity = maxSize*2*MAXATOMS*sizeof(AtomMsg);
 
    hh->loadBuffer = loadAtomsBuffer;
@@ -262,8 +261,7 @@ void initForceHaloExchange(HaloExchange* hh, Domain* domain, LinkCell* boxes)
    int size0 = (boxes->gridSize[1])*(boxes->gridSize[2]);
    int size1 = (boxes->gridSize[0]+2)*(boxes->gridSize[2]);
    int size2 = (boxes->gridSize[0]+2)*(boxes->gridSize[1]+2);
-   int maxSize = MAX(size0, size1);
-   maxSize = MAX(size1, size2);
+   int maxSize = MAX(MAX(size0, size1), size2);
    hh->bufCapacity = (maxSize)*MAXATOMS*sizeof(ForceMsg);
 
    ForceExchangeParms* parms;
@@ -823,8 +821,8 @@ ocrGuid_t loadAtomsBufferEdt( EDT_ARGS )
 
     if( iAxis ==0 ) startTimer(sim->perfTimer, atomHaloTimer);
 
-    int nSendM = haloExchange->loadBuffer(haloExchange->parms, sim, faceM, sendBufM);
-    int nSendP = haloExchange->loadBuffer(haloExchange->parms, sim, faceP, sendBufP);
+    int nSendM = haloExchange->loadBuffer(haloExchange->parms, sim, faceM, sendBufM, haloExchange->bufCapacity);
+    int nSendP = haloExchange->loadBuffer(haloExchange->parms, sim, faceP, sendBufP, haloExchange->bufCapacity);
     //loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf)
 
     startTimer(sim->perfTimer, commHaloTimer);
@@ -920,7 +918,7 @@ ocrGuid_t unloadAtomsBufferEdt( EDT_ARGS )
     return NULL_GUID;
 }
 
-int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf)
+int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf, int bufCapacity)
 {
    AtomExchangeParms* parms = (AtomExchangeParms*) vparms;
    SimFlat* s = (SimFlat*) data;
@@ -934,6 +932,7 @@ int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf)
 
    int nCells = parms->nCells[face];
    int* cellList = parms->cellList[face];
+   int maxBuf = bufCapacity/(int)sizeof(AtomMsg);
    int nBuf = 0;
    for (int iCell=0; iCell<nCells; ++iCell)
    {
@@ -941,6 +940,15 @@ int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf)
       int iOff = iBox*MAXATOMS;
       for (int ii=iOff; ii<iOff+s->boxes->nAtoms[iBox]; ++ii)
       {
+         //The buffer is sized for the worst-case face occupancy; a denser
+         //configuration would otherwise write past the send datablock.
+         if (nBuf >= maxBuf)
+         {
+            ocrPrintf("\nAtom halo send buffer overflow on face %d (capacity %d atoms). Fatal Error.\n",
+                    face, maxBuf);
+            ocrShutdown();
+            return nBuf*sizeof(AtomMsg);
+         }
          buf[nBuf].gid  = s->atoms->gid[ii];
          buf[nBuf].type = s->atoms->iSpecies[ii];
          buf[nBuf].rx = s->atoms->r[ii][0] + shift[0];
@@ -1160,8 +1168,8 @@ ocrGuid_t loadForceBufferEdt( EDT_ARGS )
 
     if( iAxis ==0 ) startTimer(sim->perfTimer, eamHaloTimer);
 
-    int nSendM = haloExchange->loadBuffer(haloExchange->parms, data, faceM, sendBufM);
-    int nSendP = haloExchange->loadBuffer(haloExchange->parms, data, faceP, sendBufP);
+    int nSendM = haloExchange->loadBuffer(haloExchange->parms, data, faceM, sendBufM, haloExchange->bufCapacity);
+    int nSendP = haloExchange->loadBuffer(haloExchange->parms, data, faceP, sendBufP, haloExchange->bufCapacity);
     //loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf);
 
     startTimer(sim->perfTimer, commHaloTimer);
@@ -1253,7 +1261,7 @@ ocrGuid_t unloadForceBufferEdt( EDT_ARGS )
 ///
 /// \see HaloExchangeSt::loadBuffer for an explanation of the loadBuffer
 /// parameters.
-int loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf)
+int loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf, int bufCapacity)
 {
    ForceExchangeParms* parms = (ForceExchangeParms*) vparms;
    ForceExchangeData* data = (ForceExchangeData*) vdata;
@@ -1261,6 +1269,7 @@ int loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf)
 
    int nCells = parms->nCells[face];
    int* cellList = parms->sendCells[face];
+   int maxBuf = bufCapacity/(int)sizeof(ForceMsg);
    int nBuf = 0;
    for (int iCell=0; iCell<nCells; ++iCell)
    {
@@ -1268,6 +1277,13 @@ int loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf)
       int iOff = iBox*MAXATOMS;
       for (int ii=iOff; ii<iOff+data->boxes->nAtoms[iBox]; ++ii)
       {
+         if (nBuf >= maxBuf)
+         {
+            ocrPrintf("\nForce halo send buffer overflow on face %d (capacity %d entries). Fatal Error.\n",
+                    face, maxBuf);
+            ocrShutdown();
+            return nBuf*sizeof(ForceMsg);
+         }
          buf[nBuf].dfEmbed = data->dfEmbed[ii];
          ++nBuf;
       }
