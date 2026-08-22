@@ -157,6 +157,33 @@ void initialize_valid_region(level_type * level){
   }
 }
 
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+/* Factor P into a near-cubic PX*PY*PZ grid (PX*PY*PZ == P). */
+static void boxFactor3(s64 P, int *px, int *py, int *pz) {
+  int z = 1, i;
+  for (i = 1; (s64)i*i*i <= P; i++) if (P % i == 0) z = i;
+  s64 rem = P / z; int y = 1;
+  for (i = 1; (s64)i*i <= rem; i++) if (rem % i == 0) y = i;
+  *pz = z; *py = y; *px = (int)(rem / y);
+}
+
+/* Spatial home for a box: the box's normalized position (i,j,k)/S runs every
+ * level through ONE partition of the unit cube into a near-cubic rank grid,
+ * so neighbouring boxes of a level co-locate AND a coarse box lands on the
+ * rank of the fine boxes it restricts from / prolongs to — the inter-level
+ * transfers stay rank-local.  A round-robin map scatters both. */
+static int boxHomePD(int box_num, int S, s64 P) {
+  if (P <= 1 || S <= 0) return 0;
+  int PX, PY, PZ;
+  boxFactor3(P, &PX, &PY, &PZ);
+  int i = box_num % S, j = (box_num / S) % S, k = box_num / (S * S);
+  int px = (i * PX) / S; if (px >= PX) px = PX - 1;
+  int py = (j * PY) / S; if (py >= PY) py = PY - 1;
+  int pz = (k * PZ) / S; if (pz >= PZ) pz = PZ - 1;
+  return px + py * PX + pz * PX * PY;
+}
+#endif
+
 box_type* create_box(level_type* lPtr, int num_vecs, int box_dim, int num_ghosts,int box_num) {
 
 
@@ -186,7 +213,13 @@ box_type* create_box(level_type* lPtr, int num_vecs, int box_dim, int num_ghosts
   s64 affinityCount;
   ocrAffinityCount( AFFINITY_PD, &affinityCount );
 
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+  ocrAffinityGetAt( AFFINITY_PD,
+                    boxHomePD(box_num, lPtr->boxes_in.i, affinityCount),
+                    &currentAffinity );
+#else
   ocrAffinityGetAt( AFFINITY_PD, box_num%affinityCount, &currentAffinity );
+#endif
 #endif
   ocrSetHintValue( &myDbAffinityHNT, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(currentAffinity) );
   ocrDbCreate(&boxGuid, (void**)&boxPtr, totalMemSize, 0, &myDbAffinityHNT, NO_ALLOC);
