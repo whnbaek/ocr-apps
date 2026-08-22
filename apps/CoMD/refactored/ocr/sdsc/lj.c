@@ -209,7 +209,9 @@ static inline void spawn_pair(ocrGuid_t sim, ocrGuid_t tmp, ocrGuid_t red, ocrGu
   u64 paramv[2];
   paramv[0] = red.guid; paramv[1] = b;
   ocrGuid_t edt;
-  ocrEdtCreate(&edt, tmp, 2, paramv, 28, NULL, 0, NULL_HINT, NULL);
+  ocrHint_t slabHNT;
+  ocrEdtCreate(&edt, tmp, 2, paramv, 28, NULL, 0,
+               comdSlabEdtHint(&slabHNT, b, (u64)grid[0]*grid[1]*grid[2]), NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
   ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
 
@@ -292,10 +294,11 @@ void fork_lj_force(ocrGuid_t sim, simulation* sim_ptr, ocrGuid_t cont, ocrGuid_t
 
   u32 pairs = sim_ptr->bxs.boxes_num;
   ocrGuid_t tmp,red;
+  ocrHint_t homeHNT;
   //A join over every box can exceed the implementation's dependence limit; the
   //failed create leaves its GUID unwritten, so it must not be used.
   if(ocrEdtTemplateCreate(&tmp, lj_red_edt, 1, pairs+1) ||
-     ocrEdtCreate(&red, tmp, 1, (u64 *)&f, pairs+1, NULL, 0, NULL_HINT, NULL)) {
+     ocrEdtCreate(&red, tmp, 1, (u64 *)&f, pairs+1, NULL, 0, comdHomeEdtHint(&homeHNT), NULL)) {
     ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", pairs+1);
     ocrShutdown();
     return;

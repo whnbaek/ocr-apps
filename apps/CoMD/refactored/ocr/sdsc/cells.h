@@ -44,4 +44,62 @@ static inline u32 faces(u32 bg[3], u32 bbg[3], u32 g[3])
          (abs(bg[2]-bbg[2])<g[2]-1 ? 9 : (bg[2]==0 ? 0 : 18));
 };
 
+/* Placement-optimization layer: z-slab placement for per-box tasks.  Boxes
+ * are linearized x-fastest, so a contiguous index band is a slab of whole
+ * x-y planes; a box's 26 neighbours are in its own or the adjacent plane,
+ * which is the same or the neighbouring band.  Pinning every per-box task
+ * (force, kinetic-energy, advance) of box b to its band rank keeps each
+ * box's RW data and most of its neighbour reads on one rank, step after
+ * step -- as-born every one of those tasks lands on a fresh rank each step
+ * and every box travels every timestep. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#include <extensions/ocr-affinity.h>
+static inline ocrHint_t * comdSlabEdtHint(ocrHint_t *h, u64 b, u64 boxes_num) {
+  u64 nranks;
+  ocrAffinityCount(AFFINITY_PD, &nranks);
+  if (nranks <= 1 || boxes_num == 0) return NULL_HINT;
+  u64 band = (b * nranks) / boxes_num;
+  if (band >= nranks) band = nranks - 1;
+  ocrGuid_t aff;
+  ocrAffinityGetAt(AFFINITY_PD, band, &aff);
+  ocrHintInit(h, OCR_HINT_EDT_T);
+  ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+  return h;
+}
+/* The box datablock is homed on its band rank too, so a box's directory
+ * lives where the tasks that touch it every step run, instead of every
+ * box being homed on the one rank that ran the init task. */
+static inline ocrHint_t * comdSlabDbHint(ocrHint_t *h, u64 b, u64 boxes_num) {
+  u64 nranks;
+  ocrAffinityCount(AFFINITY_PD, &nranks);
+  if (nranks <= 1 || boxes_num == 0) return NULL_HINT;
+  u64 band = (b * nranks) / boxes_num;
+  if (band >= nranks) band = nranks - 1;
+  ocrGuid_t aff;
+  ocrAffinityGetAt(AFFINITY_PD, band, &aff);
+  ocrHintInit(h, OCR_HINT_DB_T);
+  ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
+  return h;
+}
+/* The control spine (per-phase continuations, the join tasks, the serial
+ * redistribute) is pinned to one rank: the simulation singleton and the
+ * scalars those tasks mutate then live and stay where every one of their
+ * writers runs, instead of the spine round-robining to a fresh rank each
+ * phase and dragging the singleton's write ownership along with it. */
+static inline ocrHint_t * comdHomeEdtHint(ocrHint_t *h) {
+  u64 nranks;
+  ocrAffinityCount(AFFINITY_PD, &nranks);
+  if (nranks <= 1) return NULL_HINT;
+  ocrGuid_t aff;
+  ocrAffinityGetAt(AFFINITY_PD, 0, &aff);
+  ocrHintInit(h, OCR_HINT_EDT_T);
+  ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+  return h;
+}
+#else
+#define comdSlabEdtHint(h, b, boxes_num) NULL_HINT
+#define comdSlabDbHint(h, b, boxes_num) NULL_HINT
+#define comdHomeEdtHint(h) NULL_HINT
+#endif
+
 #endif
