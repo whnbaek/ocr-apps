@@ -162,7 +162,7 @@ void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* lis
     u64 paramv[2]; paramv[0] = red.guid; paramv[1] = b+1;
     ocrGuid_t edt;
     ocrEdtCreate(&edt, tmp, 2, paramv, 2, NULL, 0, NULL_HINT, NULL);
-    ocrAddDependence(sim, edt, 0, DB_MODE_RW);
+    ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
     ocrAddDependence(list[b], edt, 1, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(tmp);
@@ -215,7 +215,7 @@ void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
     ocrAddDependence(red_event, red, b, DB_MODE_CONST);
     ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
     ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
-    ocrAddDependence(dt, edt, 2, DB_MODE_RW);
+    ocrAddDependence(dt, edt, 2, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(tmp);
 }
