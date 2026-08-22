@@ -43,7 +43,10 @@ ocrGuid_t interpolate_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     get_fine_boxes(f,l,b,fine);
     ocrEdtCreate(&i, i_t, 1, paramv, 3+count, NULL, 0, &myEdtAffinityHNT, NULL);
     ocrAddDependence(depv[1].guid, i, 0, DB_MODE_CONST);
-    ocrAddDependence(boxes[b], i, 1, DB_MODE_CONST);
+    // linear prolongation applies the boundary condition to the coarse box
+    // before reading it, so that box is written and not read-only
+    ocrAddDependence(boxes[b], i, 1,
+                     paramv[0]==FMG_INTERPOLATE ? DB_MODE_RW : DB_MODE_CONST);
     ocrAddDependence(depv[0].guid, i, 2, DB_MODE_CONST);
     int fc;
     for(fc = 0; fc < count; ++fc)

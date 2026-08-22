@@ -126,16 +126,17 @@ ocrGuid_t restrict_level(int l, mg_type* mg_ptr, ocrGuid_t start)
 ocrGuid_t solve(mg_type* mg_ptr, ocrGuid_t start1, ocrGuid_t start2)
 {
   ocrGuid_t s,s_t,fin;
+  // start1 carries the coarsest box, which the bottom solver updates in place
   if (IS_GUID_NULL(start2)) {
     ocrEdtTemplateCreate(&s_t, solve_edt, 0, 2);
     ocrEdtCreate(&s, s_t, 0, NULL, 2, NULL, EDT_PROP_NONE, NULL_HINT, &fin);
     ocrAddDependence(mg_ptr->levels[mg_ptr->max_levels-1], s, 0, DB_MODE_CONST);
-    ocrAddDependence(start1, s, 1, DB_MODE_CONST);
+    ocrAddDependence(start1, s, 1, DB_MODE_RW);
   } else {
     ocrEdtTemplateCreate(&s_t, solve_edt, 0, 3);
     ocrEdtCreate(&s, s_t, 0, NULL, 3, NULL, EDT_PROP_NONE, NULL_HINT, &fin);
     ocrAddDependence(mg_ptr->levels[mg_ptr->max_levels-1], s, 0, DB_MODE_CONST);
-    ocrAddDependence(start1, s, 1, DB_MODE_CONST);
+    ocrAddDependence(start1, s, 1, DB_MODE_RW);
     ocrAddDependence(start2, s, 2, DB_MODE_CONST);
 
   }
