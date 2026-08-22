@@ -10,6 +10,7 @@ ocrGuid_t top_warm(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t top_loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t finalize(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t finalize_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 ocrGuid_t test0_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
@@ -123,7 +124,17 @@ ocrGuid_t finalize(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   int num_boxes = l->num_boxes;
   u64 pv[3] = {l->u, l->u_true, l->vec_temp};
   ocrEdtTemplateCreate(&tmp, finalize_edt, 3, num_boxes+3);
-  ocrEdtCreate(&edt, tmp, 3, pv, num_boxes+3, NULL, 0, NULL_HINT, NULL);
+  // The output event fires only after finalize_edt's dependence releases have
+  // completed, so the shutdown EDT below never truncates in-flight release
+  // work out of the measured run.
+  ocrGuid_t finalizeOut;
+  ocrEdtCreate(&edt, tmp, 3, pv, num_boxes+3, NULL, 0, NULL_HINT, &finalizeOut);
+
+  ocrGuid_t sd_t, sd;
+  ocrEdtTemplateCreate(&sd_t, shutdown_edt, 0, 1);
+  ocrEdtCreate(&sd, sd_t, 0, NULL, 1, NULL, 0, NULL_HINT, NULL);
+  ocrAddDependence(finalizeOut, sd, 0, DB_MODE_NULL);
+  ocrEdtTemplateDestroy(sd_t);
 
  ocrGuid_t* boxes = (ocrGuid_t*)(((char*)l)+l->boxes);
   for (b = 0; b < num_boxes; b++) {

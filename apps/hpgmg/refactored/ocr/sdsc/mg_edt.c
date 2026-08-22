@@ -174,8 +174,17 @@ ocrGuid_t finalize_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrPrintf("Time = %22f\n", l->time_operators[4]/TIMED);
 
   ocrDbDestroy(depv[0].guid);
-  ocrShutdown();
+  /* Shutdown is NOT called here: this EDT still owes the release of every
+   * dependence it holds, and calling ocrShutdown from the body would truncate
+   * that release work (and its coherence traffic) out of the run.  A dedicated
+   * shutdown EDT wired to this EDT's output event runs once the releases have
+   * completed. */
+  return NULL_GUID;
+}
 
+ocrGuid_t shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+  ocrShutdown();
   return NULL_GUID;
 }
 
