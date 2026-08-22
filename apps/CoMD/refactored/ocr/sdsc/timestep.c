@@ -153,7 +153,7 @@ static ocrGuid_t ke_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
 void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num)
 {
   ocrGuid_t f,fdb,*fdb_ptr;
-  ocrEventCreate(&f, OCR_EVENT_ONCE_T, false);
+  comdJoinEvt(f);
   ocrAddDependence(f, cont, depc, DB_MODE_CONST);
 
   ocrGuid_t tmp,red;
@@ -216,8 +216,9 @@ void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
   ocrDbCreate(&dt, (void**)&dt_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
   *dt_ptr = step;
   ocrGuid_t tmp,red,red_event;
+  OEVT_COUNTED_PRE(red_event);
   if(ocrEdtTemplateCreate(&tmp, av_red_edt, 0, boxes_num+1) ||
-     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, comdHomeEdtHint(&homeHNT), &red_event)) {
+     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, OEVT_COUNTED_PROP(0), comdHomeEdtHint(&homeHNT), &red_event)) {
     ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", boxes_num+1);
     ocrShutdown();
     return;
@@ -230,7 +231,8 @@ void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
   for(u32 b = 0; b < boxes_num; ++b) {
     ocrGuid_t edt;
     ocrHint_t slabHNT;
-    ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, comdSlabEdtHint(&slabHNT, b, boxes_num), &red_event);
+    OEVT_COUNTED_PRE(red_event);
+    ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, OEVT_COUNTED_PROP(0), comdSlabEdtHint(&slabHNT, b, boxes_num), &red_event);
     ocrAddDependence(red_event, red, b, DB_MODE_CONST);
     ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
     ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
@@ -272,8 +274,9 @@ void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
 {
   ocrGuid_t tmp,red,red_event;
   ocrHint_t homeHNT;
+  OEVT_COUNTED_PRE(red_event);
   if(ocrEdtTemplateCreate(&tmp, ap_red_edt, 0, boxes_num) ||
-     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num, NULL, 0, comdHomeEdtHint(&homeHNT), &red_event)) {
+     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num, NULL, OEVT_COUNTED_PROP(0), comdHomeEdtHint(&homeHNT), &red_event)) {
     ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", boxes_num);
     ocrShutdown();
     return;
@@ -285,7 +288,8 @@ void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
   for(u32 b = 0; b < boxes_num; ++b) {
     ocrGuid_t edt;
     ocrHint_t slabHNT;
-    ocrEdtCreate(&edt, tmp, 0, NULL, 2, NULL, 0, comdSlabEdtHint(&slabHNT, b, boxes_num), &red_event);
+    OEVT_COUNTED_PRE(red_event);
+    ocrEdtCreate(&edt, tmp, 0, NULL, 2, NULL, OEVT_COUNTED_PROP(0), comdSlabEdtHint(&slabHNT, b, boxes_num), &red_event);
     ocrAddDependence(red_event, red, b, DB_MODE_CONST);
     ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
     ocrAddDependence(list[b], edt, 1, DB_MODE_RW);

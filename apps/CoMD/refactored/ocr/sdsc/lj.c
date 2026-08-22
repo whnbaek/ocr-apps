@@ -289,7 +289,7 @@ static inline void spawn_pair(ocrGuid_t sim, ocrGuid_t tmp, ocrGuid_t red, ocrGu
 void fork_lj_force(ocrGuid_t sim, simulation* sim_ptr, ocrGuid_t cont, ocrGuid_t* list, u32 grid[3])
 {
   ocrGuid_t f,fdb,*fdb_ptr;
-  ocrEventCreate(&f, OCR_EVENT_ONCE_T, false);
+  comdJoinEvt(f);
   ocrAddDependence(f, cont, CONT_DEPC, DB_MODE_CONST);
 
   u32 pairs = sim_ptr->bxs.boxes_num;

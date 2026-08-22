@@ -112,8 +112,9 @@ void fork_redistribute(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list,
   ocrHint_t homeHNT;
   //A join over every box can exceed the implementation's dependence limit; the
   //failed create leaves its GUID unwritten, so it must not be used.
+  OEVT_COUNTED_PRE(red_e);
   if(ocrEdtTemplateCreate(&tmp,redistribute_edt, 0, boxes_num+1) ||
-     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, comdHomeEdtHint(&homeHNT), &red_e)) {
+     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, OEVT_COUNTED_PROP(0), comdHomeEdtHint(&homeHNT), &red_e)) {
     ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", boxes_num+1);
     ocrShutdown();
     return;

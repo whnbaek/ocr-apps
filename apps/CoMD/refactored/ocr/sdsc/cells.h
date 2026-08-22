@@ -44,6 +44,19 @@ static inline u32 faces(u32 bg[3], u32 bbg[3], u32 g[3])
          (abs(bg[2]-bbg[2])<g[2]-1 ? 9 : (bg[2]==0 ? 0 : 18));
 };
 
+/* Every completion event in this port has exactly one consumer, registered
+ * at creation.  Declaring that count (a COUNTED event) lets the runtime
+ * reclaim the event once the consumer is in; an undeclared single-fire
+ * event must linger for the rest of the run, because a later registration
+ * on it is always legal -- at one event per box per phase that lingering
+ * grows without bound in the step count. */
+#include "ocrAppUtils.h"
+#ifdef OCR_APP_COUNTED_OEVT
+#define comdJoinEvt(e) createEventHelper(&(e), 1)
+#else
+#define comdJoinEvt(e) ocrEventCreate(&(e), OCR_EVENT_ONCE_T, false)
+#endif
+
 /* Placement-optimization layer: z-slab placement for per-box tasks.  Boxes
  * are linearized x-fastest, so a contiguous index band is a slab of whole
  * x-y planes; a box's 26 neighbours are in its own or the adjacent plane,
