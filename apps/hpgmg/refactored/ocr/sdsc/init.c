@@ -130,36 +130,38 @@ level_type* create_level(mg_type* mg, int box_dim, int boxes_in_i, int boundary_
 }
 
 
+void hpgmg_valid_box(level_type *level, box_type *bx) {
+  int i,j,k;
+  int jStride = level->jStride;
+  int kStride = level->kStride;
+  int  ghosts = NUM_GHOSTS;
+  int     dim = level->box_dim;
+  double * __restrict__ valid = (double*)(((char*)bx)+ level->valid) + ghosts*(1+jStride+kStride);
+  for(k=-ghosts;k<dim+ghosts;k++){
+  for(j=-ghosts;j<dim+ghosts;j++){
+  for(i=-ghosts;i<dim+ghosts;i++){
+    int ijk = i + j*jStride + k*kStride;
+    valid[ijk] = 1.0; // i.e. all cells including ghosts are valid for periodic BC's
+    if(level->boundary_condition == BC_DIRICHLET){ // cells outside the domain boundaries are not valid
+      if(i + bx->low.i <             0)valid[ijk] = 0.0;
+      if(j + bx->low.j <             0)valid[ijk] = 0.0;
+      if(k + bx->low.k <             0)valid[ijk] = 0.0;
+      if(i + bx->low.i >= level->dim.i)valid[ijk] = 0.0;
+      if(j + bx->low.j >= level->dim.j)valid[ijk] = 0.0;
+      if(k + bx->low.k >= level->dim.k)valid[ijk] = 0.0;
+    }
+  }}}
+}
+
 void initialize_valid_region(level_type * level){
   int box;
-
-  for(box=0;box<level->num_boxes;box++){
-    int i,j,k;
-    int jStride = level->jStride;
-    int kStride = level->kStride;
-    int  ghosts = NUM_GHOSTS;
-    int     dim = level->box_dim;
-    double * __restrict__ valid = (double*)(((char*)level->temp[box])+ level->valid) + ghosts*(1+jStride+kStride);
-    for(k=-ghosts;k<dim+ghosts;k++){
-    for(j=-ghosts;j<dim+ghosts;j++){
-    for(i=-ghosts;i<dim+ghosts;i++){
-      int ijk = i + j*jStride + k*kStride;
-      valid[ijk] = 1.0; // i.e. all cells including ghosts are valid for periodic BC's
-      if(level->boundary_condition == BC_DIRICHLET){ // cells outside the domain boundaries are not valid
-        if(i + level->temp[box]->low.i <             0)valid[ijk] = 0.0;
-        if(j + level->temp[box]->low.j <             0)valid[ijk] = 0.0;
-        if(k + level->temp[box]->low.k <             0)valid[ijk] = 0.0;
-        if(i + level->temp[box]->low.i >= level->dim.i)valid[ijk] = 0.0;
-        if(j + level->temp[box]->low.j >= level->dim.j)valid[ijk] = 0.0;
-        if(k + level->temp[box]->low.k >= level->dim.k)valid[ijk] = 0.0;
-      }
-    }}}
-  }
+  for(box=0;box<level->num_boxes;box++)
+    hpgmg_valid_box(level, level->temp[box]);
 }
 
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
 /* Factor P into a near-cubic PX*PY*PZ grid (PX*PY*PZ == P). */
-static void boxFactor3(s64 P, int *px, int *py, int *pz) {
+void boxFactor3(s64 P, int *px, int *py, int *pz) {
   int z = 1, i;
   for (i = 1; (s64)i*i*i <= P; i++) if (P % i == 0) z = i;
   s64 rem = P / z; int y = 1;
@@ -172,7 +174,7 @@ static void boxFactor3(s64 P, int *px, int *py, int *pz) {
  * so neighbouring boxes of a level co-locate AND a coarse box lands on the
  * rank of the fine boxes it restricts from / prolongs to — the inter-level
  * transfers stay rank-local.  A round-robin map scatters both. */
-static int boxHomePD(int box_num, int S, s64 P) {
+int boxHomePD(int box_num, int S, s64 P) {
   if (P <= 1 || S <= 0) return 0;
   int PX, PY, PZ;
   boxFactor3(P, &PX, &PY, &PZ);
@@ -262,73 +264,73 @@ box_type* create_box(level_type* lPtr, int num_vecs, int box_dim, int num_ghosts
 
 }
 
+void hpgmg_fill_box(level_type *level, box_type *bx, double a, double b) {
+
+  double hLevel = level->h;
+  double *alpha, *beta_i, *beta_j, *beta_k, *u_true, *f;
+
+  alpha = (double*)(((char*)bx)+ level->alpha);
+  beta_i =  (double*)(((char*)bx)+ level->beta_i);
+  beta_j =  (double*)(((char*)bx)+ level->beta_j);
+  beta_k =  (double*)(((char*)bx)+ level->beta_k);
+  u_true = (double*)(((char*)bx)+ level->u_true);
+  f = (double*)(((char*)bx)+ level->f);
+  bzero(alpha, (level->volume)*sizeof(double));
+  bzero(beta_i, (level->volume)*sizeof(double));
+  bzero(beta_j, (level->volume)*sizeof(double));
+  bzero(beta_k, (level->volume)*sizeof(double));
+  bzero(u_true, (level->volume)*sizeof(double));
+  bzero(f, (level->volume)*sizeof(double));
+
+  int i,j,k;
+  int jStride = level->jStride;
+  int kStride = level->kStride;
+  int ghosts = NUM_GHOSTS;
+  int dim_i = level->box_dim;
+  int dim_j =  level->box_dim;
+  int dim_k =  level->box_dim;
+
+  for(k=0;k<=dim_k;k++) {
+    for(j=0;j<=dim_j;j++) {
+      for(i=0;i<=dim_i;i++) {
+         int ijk = (i+ghosts) + (j+ghosts)*jStride + (k+ghosts)*kStride;
+         double x = hLevel*( (double)(i+bx->low.i) + 0.5 );
+         double y = hLevel*( (double)(j+bx->low.j) + 0.5 );
+         double z = hLevel*( (double)(k+bx->low.k) + 0.5 );
+         double A,B,Bx,By,Bz,Bi,Bj,Bk;
+         double U,Ux,Uy,Uz,Uxx,Uyy,Uzz;
+
+         A=B=Bi=Bj=Bk=1.0; Bx=By=Bz=0.0;
+         #ifdef STENCIL_VARIABLE_COEFFICIENT
+         evaluateBeta(x-hLevel*0.5,y           ,z           ,&Bi,&Bx,&By,&Bz);
+         evaluateBeta(x           ,y-hLevel*0.5,z           ,&Bj,&Bx,&By,&Bz);
+         evaluateBeta(x           ,y           ,z-hLevel*0.5,&Bk,&Bx,&By,&Bz);
+         evaluateBeta(x           ,y           ,z           ,&B ,&Bx,&By,&Bz);
+         #endif
+
+         evaluateU(x,y,z,&U,&Ux,&Uy,&Uz,&Uxx,&Uyy,&Uzz, (level->boundary_condition == BC_PERIODIC) );
+         double F1 = a*A*U - b*( (Bx*Ux + By*Uy + Bz*Uz)  +  B*(Uxx + Uyy + Uzz) );
+
+         beta_i[ijk] = Bi;
+         beta_j[ijk] = Bj;
+         beta_k[ijk] = Bk;
+         alpha[ijk] = A;
+         u_true[ijk] = U;
+         f[ijk] = F1;
+
+       }
+     }
+   }
+}
+
 void initialize_problem(level_type* level, double a, double b) {
 
   double hLevel = 1.0/( (double)level->boxes_in.i*(double)level->box_dim );
   level->h = hLevel;
 
-
   int box;
-  double *alpha, *beta_i, *beta_j, *beta_k, *u_true, *f;
-  for (box=0; box<level->num_boxes; box++) {
-
-    alpha = (double*)(((char*)level->temp[box])+ level->alpha);
-    beta_i =  (double*)(((char*)level->temp[box])+ level->beta_i);
-    beta_j =  (double*)(((char*)level->temp[box])+ level->beta_j);
-    beta_k =  (double*)(((char*)level->temp[box])+ level->beta_k);
-    u_true = (double*)(((char*)level->temp[box])+ level->u_true);
-    f = (double*)(((char*)level->temp[box])+ level->f);
-    bzero(alpha, (level->volume)*sizeof(double));
-    bzero(beta_i, (level->volume)*sizeof(double));
-    bzero(beta_j, (level->volume)*sizeof(double));
-    bzero(beta_k, (level->volume)*sizeof(double));
-    bzero(u_true, (level->volume)*sizeof(double));
-    bzero(f, (level->volume)*sizeof(double));
-
-    int i,j,k;
-    int jStride = level->jStride;
-    int kStride = level->kStride;
-    int ghosts = NUM_GHOSTS;
-    int dim_i = level->box_dim;
-    int dim_j =  level->box_dim;
-    int dim_k =  level->box_dim;
-
-#if DEBUG
-    ocrPrintf("box%d, dims = (%d, %d, %d)\n", level->temp[box]->global_box_id,dim_i, dim_j, dim_k);
-#endif
-
-    for(k=0;k<=dim_k;k++) {
-      for(j=0;j<=dim_j;j++) {
-        for(i=0;i<=dim_i;i++) {
-           int ijk = (i+ghosts) + (j+ghosts)*jStride + (k+ghosts)*kStride;
-	   double x = hLevel*( (double)(i+level->temp[box]->low.i) + 0.5 );
-	   double y = hLevel*( (double)(j+level->temp[box]->low.j) + 0.5 );
-	   double z = hLevel*( (double)(k+level->temp[box]->low.k) + 0.5 );
-	   double A,B,Bx,By,Bz,Bi,Bj,Bk;
-	   double U,Ux,Uy,Uz,Uxx,Uyy,Uzz;
-
-	   A=B=Bi=Bj=Bk=1.0; Bx=By=Bz=0.0;
-	   #ifdef STENCIL_VARIABLE_COEFFICIENT
-	   evaluateBeta(x-hLevel*0.5,y           ,z           ,&Bi,&Bx,&By,&Bz);
-	   evaluateBeta(x           ,y-hLevel*0.5,z           ,&Bj,&Bx,&By,&Bz);
-	   evaluateBeta(x           ,y           ,z-hLevel*0.5,&Bk,&Bx,&By,&Bz);
-	   evaluateBeta(x           ,y           ,z           ,&B ,&Bx,&By,&Bz);
-	   #endif
-
-	   evaluateU(x,y,z,&U,&Ux,&Uy,&Uz,&Uxx,&Uyy,&Uzz, (level->boundary_condition == BC_PERIODIC) );
-	   double F1 = a*A*U - b*( (Bx*Ux + By*Uy + Bz*Uz)  +  B*(Uxx + Uyy + Uzz) );
-
-	   beta_i[ijk] = Bi;
-	   beta_j[ijk] = Bj;
-	   beta_k[ijk] = Bk;
-	   alpha[ijk] = A;
-	   u_true[ijk] = U;
-	   f[ijk] = F1;
-
-	 }
-       }
-     }
-   }
+  for (box=0; box<level->num_boxes; box++)
+    hpgmg_fill_box(level, level->temp[box], a, b);
 
   if(level->alpha_is_zero==-1)
     level->alpha_is_zero = (dot(level,level->alpha,level->alpha) == 0.0);
@@ -414,6 +416,87 @@ void evaluateU(double x, double y, double z, double *U, double *Ux, double *Uy, 
 
 
 
+// Writes the box's Dinv/L1inv and returns its Gershgorin eigenvalue bound.
+double hpgmg_gershgorin_box(level_type *level, box_type *bx, double a, double b) {
+  int i,j,k;
+  int jStride = level->jStride;
+  int kStride = level->kStride;
+  int  ghosts = NUM_GHOSTS;
+  int     dim = level->box_dim;
+  double h2inv = 1.0/(level->h*level->h);
+  double *alpha, *beta_i, *beta_j, *beta_k, *Dinv, *L1inv, *valid;
+  alpha = (double*)(((char*)bx)+ level->alpha) + ghosts*(1+jStride+kStride);
+  beta_i =  (double*)(((char*)bx)+ level->beta_i) + ghosts*(1+jStride+kStride);
+  beta_j =  (double*)(((char*)bx)+ level->beta_j) + ghosts*(1+jStride+kStride);
+  beta_k =  (double*)(((char*)bx)+ level->beta_k) + ghosts*(1+jStride+kStride);
+  Dinv = (double*)(((char*)bx)+ level->Dinv) + ghosts*(1+jStride+kStride);
+  L1inv = (double*)(((char*)bx)+ level->L1inv)  + ghosts*(1+jStride+kStride);
+  valid = (double*)(((char*)bx)+ level->valid)  + ghosts*(1+jStride+kStride);
+  double box_eigenvalue = -1e9;
+  for(k=0;k<dim;k++) {
+    for(j=0;j<dim;j++) {
+      for(i=0;i<dim;i++) {
+        int ijk = i + j*jStride + k*kStride;
+        // radius of Gershgorin disc is the sum of the absolute values of the off-diagonal elements...
+        double sumAbsAij = fabs(b*h2inv) * (
+                    fabs( beta_i[ijk        ]*valid[ijk-1      ] )+
+                    fabs( beta_j[ijk        ]*valid[ijk-jStride] )+
+                    fabs( beta_k[ijk        ]*valid[ijk-kStride] )+
+                    fabs( beta_i[ijk+1      ]*valid[ijk+1      ] )+
+                    fabs( beta_j[ijk+jStride]*valid[ijk+jStride] )+
+                    fabs( beta_k[ijk+kStride]*valid[ijk+kStride] )
+                    );
+
+        // centr of Gershgorin disc is the diagonal element...
+        double    Aii = a*alpha[ijk] - b*h2inv*(
+                                     beta_i[ijk        ]*( valid[ijk-1      ]-2.0)+
+                                     beta_j[ijk        ]*( valid[ijk-jStride]-2.0)+
+                                     beta_k[ijk        ]*( valid[ijk-kStride]-2.0)+
+                                     beta_i[ijk+1      ]*( valid[ijk+1      ]-2.0)+
+                                     beta_j[ijk+jStride]*( valid[ijk+jStride]-2.0)+
+                                     beta_k[ijk+kStride]*( valid[ijk+kStride]-2.0)
+                                   );
+         Dinv[ijk] = 1.0/Aii;
+         if(Aii>=1.5*sumAbsAij)
+           L1inv[ijk] = 1.0/(Aii              );
+         else
+           L1inv[ijk] = 1.0/(Aii+0.5*sumAbsAij);
+         double Di = (Aii + sumAbsAij)/Aii;
+         if(Di>box_eigenvalue)
+           box_eigenvalue=Di;
+      }
+    }
+  }
+  return box_eigenvalue;
+}
+
+void hpgmg_coeff_restrict_box(level_type *level, box_type *cb,
+                              level_type *fromLevel, box_type *fine_bx,
+                              int fb, int count) {
+  if (count <= 8) {
+    // restrict alpha -- cell
+    restrict_generic(level, cb, level->alpha, fromLevel, fine_bx,
+       fromLevel->alpha, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 0);
+
+    // restrict beta_i -- face_i
+    restrict_generic(level, cb, level->beta_i, fromLevel, fine_bx,
+       fromLevel->beta_i, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 1);
+
+    // restrict beta_j -- face_j
+    restrict_generic(level, cb, level->beta_j, fromLevel, fine_bx,
+       fromLevel->beta_j, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 2);
+
+    // restrict beta_k -- face_k
+    restrict_generic(level, cb, level->beta_k, fromLevel, fine_bx,
+       fromLevel->beta_k, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 3);
+  } else {
+    restrict_generic_all(level, cb, level->alpha, fromLevel, fine_bx, fromLevel->alpha, 0);
+    restrict_generic_all(level, cb, level->beta_i, fromLevel, fine_bx, fromLevel->beta_i, 1);
+    restrict_generic_all(level, cb, level->beta_j, fromLevel, fine_bx, fromLevel->beta_j, 2);
+    restrict_generic_all(level, cb, level->beta_k, fromLevel, fine_bx, fromLevel->beta_k, 3);
+  }
+}
+
 void rebuild_operator(level_type* level, level_type* fromLevel, double a, double b) {
 
   ocrPrintf(" rebuilding operator for level...  h=%e  ",level->h);
@@ -424,47 +507,11 @@ void rebuild_operator(level_type* level, level_type* fromLevel, double a, double
     int count = fromLevel->num_boxes/level->num_boxes;
     int fine[MAX_FINE_BOXES];
     int b,fb;
-    int dim = level->box_dim;
-    int ghosts = NUM_GHOSTS;
-    double * c_alpha, *c_beta_i, *c_beta_j, *c_beta_k;
-    double * f_alpha, *f_beta_i, *f_beta_j, *f_beta_k;
     for (b = 0; b < level->num_boxes; b++) {
-
-
       get_fine_box_ids(fromLevel, level, b, fine);
-      for (fb = 0; fb < count; fb++) {
-
-       if (count <=8) {
-         // restrict alpha -- cell
-         restrict_generic(level, level->temp[b],level->alpha, fromLevel, fromLevel->temp[fine[fb]],
-	    fromLevel->alpha, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 0);
-
-         // restrict beta_i -- face_i
-	 restrict_generic(level, level->temp[b],level->beta_i, fromLevel, fromLevel->temp[fine[fb]],
-	    fromLevel->beta_i, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 1);
-
-         // restrict beta_j -- face_j
-	 restrict_generic(level, level->temp[b],level->beta_j, fromLevel, fromLevel->temp[fine[fb]],
-	    fromLevel->beta_j, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 2);
-
-         // restrict beta_k -- face_k
-	 restrict_generic(level, level->temp[b],level->beta_k, fromLevel, fromLevel->temp[fine[fb]],
-	    fromLevel->beta_k, fb, count==1?fromLevel->box_dim:fromLevel->box_dim>>1, 3);
-       } else {
-         // restrict alpha -- cell
-         restrict_generic_all(level, level->temp[b],level->alpha, fromLevel, fromLevel->temp[fine[fb]], fromLevel->alpha, 0);
-
-         // restrict beta_i -- face_i
-         restrict_generic_all(level, level->temp[b],level->beta_i, fromLevel, fromLevel->temp[fine[fb]], fromLevel->beta_i, 1);
-
-         // restrict beta_j -- face_j
-         restrict_generic_all(level, level->temp[b],level->beta_j, fromLevel, fromLevel->temp[fine[fb]], fromLevel->beta_j, 2);
-
-         // restrict beta_k -- face_k
-         restrict_generic_all(level, level->temp[b],level->beta_k, fromLevel, fromLevel->temp[fine[fb]], fromLevel->beta_k, 3);
-       }
-
-      }
+      for (fb = 0; fb < count; fb++)
+        hpgmg_coeff_restrict_box(level, level->temp[b],
+                                 fromLevel, fromLevel->temp[fine[fb]], fb, count);
     }
   }
 
@@ -494,74 +541,13 @@ void rebuild_operator(level_type* level, level_type* fromLevel, double a, double
   }
 */
 
-double sum1, sum2;
   double dominant_eigenvalue = -1e9;
 
-
   for(box=0;box<level->num_boxes;box++) {
-
-sum1 = sum2 = 0;
-
-    int i,j,k;
-    int jStride = level->jStride;
-    int kStride = level->kStride;
-    int  ghosts = NUM_GHOSTS;
-    int     dim = level->box_dim;
-    double h2inv = 1.0/(level->h*level->h);
-    double *alpha, *beta_i, *beta_j, *beta_k, *Dinv, *L1inv, *valid;
-    alpha = (double*)(((char*)level->temp[box])+ level->alpha) + ghosts*(1+jStride+kStride);
-    beta_i =  (double*)(((char*)level->temp[box])+ level->beta_i) + ghosts*(1+jStride+kStride);
-    beta_j =  (double*)(((char*)level->temp[box])+ level->beta_j) + ghosts*(1+jStride+kStride);
-    beta_k =  (double*)(((char*)level->temp[box])+ level->beta_k) + ghosts*(1+jStride+kStride);
-    Dinv = (double*)(((char*)level->temp[box])+ level->Dinv) + ghosts*(1+jStride+kStride);
-    L1inv = (double*)(((char*)level->temp[box])+ level->L1inv)  + ghosts*(1+jStride+kStride);
-    valid = (double*)(((char*)level->temp[box])+ level->valid)  + ghosts*(1+jStride+kStride);
-    double box_eigenvalue = -1e9;
-    for(k=0;k<dim;k++) {
-      for(j=0;j<dim;j++) {
-        for(i=0;i<dim;i++) {
-          int ijk = i + j*jStride + k*kStride;
-          // radius of Gershgorin disc is the sum of the absolute values of the off-diagonal elements...
-          double sumAbsAij = fabs(b*h2inv) * (
-                      fabs( beta_i[ijk        ]*valid[ijk-1      ] )+
-                      fabs( beta_j[ijk        ]*valid[ijk-jStride] )+
-                      fabs( beta_k[ijk        ]*valid[ijk-kStride] )+
-                      fabs( beta_i[ijk+1      ]*valid[ijk+1      ] )+
-                      fabs( beta_j[ijk+jStride]*valid[ijk+jStride] )+
-                      fabs( beta_k[ijk+kStride]*valid[ijk+kStride] )
-                      );
-
-          // centr of Gershgorin disc is the diagonal element...
-          double    Aii = a*alpha[ijk] - b*h2inv*(
-                                       beta_i[ijk        ]*( valid[ijk-1      ]-2.0)+
-                                       beta_j[ijk        ]*( valid[ijk-jStride]-2.0)+
-                                       beta_k[ijk        ]*( valid[ijk-kStride]-2.0)+
-                                       beta_i[ijk+1      ]*( valid[ijk+1      ]-2.0)+
-                                       beta_j[ijk+jStride]*( valid[ijk+jStride]-2.0)+
-                                       beta_k[ijk+kStride]*( valid[ijk+kStride]-2.0)
-                                     );
-	   Dinv[ijk] = 1.0/Aii;
-	   if(Aii>=1.5*sumAbsAij)
-	     L1inv[ijk] = 1.0/(Aii              );
-	   else
-	     L1inv[ijk] = 1.0/(Aii+0.5*sumAbsAij);
-	   double Di = (Aii + sumAbsAij)/Aii;
-           if(Di>box_eigenvalue)
-             box_eigenvalue=Di;
-
-//sum1 += sumAbsAij;
-//sum2 += Aii;
-//sum1 += fabs(beta_i[ijk])+ fabs(beta_j[ijk]) +  fabs(beta_k[ijk]);
-//sum2 += alpha[ijk];
-        }
-      }
-   }
+    double box_eigenvalue = hpgmg_gershgorin_box(level, level->temp[box], a, b);
     if(box_eigenvalue>dominant_eigenvalue){
       dominant_eigenvalue = box_eigenvalue;
     }
-
-//ocrPrintf("sum1 = %10f, sum2 = %10f\n", sum1, sum2);
-
   }
 
 
