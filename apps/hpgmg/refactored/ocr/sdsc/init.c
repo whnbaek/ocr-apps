@@ -389,7 +389,7 @@ void rebuild_operator(level_type* level, level_type* fromLevel, double a, double
   // form restriction of alpha[], beta_*[] coefficients from fromLevel
   if(fromLevel != NULL) {
     int count = fromLevel->num_boxes/level->num_boxes;
-    int fine[125]; // ToDo: Manu: just a workaround
+    int fine[MAX_FINE_BOXES];
     int b,fb;
     int dim = level->box_dim;
     int ghosts = NUM_GHOSTS;

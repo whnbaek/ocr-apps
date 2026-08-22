@@ -3,12 +3,17 @@
 
 #include "hpgmg.h"
 
+// Fine boxes per coarse box.  Sizes the caller-supplied arrays that
+// get_fine_boxes()/get_fine_box_ids() fill, so both check against it.
+#define MAX_FINE_BOXES 125
+
 double hpgmg_time();
 void shift_vector(level_type * level, int id_c, int id_a, double shift_a);
 double dot(level_type * level, int id_a, int id_b);
 void get_neighbors(int b, int dim_i, int dim_j, int dim_k, int* nbrs);
 void get_neighbor_guids(int b, level_type *level, ocrGuid_t* nbrs);
 ocrGuid_t get_coarse_box(level_type *fine, level_type *coarse, int fine_box_id);
+void check_fine_box_count(level_type *fine, level_type *coarse, int num_boxes);
 void get_fine_boxes(level_type *fine, level_type *coarse, int coarse_box_id, ocrGuid_t *fine_boxes_guids);
 ocrGuid_t get_box_guid(level_type *level, int box_id);
 void get_tuple(int b, int dim_i, int dim_j, int dim_k, int *i, int *j, int* k);

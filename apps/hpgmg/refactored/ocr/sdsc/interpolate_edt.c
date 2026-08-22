@@ -21,7 +21,7 @@ ocrGuid_t interpolate_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
   ////////////////////////////
 
   ocrGuid_t* boxes = (ocrGuid_t*)(((char*)depv[1].ptr)+l->boxes);
-  ocrGuid_t fine[125];
+  ocrGuid_t fine[MAX_FINE_BOXES];
   int count = f->num_boxes/l->num_boxes;
 
 

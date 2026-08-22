@@ -252,6 +252,23 @@ int get_coarse_box_id(level_type *fine, level_type *coarse, int fine_box_id) {
 }
 
 
+// the level table may collapse a whole grid of boxes into one in a single step,
+// which asks for more fine boxes per coarse box than the callers' arrays hold
+void check_fine_box_count(level_type *fine, level_type *coarse, int num_boxes) {
+  if (num_boxes > MAX_FINE_BOXES) {
+    ocrPrintf("level %d -> %d agglomerates %d fine boxes per coarse box (%d^3 -> %d^3), "
+              "more than the %d supported; choose target_boxes so the box grid "
+              "coarsens in smaller steps\n",
+              fine->level, coarse->level, num_boxes,
+              fine->boxes_in.i, coarse->boxes_in.i, MAX_FINE_BOXES);
+#if TG_ARCH
+    ABORT(0);
+#else
+    ocrAbort(0);
+#endif
+  }
+}
+
 // returns a list of box_guids for interpolation and also the size of the list (num_boxes)
 void get_fine_boxes(level_type *fine, level_type *coarse, int coarse_box_id, ocrGuid_t *fine_boxes_guids) {
 
@@ -262,6 +279,8 @@ void get_fine_boxes(level_type *fine, level_type *coarse, int coarse_box_id, ocr
   fdim_i = fine->boxes_in.i; fdim_j = fine->boxes_in.j; fdim_k = fine->boxes_in.k;
 
   int num_boxes =   (fdim_i/cdim_i) * (fdim_j/cdim_j) * (fdim_k/cdim_k);
+
+  check_fine_box_count(fine, coarse, num_boxes);
 
   get_tuple(coarse_box_id, cdim_i, cdim_j, cdim_k, &ci, &cj, &ck);
 
@@ -290,6 +309,8 @@ void get_fine_box_ids(level_type *fine, level_type *coarse, int coarse_box_id, i
   fdim_i = fine->boxes_in.i; fdim_j = fine->boxes_in.j; fdim_k = fine->boxes_in.k;
 
   int num_boxes =   (fdim_i/cdim_i) * (fdim_j/cdim_j) * (fdim_k/cdim_k);
+
+  check_fine_box_count(fine, coarse, num_boxes);
 
   get_tuple(coarse_box_id, cdim_i, cdim_j, cdim_k, &ci, &cj, &ck);
 

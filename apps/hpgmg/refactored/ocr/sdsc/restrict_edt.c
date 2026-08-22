@@ -10,7 +10,7 @@ ocrGuid_t restrict_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
   level_type* l = (level_type*) depv[0].ptr;
   level_type* c = (level_type*) depv[1].ptr;
   ocrGuid_t* boxes = (ocrGuid_t*)(((char*)depv[1].ptr)+c->boxes);
-  ocrGuid_t fine[125];
+  ocrGuid_t fine[MAX_FINE_BOXES];
   int count = l->num_boxes/c->num_boxes;
 
   ///// time restriction /////
