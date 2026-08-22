@@ -1,0 +1,148 @@
+#ifndef CG_DIST_H
+#define CG_DIST_H
+
+#include <ocr.h>
+
+#include "reduction.h"
+
+/* Upper bound on the number of policy domains this driver can wire an
+   all-to-all fragment exchange for; the private block carries fixed-size
+   per-peer arrays so that it stays a POD datablock. */
+#define CG_DIST_MAX_RANKS 64
+
+/* Inner conjugate-gradient iterations per power iteration (NPB CG fixes it). */
+#define CG_DIST_CGITMAX 25
+
+/* Number of row blocks a single matrix-flattening EDT acquires at once.  The
+   assembled matrix arrives as one datablock per row block, so the flattening
+   is chained over bounded batches instead of one EDT with a dependence per
+   row. */
+#define CG_DIST_FLATTEN_CHUNK 2048
+
+/* Every reduction in the solve carries the same element count so that one
+   reductionPrivate block, initialized once, serves them all: a launch may not
+   change ndata without re-running the library's setup phase. */
+#define CG_DIST_REDUCE_NDATA 3
+
+/* A rank's row band is multiplied by a fan-out of tasks over disjoint row
+   slices, so a rank uses its whole worker pool instead of the single worker
+   its chain link would otherwise occupy.  The target slice is small enough
+   that a wide node still gets several tasks per worker; the cap keeps the
+   join's dependence count bounded on a narrow rank count, where a band is
+   the whole problem. */
+#define CG_DIST_ROWS_PER_TASK 16
+#define CG_DIST_MAX_CHUNKS 256
+
+/* CSR image of a contiguous run of rows.  Layout after the header, in order:
+     double values[capacity]; u64 rowstr[nrow+1]; u32 colidx[capacity];
+   values leads so that the header's size keeps it 8-byte aligned.  rowstr is
+   relative to this image's own arrays; column indices stay global, because a
+   row band still multiplies the whole vector.  capacity == nnz for an exactly
+   sized image and exceeds it only while one is being filled. */
+typedef struct {
+    u64 nrow;
+    u64 nnz;
+    u64 capacity;
+} cg_csr_t;
+
+static inline double* cg_csr_values(cg_csr_t* c)
+{
+    return (double*)((char*)c + sizeof(cg_csr_t));
+}
+
+static inline u64* cg_csr_rowstr(cg_csr_t* c)
+{
+    return (u64*)(cg_csr_values(c) + c->capacity);
+}
+
+static inline u32* cg_csr_colidx(cg_csr_t* c)
+{
+    return (u32*)(cg_csr_rowstr(c) + c->nrow + 1);
+}
+
+static inline u64 cg_csr_bytes(u64 nrow, u64 capacity)
+{
+    return sizeof(cg_csr_t) + capacity*sizeof(double)
+         + (nrow+1)*sizeof(u64) + capacity*sizeof(u32);
+}
+
+/* Read-only after initialization; carried to every rank's chain head. */
+typedef struct {
+    u64 nrank;
+    u64 na;
+    u64 blk;
+    u64 niter;
+    u64 capacity;
+    double shift;
+    double zvv;
+    u8 timing_on;
+    ocrGuid_t classdb;
+    ocrGuid_t timer;
+    ocrGuid_t reduceRange;
+    ocrGuid_t channelRange;
+} cg_dist_shared_t;
+
+/* Per-rank chain state.  Lives on the rank that created it and is passed RW
+   through every EDT of that rank's chain, so it never leaves its home. */
+typedef struct {
+    u64 nrank;
+    u64 myrank;
+    u64 na;
+    u64 lo;
+    u64 hi;
+    u64 nloc;
+    u64 niter;
+    u64 outer;       /* 0 = untimed warm-up pass, 1..niter = measured passes */
+    u64 inner;       /* inner CG iteration within the current pass */
+    u64 residual;    /* set while the chain broadcasts z for the residual spmv */
+    double shift;
+    double zvv;
+    double rho;
+    double rnorm;
+    double zeta;
+    u8 timing_on;
+    /* This rank's row band, cut into one datablock per row slice and created
+       by the tasks that will read it: a single band datablock is first
+       touched by one worker, so on a wide node every worker of the rank then
+       reads it through that one memory controller. */
+    ocrGuid_t slice[CG_DIST_MAX_CHUNKS];
+    ocrGuid_t vec;
+    ocrGuid_t redPriv;
+    ocrGuid_t timer;    /* NULL_GUID except on the rank that owns the timers */
+    ocrGuid_t classdb;  /* NULL_GUID except on the rank that reports results */
+    ocrGuid_t returnEVT;
+    ocrGuid_t sendEVT[CG_DIST_MAX_RANKS];
+    ocrGuid_t recvEVT[CG_DIST_MAX_RANKS];
+    u64 rowsplit[CG_DIST_MAX_RANKS + 1];
+    u64 nchunk;      /* row-slice tasks this rank's matrix-vector product uses */
+    ocrGuid_t bcastTML;
+    ocrGuid_t spmvTML;
+    ocrGuid_t chunkTML;
+    ocrGuid_t joinTML;
+    ocrGuid_t alphaTML;
+    ocrGuid_t betaTML;
+    ocrGuid_t outerTML;
+    ocrGuid_t finalTML;
+    ocrHint_t myHNT;
+} cg_dist_private_t;
+
+/* Vector fragments and the assembly scratch share one per-rank datablock:
+   [ x | z | r | p | q ] each nloc long, followed by an na-long scratch that
+   the spmv fills from the incoming fragments. */
+static inline double* cg_vec_x(double* v, u64 nloc)    { (void)nloc; return v; }
+static inline double* cg_vec_z(double* v, u64 nloc)    { return v + nloc; }
+static inline double* cg_vec_r(double* v, u64 nloc)    { return v + 2*nloc; }
+static inline double* cg_vec_p(double* v, u64 nloc)    { return v + 3*nloc; }
+static inline double* cg_vec_q(double* v, u64 nloc)    { return v + 4*nloc; }
+static inline double* cg_vec_full(double* v, u64 nloc) { return v + 5*nloc; }
+
+/* Chain slots shared by every EDT of a rank's chain. */
+enum {
+    CG_SL_PRIV = 0,
+    CG_SL_VEC  = 1,
+    CG_SL_TIMER = 2,
+    CG_SL_RED  = 3,
+    CG_SL_TAIL = 4      /* spmv: matrix; alpha/beta/outer/final: reduction result */
+};
+
+#endif
