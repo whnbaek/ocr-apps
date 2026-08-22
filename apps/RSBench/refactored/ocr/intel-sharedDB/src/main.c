@@ -104,7 +104,8 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
 
-    // Fixed seed: the slow-Faddeeva counters serve as a correctness checksum.
+    // Fixed seed: the generated resonance data, and therefore the lookup
+    // workload's composition, is reproducible from run to run.
     srand(42);
 
     Inputs in = PTR_rankH->globalParamH.in;
@@ -666,10 +667,6 @@ ocrGuid_t summaryEdt( EDT_ARGS )
 
         // Print / Save Results and Exit
         print_results( *PTR_in, mype, *runtime, nprocs, *g_abrarov, *g_alls);
-
-        // The counters are a pure function of the fixed seeds: a deterministic
-        // correctness checksum.
-        ocrPrintf("RS_CHECKSUM: %"PRIu64" %"PRIu64"\n", *g_abrarov, *g_alls);
     }
 
     //Destroy DBK, events, etc.

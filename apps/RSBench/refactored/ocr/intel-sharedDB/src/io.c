@@ -157,8 +157,8 @@ Inputs read_CLI( int argc, char * argv[] )
             else
                 print_CLI_error();
         }
-        // Avg number of poles per nuclide (-p)
-        else if( strcmp(arg, "-p") == 0 )
+        // Avg number of poles per nuclide (-a)
+        else if( strcmp(arg, "-a") == 0 )
         {
             if( ++i < argc )
                 input.avg_n_poles = atoi(argv[i]);
@@ -173,6 +173,10 @@ Inputs read_CLI( int argc, char * argv[] )
 
     // Validate nthreads
     if( input.nthreads < 1 )
+        print_CLI_error();
+
+    // Validate nprocs
+    if( input.nprocs < 1 )
         print_CLI_error();
 
     // Validate n_isotopes
@@ -203,12 +207,13 @@ void print_CLI_error(void)
     ocrPrintf("Usage: ./multibench <options>\n");
     ocrPrintf("Options include:\n");
     ocrPrintf("  -t <threads>     Number of OpenMP threads to run\n");
+    ocrPrintf("  -p <nprocs>      Number of SPMD ranks to fork\n");
     ocrPrintf("  -s <size>        Size of H-M Benchmark to run (small, large)\n");
     ocrPrintf("  -l <lookups>     Number of Cross-section (XS) lookups\n");
-    ocrPrintf("  -p <poles>       Average Number of Poles per Nuclide\n");
+    ocrPrintf("  -a <poles>       Average Number of Poles per Nuclide\n");
     ocrPrintf("  -w <poles>       Average Number of Windows per Nuclide\n");
     ocrPrintf("  -d               Disables Temperature Dependence (Doppler Broadening)\n");
-    ocrPrintf("Default is equivalent to: -s large -l 10000000 -p 1000 -w 100\n");
+    ocrPrintf("Default is equivalent to: -s large -l 10000000 -a 1000 -w 100\n");
     ocrPrintf("See readme for full description of default run values\n");
     exit(4);
 }
