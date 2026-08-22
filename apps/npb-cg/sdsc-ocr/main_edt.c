@@ -10,6 +10,7 @@ ocrGuid_t head_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t loop_top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t loop_bottom_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t tail_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
@@ -180,7 +181,16 @@ ocrGuid_t loop_bottom_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         ocrDbRelease(depv[1].guid);
         ocrGuid_t tmp,edt;
         ocrEdtTemplateCreate(&tmp, tail_edt, 0, 3);
-        ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, NULL);
+        /* The output event fires only after the tail's dependence releases
+           have completed, so the shutdown EDT below never truncates release
+           work out of the measured run. */
+        ocrGuid_t tailOut;
+        ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, &tailOut);
+        ocrGuid_t sdt, sd;
+        ocrEdtTemplateCreate(&sdt, shutdown_edt, 0, 1);
+        ocrEdtCreate(&sd, sdt, 0, NULL, 1, NULL, 0, NULL_HINT, NULL);
+        ocrAddDependence(tailOut, sd, 0, DB_MODE_NULL);
+        ocrEdtTemplateDestroy(sdt);
         ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
         ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
         ocrAddDependence(depv[5].guid, edt, 2, DB_MODE_CONST);
@@ -257,6 +267,14 @@ ocrGuid_t tail_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrDbDestroy(depv[2].guid);
 
     ocrPrintf("DONE... going for shutdown\n");
+    /* Shutdown is NOT called here: this EDT still owes the release of its
+       dependences; a dedicated shutdown EDT wired to its output event runs
+       once those releases have completed. */
+    return NULL_GUID;
+}
+
+ocrGuid_t shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
     ocrShutdown();
     return NULL_GUID;
 }
