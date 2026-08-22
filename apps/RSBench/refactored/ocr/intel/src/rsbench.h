@@ -12,6 +12,46 @@
 
 #define PI 3.14159265359
 
+/* Placement-optimization layer.  Two placement facts drive it, and the
+ * helpers live here because the datablocks they hint are created across
+ * several translation units.  Each lookup is a three-task chain whose links
+ * round-robin independently as-born, so a chain's intermediate results
+ * cross ranks twice for nothing: the first link keeps the round-robin (that
+ * is the load balance across lookups), the two links it spawns pin to the
+ * rank it landed on.  And every dataset object is created inside one init
+ * task and therefore homed on a single rank, which then serves the whole
+ * machine's reads: the per-nuclide pole/window/K0RS blocks spread
+ * round-robin by nuclide (one nuclide's three blocks co-located), the
+ * material tables spread by material, and the handle singletons every
+ * lookup acquires each land on a different rank — one datablock's serving
+ * cannot be split, but the set's aggregate load can. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#include <extensions/ocr-affinity.h>
+static inline ocrHint_t * mcChainEdtHint(ocrHint_t *h) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetCurrent(&aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+static inline ocrHint_t * mcSpreadDbHint(ocrHint_t *h, u64 i) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, i % pdCount, &aff);
+    ocrHintInit(h, OCR_HINT_DB_T);
+    ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+#else
+#define mcChainEdtHint(h) NULL_HINT
+#define mcSpreadDbHint(h,i) NULL_HINT
+#endif
+
 // typedefs
 typedef enum __hm{SMALL, LARGE, XL, XXL} HM_size;
 

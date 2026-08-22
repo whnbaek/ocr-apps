@@ -19,6 +19,10 @@
 #include "rsbench.h"
 #include "timers.h"
 
+/* The placement-optimization layer (mcChainEdtHint / mcSpreadDbHint) lives
+ * in rsbench.h: the datablocks it hints are created across several
+ * translation units. */
+
 #ifndef MIN
 #define MIN(x,y) ((x)<(y)?(x):(y))
 #endif
@@ -226,8 +230,9 @@ ocrGuid_t FNC_rankInitSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
     for( i = 0; i < nprocs; i++ )
     {
         Inputs* PTR_InputsH;
+        ocrHint_t spreadHNT;
         ocrDbCreate( &(PTR_InputsHs[i]), (void **) &PTR_InputsH, sizeof(Inputs),
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 8), NO_ALLOC );
 
         rankH_t *PTR_rankH;
         ocrDbCreate( &(PTR_rankHs[i]), (void **) &PTR_rankH, sizeof(rankH_t),
@@ -286,8 +291,9 @@ ocrGuid_t FNC_rankInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                  DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
     rankTemplateH_t *PTR_rankTemplateH;
+    ocrHint_t spreadHNT;
     ocrDbCreate( &(PTR_rankH->DBK_templatesH), (void **) &PTR_rankTemplateH, sizeof(rankTemplateH_t),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 9), NO_ALLOC );
 
     MyOcrTaskStruct_t TS_init_rankH; _paramc = 1; _depc = 5;
 
@@ -331,26 +337,27 @@ ocrGuid_t FNC_init_rankH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     int *PTR_nPoles_nuclide, *PTR_nWindows_nuclide;
     ocrGuid_t *PTR_pole_DBguids_nuclide, *PTR_window_DBguids_nuclide, *PTR_pseudoK0RS_DBguids_nuclide;
+    ocrHint_t spreadHNT;
     ocrDbCreate( &(PTR_dataH->DBK_nPoles_nuclide), (void **) &PTR_nPoles_nuclide, sizeof(int)*(n_nuclides),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 0), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_nWindows_nuclide), (void **) &PTR_nWindows_nuclide, sizeof(int)*(n_nuclides),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 1), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_pole_DBguids_nuclide), (void **) &PTR_pole_DBguids_nuclide, sizeof(ocrGuid_t)*(n_nuclides),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 2), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_window_DBguids_nuclide), (void **) &PTR_window_DBguids_nuclide, sizeof(ocrGuid_t)*(n_nuclides),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 3), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_pseudoK0RS_DBguids_nuclide), (void **) &PTR_pseudoK0RS_DBguids_nuclide, sizeof(ocrGuid_t)*(n_nuclides),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 4), NO_ALLOC );
 
     int *PTR_numNucs_mat;
     ocrDbCreate( &(PTR_dataH->DBK_numNucs_mat), (void **) &PTR_numNucs_mat, sizeof(int)*(n_mats),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 5), NO_ALLOC );
     ocrGuid_t *PTR_nuclideIDs_DBguids_mat;
     ocrDbCreate( &(PTR_dataH->DBK_nuclideIDs_DBguids_mat), (void **) &PTR_nuclideIDs_DBguids_mat, sizeof(ocrGuid_t)*(n_mats),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 6), NO_ALLOC );
     ocrGuid_t *PTR_nuclideConcs_DBguids_mat;
     ocrDbCreate( &(PTR_dataH->DBK_nuclideConcs_DBguids_mat), (void **) &PTR_nuclideConcs_DBguids_mat, sizeof(ocrGuid_t)*(n_mats),
-                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 7), NO_ALLOC );
 
     _paramc = 2; _depc = 10;
     ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_rankLookup), FNC_rankLookup, _paramc, _depc );
@@ -743,9 +750,10 @@ ocrGuid_t FNC_rankLookup(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     compute_paramv[1] = (u64) mat;
     compute_paramv[2] = (u64) PTR_numNucs_mat[mat];
 
+    ocrHint_t chainHNT;
     ocrEdtCreate( &TS_macroxs.EDT, PTR_rankTemplateH->TML_FNC_macroxs,
                   EDT_PARAM_DEF, compute_paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, NULL_HINT, NULL );
+                  EDT_PROP_NONE, mcChainEdtHint(&chainHNT), NULL );
 
     _idep = 0;
     ocrAddDependence( DBK_InputsH, TS_macroxs.EDT, _idep++, DB_MODE_CONST );
@@ -802,9 +810,10 @@ ocrGuid_t FNC_macroxs(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     //TS_microxsAggregator.FNC = FNC_microxsAggregator;
     //ocrEdtTemplateCreate( &TS_microxsAggregator.TML, TS_microxsAggregator.FNC, _paramc, _depc );
 
+    ocrHint_t chainHNT;
     ocrEdtCreate( &TS_microxsAggregator.EDT, PTR_rankTemplateH->TML_FNC_microxsAggregator,
                   EDT_PARAM_DEF, paramv, _depc, NULL,
-                  EDT_PROP_NONE, NULL_HINT, NULL );
+                  EDT_PROP_NONE, mcChainEdtHint(&chainHNT), NULL );
 
     _idep = 0;
     ocrAddDependence( DBK_InputsH, TS_microxsAggregator.EDT, _idep++, DB_MODE_CONST );

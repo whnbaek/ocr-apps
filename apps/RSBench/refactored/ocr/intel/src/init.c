@@ -59,9 +59,10 @@ void generate_poles( Inputs input, int * n_poles, ocrGuid_t* PTR_pole_DBguids_nu
     for( int i = 0; i < input.n_nuclides; i++ )
     {
         Pole* R_i;
+        ocrHint_t spreadHNT;
         //ocrPrintf( " i %d poles %d\n", i, n_poles[i] );
         ocrDbCreate( &(PTR_pole_DBguids_nuclide[i]), (void **) &R_i, sizeof(Pole)*(n_poles[i]),
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64)(10 + i)), NO_ALLOC );
 
         for( int j = 0; j < n_poles[i]; j++ )
         {
@@ -89,9 +90,10 @@ void generate_window_params( Inputs input, int * n_windows, int * n_poles, ocrGu
     for( int i = 0; i < input.n_nuclides; i++ )
     {
         Window* R_i;
+        ocrHint_t spreadHNT;
         //ocrPrintf( " i %d windows %d\n", i, n_windows[i] );
         ocrDbCreate( &(PTR_window_DBguids_nuclide[i]), (void **) &R_i, sizeof(Window)*(n_windows[i]),
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64)(10 + i)), NO_ALLOC );
 
         int space = n_poles[i] / n_windows[i];
         int remainder = n_poles[i] - space * n_windows[i];
@@ -123,8 +125,9 @@ void generate_pseudo_K0RS( Inputs input, ocrGuid_t* PTR_pseudoK0RS_DBguids_nucli
     for( int i = 0; i < input.n_nuclides; i++ )
     {
         double* R_i;
+        ocrHint_t spreadHNT;
         ocrDbCreate( &(PTR_pseudoK0RS_DBguids_nuclide[i]), (void **) &R_i, sizeof(double)*(input.numL),
-                     DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64)(10 + i)), NO_ALLOC );
         for( int j = 0; j < input.numL; j++ )
             R_i[j] = (double) rand() / RAND_MAX;
     }
