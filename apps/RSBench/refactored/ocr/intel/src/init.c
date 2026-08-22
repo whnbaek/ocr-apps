@@ -55,6 +55,12 @@ void generate_poles( Inputs input, int * n_poles, ocrGuid_t* PTR_pole_DBguids_nu
     // require the full eval).
     double f = 152.5;
 
+    // The kernel discards its lookup results, so the deterministic pole
+    // data is the only observable answer; summing its IEEE-754 bit
+    // patterns is bit-exact.  This does NOT verify the lookup arithmetic
+    // itself.
+    unsigned long long pole_cksum = 0;
+
     // fill with data
     for( int i = 0; i < input.n_nuclides; i++ )
     {
@@ -72,8 +78,22 @@ void generate_poles( Inputs input, int * n_poles, ocrGuid_t* PTR_pole_DBguids_nu
             R_i[j].MP_RA = f*(double) rand() / RAND_MAX + (double) rand() / RAND_MAX * I;
             R_i[j].MP_RF = f*(double) rand() / RAND_MAX + (double) rand() / RAND_MAX * I;
             R_i[j].l_value = rand() % input.numL;
+
+            double parts[8] = { creal(R_i[j].MP_EA), cimag(R_i[j].MP_EA),
+                                creal(R_i[j].MP_RT), cimag(R_i[j].MP_RT),
+                                creal(R_i[j].MP_RA), cimag(R_i[j].MP_RA),
+                                creal(R_i[j].MP_RF), cimag(R_i[j].MP_RF) };
+            for( int k = 0; k < 8; k++ )
+            {
+                unsigned long long bits;
+                memcpy( &bits, &parts[k], sizeof(bits) );
+                pole_cksum += bits;
+            }
+            pole_cksum += (unsigned long long) R_i[j].l_value;
         }
     }
+
+    ocrPrintf("RSBench pole checksum: %llu\n", pole_cksum);
 
     /* Debug
     for( int i = 0; i < input.n_nuclides; i++ )
