@@ -252,9 +252,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
 
     real_t dt = 0.5*PTR_cmd->dt;
 
+    OEVT_COUNTED_PRE(advanceVelocityOEVT);
     ocrEdtCreate( &advanceVelocityEDT, PTR_rankTemplateH->advanceVelocityTML,
                   EDT_PARAM_DEF, (u64*) &dt, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &advanceVelocityOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &advanceVelocityOEVT );
 
     createEventHelper( &advanceVelocityOEVTS, 1);
     ocrAddDependence( advanceVelocityOEVT, advanceVelocityOEVTS, 0, DB_MODE_NULL );
@@ -270,9 +271,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
 
     dt = 1.0*PTR_cmd->dt;
 
+    OEVT_COUNTED_PRE(advancePositionOEVT);
     ocrEdtCreate( &advancePositionEDT, PTR_rankTemplateH->advancePositionTML,
                   EDT_PARAM_DEF, (u64*) &dt, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &advancePositionOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &advancePositionOEVT );
 
     createEventHelper( &advancePositionOEVTS, 1);
     ocrAddDependence( advancePositionOEVT, advancePositionOEVTS, 0, DB_MODE_NULL );
@@ -291,13 +293,15 @@ ocrGuid_t timestepEdt( EDT_ARGS )
 #ifdef ENABLE_SPAWNING_HINT
     ocrHint_t redistributeAtomsHNT = myEdtAffinityHNT;
     ocrSetHintValue(&redistributeAtomsHNT, OCR_HINT_EDT_SPAWNING, TimestepEdt_PRIORITY);
+    OEVT_COUNTED_PRE(redistributeAtomsOEVT);
     ocrEdtCreate(&redistributeAtomsEDT, PTR_rankTemplateH->redistributeAtomsTML, //redistributeAtomsEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &redistributeAtomsHNT, &redistributeAtomsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &redistributeAtomsHNT, &redistributeAtomsOEVT );
 #else
+    OEVT_COUNTED_PRE(redistributeAtomsOEVT);
     ocrEdtCreate(&redistributeAtomsEDT, PTR_rankTemplateH->redistributeAtomsTML, //redistributeAtomsEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &redistributeAtomsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &redistributeAtomsOEVT );
 #endif
 
     createEventHelper( &redistributeAtomsOEVTS, 1);
@@ -311,9 +315,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
     //compute force
     ocrGuid_t computeForceTML, computeForceEDT, computeForceOEVT, computeForceOEVTS;
 
+    OEVT_COUNTED_PRE(computeForceOEVT);
     ocrEdtCreate( &computeForceEDT, PTR_rankTemplateH->computeForceTML, //computeForceEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &computeForceOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &computeForceOEVT );
 
     createEventHelper( &computeForceOEVTS, 1);
     ocrAddDependence( computeForceOEVT, computeForceOEVTS, 0, DB_MODE_NULL );
@@ -328,9 +333,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
 
     dt = 0.5*PTR_cmd->dt;
 
+    OEVT_COUNTED_PRE(advanceVelocityOEVT1);
     ocrEdtCreate( &advanceVelocityEDT, PTR_rankTemplateH->advanceVelocityTML,
                   EDT_PARAM_DEF, (u64*) &dt, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &advanceVelocityOEVT1 );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &advanceVelocityOEVT1 );
 
     createEventHelper( &advanceVelocityOEVTS1, 1);
     ocrAddDependence( advanceVelocityOEVT1, advanceVelocityOEVTS1, 0, DB_MODE_NULL );
@@ -352,9 +358,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
         ////Compute Kinetic energy of the system
         ocrGuid_t kineticEnergyTML, kineticEnergyEDT, kineticEnergyOEVT, kineticEnergyOEVTS;
 
+        OEVT_COUNTED_PRE(kineticEnergyOEVT);
         ocrEdtCreate( &kineticEnergyEDT, PTR_rankTemplateH->kineticEnergyTML, //kineticEnergyEdt
                       EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_NONE, &myEdtAffinityHNT, &kineticEnergyOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &kineticEnergyOEVT );
 
         createEventHelper( &kineticEnergyOEVTS, 1);
         ocrAddDependence( kineticEnergyOEVT, kineticEnergyOEVTS, 0, DB_MODE_NULL );
@@ -371,9 +378,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
         ////Print things
         ocrGuid_t printThingsTML, printThingsEDT, printThingsOEVT, printThingsOEVTS;
 
+        OEVT_COUNTED_PRE(printThingsOEVT);
         ocrEdtCreate( &printThingsEDT, PTR_rankTemplateH->printThingsTML, //printThingsEdt
                       EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &printThingsOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &printThingsOEVT );
 
         createEventHelper( &printThingsOEVTS, 1);
         ocrAddDependence( printThingsOEVT, printThingsOEVTS, 0, DB_MODE_NULL );
@@ -397,9 +405,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
 
             ocrEdtTemplateCreate( &printPerformanceResultsTML, printPerformanceResultsEdt, 1, 4 );
 
+            OEVT_COUNTED_PRE(printPerformanceResultsOEVT);
             ocrEdtCreate( &printPerformanceResultsEDT, printPerformanceResultsTML, //printPerformanceResultsEdt
                           EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                          EDT_PROP_FINISH, &myEdtAffinityHNT, &printPerformanceResultsOEVT );
+                          OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &printPerformanceResultsOEVT );
             ocrEdtTemplateDestroy( printPerformanceResultsTML );
 
             ocrAddDependence( printPerformanceResultsOEVT, printPerformanceResultsOEVTS, 0, DB_MODE_NULL );
@@ -417,9 +426,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
 
             ocrEdtTemplateCreate( &finalizeTML, finalizeEdt, 1, 5 );
 
+            OEVT_COUNTED_PRE(finalizeOEVT);
             ocrEdtCreate( &finalizeEDT, finalizeTML,
                           EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                          EDT_PROP_FINISH, &myEdtAffinityHNT, &finalizeOEVT );
+                          OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &finalizeOEVT );
             ocrEdtTemplateDestroy( finalizeTML );
 
             createEventHelper( &finalizeOEVTS, 1);
@@ -619,13 +629,15 @@ _OCR_TASK_FNC_( timestepLoopEdt )
     ocrHint_t timestepHNT = PTR_rankH->myEdtAffinityHNT;
     ocrSetHintValue(&timestepHNT, OCR_HINT_EDT_SPAWNING, TimestepEdt_PRIORITY);
 
+    OEVT_COUNTED_PRE(timestepOEVT);
     ocrEdtCreate( &timestepEDT, PTR_rankTemplateH->timestepTML,
                   EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &timestepHNT, &timestepOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &timestepHNT, &timestepOEVT );
 #else
+    OEVT_COUNTED_PRE(timestepOEVT);
     ocrEdtCreate( &timestepEDT, PTR_rankTemplateH->timestepTML,
                   EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &timestepOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &timestepOEVT );
 #endif
     createEventHelper( &timestepOEVTS, 1);
     ocrAddDependence( timestepOEVT, timestepOEVTS, 0, DB_MODE_NULL );
@@ -643,18 +655,18 @@ _OCR_TASK_FNC_( timestepLoopEdt )
     if( itimestep < nSteps )
     {
         //start next timestep
-        ocrGuid_t timestepLoopTML, timestepLoopEDT, timestepLoopOEVT, timestepLoopOEVTS;
+        ocrGuid_t timestepLoopTML, timestepLoopEDT;
 
 #ifdef ENABLE_SPAWNING_HINT
         ocrHint_t timestepLoopHNT = PTR_rankH->myEdtAffinityHNT;
         ocrSetHintValue(&timestepLoopHNT, OCR_HINT_EDT_SPAWNING, TimestepLoopEdt_PRIORITY);
         ocrEdtCreate( &timestepLoopEDT, PTR_rankTemplateH->timestepLoopTML,
                       EDT_PARAM_DEF, (u64*)&itimestep, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_NONE, &timestepLoopHNT, &timestepLoopOEVT );
+                      EDT_PROP_NONE, &timestepLoopHNT, NULL );
 #else
         ocrEdtCreate( &timestepLoopEDT, PTR_rankTemplateH->timestepLoopTML,
                       EDT_PARAM_DEF, (u64*)&itimestep, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_NONE, &PTR_rankH->myEdtAffinityHNT, &timestepLoopOEVT );
+                      EDT_PROP_NONE, &PTR_rankH->myEdtAffinityHNT, NULL );
 #endif
 
         _idep = 0;
@@ -709,9 +721,10 @@ ocrGuid_t computeForceEdt( EDT_ARGS )
 
     ocrGuid_t forceTML, forceEDT, forceOEVT, forceOEVTS;
 
+    OEVT_COUNTED_PRE(forceOEVT);
     ocrEdtCreate( &forceEDT, sim->pot->forceTML,
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &forceOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &forceOEVT );
 
     createEventHelper( &forceOEVTS, 1);
     ocrAddDependence( forceOEVT, forceOEVTS, 0, DB_MODE_NULL );
@@ -885,9 +898,10 @@ ocrGuid_t redistributeAtomsEdt( EDT_ARGS )
 
     ocrGuid_t updateLinkCellsTML, updateLinkCellsEDT, updateLinkCellsOEVT, updateLinkCellsOEVTS;
 
+    OEVT_COUNTED_PRE(updateLinkCellsOEVT);
     ocrEdtCreate( &updateLinkCellsEDT, PTR_rankTemplateH->updateLinkCellsTML, //updateLinkCellsEdt
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &updateLinkCellsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &updateLinkCellsOEVT );
 
     createEventHelper( &updateLinkCellsOEVTS, 1);
     ocrAddDependence( updateLinkCellsOEVT, updateLinkCellsOEVTS, 0, DB_MODE_NULL );
@@ -910,13 +924,15 @@ ocrGuid_t redistributeAtomsEdt( EDT_ARGS )
 #ifdef ENABLE_SPAWNING_HINT
     ocrHint_t haloExchangeHNT = sim->PTR_rankH->myEdtAffinityHNT;
     ocrSetHintValue(&haloExchangeHNT, OCR_HINT_EDT_SPAWNING, HaloExchangeEdt_PRIORITY);
+    OEVT_COUNTED_PRE(haloExchangeOEVT);
     ocrEdtCreate( &haloExchangeEDT, PTR_rankTemplateH->haloExchangeTML, //haloExchangeEdt
                   EDT_PARAM_DEF, paramv_haloExchange, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &haloExchangeHNT, &haloExchangeOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &haloExchangeHNT, &haloExchangeOEVT );
 #else
+    OEVT_COUNTED_PRE(haloExchangeOEVT);
     ocrEdtCreate( &haloExchangeEDT, PTR_rankTemplateH->haloExchangeTML, //haloExchangeEdt
                   EDT_PARAM_DEF, paramv_haloExchange, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &haloExchangeOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &haloExchangeOEVT );
 #endif
 
     createEventHelper( &haloExchangeOEVTS, 1);
@@ -928,11 +944,11 @@ ocrGuid_t redistributeAtomsEdt( EDT_ARGS )
     ocrAddDependence( DBK_parms, haloExchangeEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( updateLinkCellsOEVTS, haloExchangeEDT, _idep++, DB_MODE_RW );
 
-    ocrGuid_t sortAtomsInCellsTML, sortAtomsInCellsEDT, sortAtomsInCellsOEVT, sortAtomsInCellsOEVTS;
+    ocrGuid_t sortAtomsInCellsTML, sortAtomsInCellsEDT;
 
     ocrEdtCreate( &sortAtomsInCellsEDT, PTR_rankTemplateH->sortAtomsInCellsTML, //sortAtomsInCellsEdt
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &sortAtomsInCellsOEVT );
+                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
 
 
     _idep = 0;

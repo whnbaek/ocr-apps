@@ -1088,9 +1088,10 @@ ocrGuid_t eamForce_edt( EDT_ARGS )
 
     ocrGuid_t eamForce1TML, eamForce1EDT, eamForce1OEVT, eamForce1OEVTS;
 
+    OEVT_COUNTED_PRE(eamForce1OEVT);
     ocrEdtCreate( &eamForce1EDT, force1TML, //eamForce1_edt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &eamForce1OEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &eamForce1OEVT );
 
     createEventHelper( &eamForce1OEVTS, 1);
     ocrAddDependence( eamForce1OEVT, eamForce1OEVTS, 0, DB_MODE_NULL );
@@ -1117,13 +1118,15 @@ ocrGuid_t eamForce_edt( EDT_ARGS )
     u64 paramv_haloExchange[2] = {iAxis, itimestep};
 
 #ifdef ENABLE_SPAWNING_HINT
+    OEVT_COUNTED_PRE(haloExchangeOEVT);
     ocrEdtCreate( &haloExchangeEDT, PTR_rankTemplateH->forceHaloExchangeTML, //forceHaloExchangeEdt
                   EDT_PARAM_DEF, paramv_haloExchange, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinitySpawnHNT, &haloExchangeOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinitySpawnHNT, &haloExchangeOEVT );
 #else
+    OEVT_COUNTED_PRE(haloExchangeOEVT);
     ocrEdtCreate( &haloExchangeEDT, PTR_rankTemplateH->forceHaloExchangeTML, //forceHaloExchangeEdt
                   EDT_PARAM_DEF, paramv_haloExchange, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &haloExchangeOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &haloExchangeOEVT );
 #endif
 
     createEventHelper( &haloExchangeOEVTS, 1);
@@ -1135,11 +1138,11 @@ ocrGuid_t eamForce_edt( EDT_ARGS )
     ocrAddDependence( DBK_pot, haloExchangeEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( eamForce1OEVTS, haloExchangeEDT, _idep++, DB_MODE_NULL );
 
-    ocrGuid_t eamForce2TML, eamForce2EDT, eamForce2OEVT, eamForce2OEVTS;
+    ocrGuid_t eamForce2TML, eamForce2EDT;
 
     ocrEdtCreate( &eamForce2EDT, force2TML, //eamForce2_edt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &eamForce2OEVT );
+                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
 
     _idep = 0;
     ocrAddDependence( DBK_rankH, eamForce2EDT, _idep++, DB_MODE_RO );

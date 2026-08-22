@@ -385,13 +385,13 @@ ocrGuid_t printSimulationDataEdt( EDT_ARGS )
 
     reductionLaunch(rpmaxOccupancyPTR, rpmaxOccupancyDBK, maxOccPTR);
 
-    ocrGuid_t printSimulationData1TML, printSimulationData1EDT, printSimulationData1OEVT, printSimulationData1OEVTS;
+    ocrGuid_t printSimulationData1TML, printSimulationData1EDT;
 
     ocrEdtTemplateCreate( &printSimulationData1TML, printSimulationData1Edt, 0, 4 );
 
     ocrEdtCreate( &printSimulationData1EDT, printSimulationData1TML,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &printSimulationData1OEVT );
+                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
 
     ocrEdtTemplateDestroy( printSimulationData1TML );
 
@@ -497,13 +497,13 @@ _OCR_TASK_FNC_( FNC_initSimulation )
     ocrDbRelease(rpSpmdJoinDBK);
 
     //Vcm reduction tree has been set up.
-    ocrGuid_t adjustVcmAndComputeKeTML, adjustVcmAndComputeKeEDT, adjustVcmAndComputeKeOEVT, adjustVcmAndComputeKeOEVTS;
+    ocrGuid_t adjustVcmAndComputeKeTML, adjustVcmAndComputeKeEDT;
 
     ocrEdtTemplateCreate( &adjustVcmAndComputeKeTML, adjustVcmAndComputeKeEdt, 0, 7 );
 
     ocrEdtCreate( &adjustVcmAndComputeKeEDT, adjustVcmAndComputeKeTML,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &adjustVcmAndComputeKeOEVT );
+                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
 
     ocrEdtTemplateDestroy( adjustVcmAndComputeKeTML );
 
@@ -524,9 +524,10 @@ _OCR_TASK_FNC_( FNC_initSimulation )
 
     ocrEdtTemplateCreate( &adjustTemperatureTML, adjustTemperatureEdt, sizeof(adjustTemperatureEdtParamv_t)/sizeof(u64), 5 );
 
+    OEVT_COUNTED_PRE(adjustTemperatureOEVT);
     ocrEdtCreate( &adjustTemperatureEDT, adjustTemperatureTML, //adjustTemperatureEdt
                   EDT_PARAM_DEF, (u64*) &adjustTemperatureEdtParamv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &adjustTemperatureOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &adjustTemperatureOEVT );
 
     ocrEdtTemplateDestroy( adjustTemperatureTML );
 
@@ -548,9 +549,10 @@ _OCR_TASK_FNC_( FNC_initSimulation )
 
     ocrEdtTemplateCreate( &randomDisplacementsTML, randomDisplacementsEdt, sizeof(randomDisplacementsEdtParamv_t)/sizeof(u64), 6 );
 
+    OEVT_COUNTED_PRE(randomDisplacementsOEVT);
     ocrEdtCreate( &randomDisplacementsEDT, randomDisplacementsTML, //randomDisplacementsEdt
                   EDT_PARAM_DEF, (u64*) &randomDisplacementsEdtParamv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &randomDisplacementsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &randomDisplacementsOEVT );
     ocrEdtTemplateDestroy( randomDisplacementsTML );
 
     createEventHelper( &randomDisplacementsOEVTS, 1);
@@ -571,13 +573,15 @@ _OCR_TASK_FNC_( FNC_initSimulation )
 #ifdef ENABLE_SPAWNING_HINT
     ocrHint_t redistributeAtomsHNT = myEdtAffinityHNT;
     ocrSetHintValue(&redistributeAtomsHNT, OCR_HINT_EDT_SPAWNING, RedistributeAtomsEdt_PRIORITY);
+    OEVT_COUNTED_PRE(redistributeAtomsOEVT);
     ocrEdtCreate( &redistributeAtomsEDT, redistributeAtomsTML, //redistributeAtomsEdt
                   EDT_PARAM_DEF, &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &redistributeAtomsHNT, &redistributeAtomsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &redistributeAtomsHNT, &redistributeAtomsOEVT );
 #else
+    OEVT_COUNTED_PRE(redistributeAtomsOEVT);
     ocrEdtCreate( &redistributeAtomsEDT, redistributeAtomsTML, //redistributeAtomsEdt
                   EDT_PARAM_DEF, &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &redistributeAtomsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &redistributeAtomsOEVT );
 #endif
 
     createEventHelper( &redistributeAtomsOEVTS, 1);
@@ -593,13 +597,15 @@ _OCR_TASK_FNC_( FNC_initSimulation )
 
     //computeForceEdt
 #ifdef ENABLE_SPAWNING_HINT
+    OEVT_COUNTED_PRE(computeForceOEVT);
     ocrEdtCreate( &computeForceEDT, computeForceTML,
                   EDT_PARAM_DEF, &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinitySpawnHNT, &computeForceOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinitySpawnHNT, &computeForceOEVT );
 #else
+    OEVT_COUNTED_PRE(computeForceOEVT);
     ocrEdtCreate( &computeForceEDT, computeForceTML,
                   EDT_PARAM_DEF, &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &computeForceOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &computeForceOEVT );
 #endif
 
     createEventHelper( &computeForceOEVTS, 1);
@@ -615,9 +621,10 @@ _OCR_TASK_FNC_( FNC_initSimulation )
     ////Compute Kinetic energy of the system
     ocrGuid_t kineticEnergyEDT, kineticEnergyOEVT, kineticEnergyOEVTS;
 
+    OEVT_COUNTED_PRE(kineticEnergyOEVT);
     ocrEdtCreate( &kineticEnergyEDT, kineticEnergyTML,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &kineticEnergyOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &kineticEnergyOEVT );
 
     createEventHelper( &kineticEnergyOEVTS, 1);
     ocrAddDependence( kineticEnergyOEVT, kineticEnergyOEVTS, 0, DB_MODE_NULL );
@@ -639,13 +646,15 @@ _OCR_TASK_FNC_( FNC_initSimulation )
 #ifdef ENABLE_SPAWNING_HINT
     ocrHint_t printSimHNT = myEdtAffinityHNT;
     ocrSetHintValue(&printSimHNT, OCR_HINT_EDT_SPAWNING, PrintSimulationDataEdt_PRIORITY);
+    OEVT_COUNTED_PRE(printSimulationDataOEVT);
     ocrEdtCreate( &printSimulationDataEDT, printSimulationDataTML,
                   EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &printSimHNT, &printSimulationDataOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &printSimHNT, &printSimulationDataOEVT );
 #else
+    OEVT_COUNTED_PRE(printSimulationDataOEVT);
     ocrEdtCreate( &printSimulationDataEDT, printSimulationDataTML,
                   EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &printSimulationDataOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &printSimulationDataOEVT );
 #endif
 
     ocrEdtTemplateDestroy( printSimulationDataTML );
@@ -663,9 +672,10 @@ _OCR_TASK_FNC_( FNC_initSimulation )
     ////Print things
     ocrGuid_t printThingsEDT, printThingsOEVT, printThingsOEVTS;
 
+    OEVT_COUNTED_PRE(printThingsOEVT);
     ocrEdtCreate( &printThingsEDT, printThingsTML,
                   EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &printThingsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &printThingsOEVT );
 
     createEventHelper( &printThingsOEVTS, 1);
     ocrAddDependence( printThingsOEVT, printThingsOEVTS, 0, DB_MODE_NULL );
@@ -742,9 +752,10 @@ _OCR_TASK_FNC_( FNC_comdMain )
     TS_initSimulation.FNC = FNC_initSimulation;
     ocrEdtTemplateCreate( &TS_initSimulation.TML, TS_initSimulation.FNC, _paramc, _depc );
 
+    OEVT_COUNTED_PRE(TS_initSimulation.OET);
     ocrEdtCreate( &TS_initSimulation.EDT, TS_initSimulation.TML,
                   EDT_PARAM_DEF, &id, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &TS_initSimulation.OET );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &TS_initSimulation.OET );
 
     ocrEdtTemplateDestroy( TS_initSimulation.TML );
 

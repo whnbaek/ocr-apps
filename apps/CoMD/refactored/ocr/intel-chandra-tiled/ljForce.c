@@ -328,9 +328,10 @@ ocrGuid_t ljForce_edt( EDT_ARGS )
 
     ocrGuid_t forceTML, forceEDT, forceOEVT, forceOEVTS;
 
+    OEVT_COUNTED_PRE(forceOEVT);
     ocrEdtCreate( &forceEDT, sim->pot->force1TML, //ljForce1_edt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &forceOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &forceOEVT );
 
     createEventHelper( &forceOEVTS, 1);
     ocrAddDependence( forceOEVT, forceOEVTS, 0, DB_MODE_NULL );

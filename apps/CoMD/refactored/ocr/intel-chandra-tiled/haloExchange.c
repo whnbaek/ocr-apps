@@ -339,13 +339,15 @@ ocrGuid_t haloExchangeEdt(EDT_ARGS)
 #ifdef ENABLE_SPAWNING_HINT
     ocrHint_t myEdtAffinitySpawnHNT = PTR_rankH->myEdtAffinityHNT;
     ocrSetHintValue(&myEdtAffinitySpawnHNT, OCR_HINT_EDT_SPAWNING, 1);
+    OEVT_COUNTED_PRE(exchangeDataOEVT);
     ocrEdtCreate( &exchangeDataEDT, PTR_rankTemplateH->exchangeDataTML, //exchangeDataEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinitySpawnHNT, &exchangeDataOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinitySpawnHNT, &exchangeDataOEVT );
 #else
+    OEVT_COUNTED_PRE(exchangeDataOEVT);
     ocrEdtCreate( &exchangeDataEDT, PTR_rankTemplateH->exchangeDataTML, //exchangeDataEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &exchangeDataOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &exchangeDataOEVT );
 #endif
 
     createEventHelper( &exchangeDataOEVTS, 1);
@@ -457,13 +459,15 @@ ocrGuid_t exchangeDataEdt(EDT_ARGS)
     ocrGuid_t loadAtomsBufferTML, loadAtomsBufferEDT, loadAtomsBufferOEVT, loadAtomsBufferOEVTS;
 
 #ifdef ENABLE_SPAWNING_HINT
+    OEVT_COUNTED_PRE(loadAtomsBufferOEVT);
     ocrEdtCreate( &loadAtomsBufferEDT, PTR_rankTemplateH->loadAtomsBufferTML, //loadAtomsBufferEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinitySpawnHNT, &loadAtomsBufferOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinitySpawnHNT, &loadAtomsBufferOEVT );
 #else
+    OEVT_COUNTED_PRE(loadAtomsBufferOEVT);
     ocrEdtCreate( &loadAtomsBufferEDT, PTR_rankTemplateH->loadAtomsBufferTML, //loadAtomsBufferEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &loadAtomsBufferOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &loadAtomsBufferOEVT );
 #endif
 
     createEventHelper( &loadAtomsBufferOEVTS, 1);
@@ -544,13 +548,15 @@ ocrGuid_t forceHaloExchangeEdt(EDT_ARGS)
 #ifdef ENABLE_SPAWNING_HINT
     ocrHint_t myEdtAffinitySpawnHNT = PTR_rankH->myEdtAffinityHNT;
     ocrSetHintValue(&myEdtAffinitySpawnHNT, OCR_HINT_EDT_SPAWNING, 1);
+    OEVT_COUNTED_PRE(exchangeDataOEVT);
     ocrEdtCreate( &exchangeDataEDT, PTR_rankTemplateH->forceExchangeDataTML, //forceExchangeDataEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinitySpawnHNT, &exchangeDataOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinitySpawnHNT, &exchangeDataOEVT );
 #else
+    OEVT_COUNTED_PRE(exchangeDataOEVT);
     ocrEdtCreate( &exchangeDataEDT, PTR_rankTemplateH->forceExchangeDataTML, //forceExchangeDataEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &exchangeDataOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &exchangeDataOEVT );
 #endif
 
     createEventHelper( &exchangeDataOEVTS, 1);
@@ -648,13 +654,15 @@ ocrGuid_t forceExchangeDataEdt(EDT_ARGS)
     ocrGuid_t loadForceBufferTML, loadForceBufferEDT, loadForceBufferOEVT, loadForceBufferOEVTS;
 
 #ifdef ENABLE_SPAWNING_HINT
+    OEVT_COUNTED_PRE(loadForceBufferOEVT);
     ocrEdtCreate( &loadForceBufferEDT, PTR_rankTemplateH->loadForceBufferTML, //loadForceBufferEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinitySpawnHNT, &loadForceBufferOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinitySpawnHNT, &loadForceBufferOEVT );
 #else
+    OEVT_COUNTED_PRE(loadForceBufferOEVT);
     ocrEdtCreate( &loadForceBufferEDT, PTR_rankTemplateH->loadForceBufferTML, //loadForceBufferEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &loadForceBufferOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &loadForceBufferOEVT );
 #endif
 
     createEventHelper( &loadForceBufferOEVTS, 1);
