@@ -48,6 +48,21 @@ typedef struct
 } PRM_init3dEdt_t;
 
 void createEventHelper(ocrGuid_t * evtGuid, u32 nbDeps);
+
+/* An EDT's output event, when the runtime mints it, is a plain single-fire
+ * event: it fires when the EDT completes and then has to linger, because
+ * nothing can prove another dependence is not still coming.  Where the program
+ * knows the count -- and it does whenever the output event feeds exactly one
+ * successor -- it can supply a COUNTED event of its own instead, which is
+ * reclaimed once that successor has registered.  OEVT_COUNTED_PRE mints it and
+ * OEVT_COUNTED_PROP marks the create as carrying its own. */
+#ifdef OCR_APP_COUNTED_OEVT
+#define OEVT_COUNTED_PRE(e)   createEventHelper(&(e), 1)
+#define OEVT_COUNTED_PROP(p)  ((p) | EDT_PROP_OEVT_VALID)
+#else
+#define OEVT_COUNTED_PRE(e)   ((void)0)
+#define OEVT_COUNTED_PROP(p)  (p)
+#endif
 void getAffinityHintsForDBandEdt( ocrHint_t* PTR_myDbkAffinityHNT, ocrHint_t* PTR_myEdtAffinityHNT );
 void getAffinityHintsForDBandEdtAtPD( ocrHint_t* PTR_myDbkAffinityHNT, ocrHint_t* PTR_myEdtAffinityHNT, int pd );
 
