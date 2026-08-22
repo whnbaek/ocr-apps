@@ -292,8 +292,14 @@ void fork_lj_force(ocrGuid_t sim, simulation* sim_ptr, ocrGuid_t cont, ocrGuid_t
 
   u32 pairs = sim_ptr->bxs.boxes_num;
   ocrGuid_t tmp,red;
-  ocrEdtTemplateCreate(&tmp, lj_red_edt, 1, pairs+1);
-  ocrEdtCreate(&red, tmp, 1, (u64 *)&f, pairs+1, NULL, 0, NULL_HINT, NULL);
+  //A join over every box can exceed the implementation's dependence limit; the
+  //failed create leaves its GUID unwritten, so it must not be used.
+  if(ocrEdtTemplateCreate(&tmp, lj_red_edt, 1, pairs+1) ||
+     ocrEdtCreate(&red, tmp, 1, (u64 *)&f, pairs+1, NULL, 0, NULL_HINT, NULL)) {
+    ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", pairs+1);
+    ocrShutdown();
+    return;
+  }
   ocrAddDependence(sim, red, 0, DB_MODE_RW);
   ocrEdtTemplateDestroy(tmp);
 

@@ -109,8 +109,14 @@ static ocrGuid_t redistribute_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t
 void fork_redistribute(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num)
 {
   ocrGuid_t tmp, red, red_e;
-  ocrEdtTemplateCreate(&tmp,redistribute_edt, 0, boxes_num+1);
-  ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, NULL_HINT, &red_e);
+  //A join over every box can exceed the implementation's dependence limit; the
+  //failed create leaves its GUID unwritten, so it must not be used.
+  if(ocrEdtTemplateCreate(&tmp,redistribute_edt, 0, boxes_num+1) ||
+     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, NULL_HINT, &red_e)) {
+    ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", boxes_num+1);
+    ocrShutdown();
+    return;
+  }
   ocrAddDependence(red_e, cont, depc, DB_MODE_CONST);
   for(u32 b = 0; b < boxes_num; ++b)
     ocrAddDependence(list[b], red, b, DB_MODE_RW);

@@ -152,8 +152,14 @@ void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* lis
   ocrAddDependence(f, cont, depc, DB_MODE_CONST);
 
   ocrGuid_t tmp,red;
-  ocrEdtTemplateCreate(&tmp, ke_red_edt, 1, boxes_num+1);
-  ocrEdtCreate(&red, tmp, 1, (u64 *)&f, boxes_num+1, NULL, 0, NULL_HINT, NULL);
+  //A join over every box can exceed the implementation's dependence limit; the
+  //failed create leaves its GUID unwritten, so it must not be used.
+  if(ocrEdtTemplateCreate(&tmp, ke_red_edt, 1, boxes_num+1) ||
+     ocrEdtCreate(&red, tmp, 1, (u64 *)&f, boxes_num+1, NULL, 0, NULL_HINT, NULL)) {
+    ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", boxes_num+1);
+    ocrShutdown();
+    return;
+  }
   ocrAddDependence(sim, red, 0, DB_MODE_RW);
   ocrEdtTemplateDestroy(tmp);
 
@@ -202,8 +208,12 @@ void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
   ocrDbCreate(&dt, (void**)&dt_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
   *dt_ptr = step;
   ocrGuid_t tmp,red,red_event;
-  ocrEdtTemplateCreate(&tmp, av_red_edt, 0, boxes_num+1);
-  ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, NULL_HINT, &red_event);
+  if(ocrEdtTemplateCreate(&tmp, av_red_edt, 0, boxes_num+1) ||
+     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num+1, NULL, 0, NULL_HINT, &red_event)) {
+    ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", boxes_num+1);
+    ocrShutdown();
+    return;
+  }
   ocrAddDependence(dt, red, boxes_num, DB_MODE_CONST);
   ocrAddDependence(red_event, cont, depc, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
@@ -252,8 +262,12 @@ ocrGuid_t ap_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num)
 {
   ocrGuid_t tmp,red,red_event;
-  ocrEdtTemplateCreate(&tmp, ap_red_edt, 0, boxes_num);
-  ocrEdtCreate(&red, tmp, 0, NULL, boxes_num, NULL, 0, NULL_HINT, &red_event);
+  if(ocrEdtTemplateCreate(&tmp, ap_red_edt, 0, boxes_num) ||
+     ocrEdtCreate(&red, tmp, 0, NULL, boxes_num, NULL, 0, NULL_HINT, &red_event)) {
+    ocrPrintf("ERROR cannot create a join EDT with %u dependences TERMINATING\n", boxes_num);
+    ocrShutdown();
+    return;
+  }
   ocrAddDependence(red_event, cont, depc, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
 
