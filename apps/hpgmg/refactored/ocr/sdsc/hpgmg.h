@@ -36,6 +36,28 @@
 
 #define mu 0.00000001
 
+#ifdef ENABLE_EXTENSION_AFFINITY
+#include <extensions/ocr-affinity.h>
+#endif
+
+/* Pin a control-spine EDT to rank 0, where the level and mg datablocks are
+ * homed: every spine phase acquires its level datablock RW for bookkeeping,
+ * and an unpinned spine lands on a fresh rank each phase, dragging that
+ * datablock's ownership around the cluster once per phase. */
+static inline ocrHint_t * mgHomeEdtHint(ocrHint_t * h)
+{
+#if defined(OCR_APP_OPTIMIZED_PLACEMENT) && defined(ENABLE_EXTENSION_AFFINITY)
+  ocrGuid_t aff = NULL_GUID;
+  ocrAffinityGetAt(AFFINITY_PD, 0, &aff);
+  ocrHintInit(h, OCR_HINT_EDT_T);
+  ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+  return h;
+#else
+  (void)h;
+  return NULL_HINT;
+#endif
+}
+
 typedef struct {
   struct {int i, j, k;} low;
   int global_box_id;

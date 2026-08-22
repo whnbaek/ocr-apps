@@ -302,13 +302,14 @@ ocrGuid_t norm_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   VERBOSEP("norm_level_edt\n");
   level_type* l = (level_type*)depv[0].ptr;
   ocrGuid_t n_t, n;
+  ocrHint_t boxHint;
   ocrEdtTemplateCreate(&n_t, norm_edt, 3, 2);
   u64 pv[3] = {l->u, l->f_Av, l->f};
   ocrGuid_t* boxes = (ocrGuid_t*)(((char*)l)+l->boxes);
 
   int b;
   for(b = 0; b < l->num_boxes; ++b) {
-    ocrEdtCreate(&n, n_t, 3, pv, 2, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+    ocrEdtCreate(&n, n_t, 3, pv, 2, NULL, EDT_PROP_NONE, mgBoxEdtHint(&boxHint, boxes[b]), NULL);
     ocrAddDependence(depv[0].guid, n, 0, DB_MODE_RW);
     ocrAddDependence(boxes[b], n, 1, DB_MODE_CONST);
   }

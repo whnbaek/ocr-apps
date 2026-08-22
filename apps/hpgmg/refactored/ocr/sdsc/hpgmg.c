@@ -64,7 +64,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   // start loop
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, top_warm, 0, 1);
-  ocrEdtCreate(&edt, tmp, 0, NULL, 1, NULL, 0, NULL_HINT, NULL);
+  ocrHint_t spineHint;
+  ocrEdtCreate(&edt, tmp, 0, NULL, 1, NULL, 0, mgHomeEdtHint(&spineHint), NULL);
   ocrAddDependence(mg, edt, 0, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
 
@@ -80,7 +81,8 @@ ocrGuid_t top_warm(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t cont = do_solves(e, (mg_type*)depv[0].ptr, WARMUP,1);
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, top_loop, 0, 2);
-  ocrEdtCreate(&edt, tmp, 0, NULL, 2, NULL, 0, NULL_HINT, NULL);
+  ocrHint_t spineHint;
+  ocrEdtCreate(&edt, tmp, 0, NULL, 2, NULL, 0, mgHomeEdtHint(&spineHint), NULL);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
   ocrAddDependence(cont, edt, 1, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
@@ -98,7 +100,8 @@ ocrGuid_t top_loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t cont = do_solves(e, (mg_type*)depv[0].ptr, TIMED,0);
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, finalize, 0, 3);
-  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, NULL_HINT, NULL);
+  ocrHint_t spineHint;
+  ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, mgHomeEdtHint(&spineHint), NULL);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
   ocrAddDependence(((mg_type *)(depv[0].ptr))->levels[0], edt, 1, DB_MODE_CONST); // only fine grid required to compute error
   ocrAddDependence(cont, edt, 2, DB_MODE_CONST);
@@ -116,7 +119,8 @@ ocrGuid_t finalize(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t tm, i_tm, fin;
   ocrEdtTemplateCreate(&i_tm, print_timing_edt, 1, ((mg_type*)(depv[0].ptr))->num_levels);
   u64 num_levels = ((mg_type*)(depv[0].ptr))->num_levels;
-  ocrEdtCreate(&tm, i_tm, 1, &num_levels, num_levels, NULL, 0, NULL_HINT, &fin);
+  ocrHint_t spineHint;
+  ocrEdtCreate(&tm, i_tm, 1, &num_levels, num_levels, NULL, 0, mgHomeEdtHint(&spineHint), &fin);
 
    // Set up finalize_edt (depends on print_timing_edt's output event)
   level_type *l = (level_type*)(depv[1].ptr);
@@ -128,11 +132,11 @@ ocrGuid_t finalize(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   // completed, so the shutdown EDT below never truncates in-flight release
   // work out of the measured run.
   ocrGuid_t finalizeOut;
-  ocrEdtCreate(&edt, tmp, 3, pv, num_boxes+3, NULL, 0, NULL_HINT, &finalizeOut);
+  ocrEdtCreate(&edt, tmp, 3, pv, num_boxes+3, NULL, 0, mgHomeEdtHint(&spineHint), &finalizeOut);
 
   ocrGuid_t sd_t, sd;
   ocrEdtTemplateCreate(&sd_t, shutdown_edt, 0, 1);
-  ocrEdtCreate(&sd, sd_t, 0, NULL, 1, NULL, 0, NULL_HINT, NULL);
+  ocrEdtCreate(&sd, sd_t, 0, NULL, 1, NULL, 0, mgHomeEdtHint(&spineHint), NULL);
   ocrAddDependence(finalizeOut, sd, 0, DB_MODE_NULL);
   ocrEdtTemplateDestroy(sd_t);
 
