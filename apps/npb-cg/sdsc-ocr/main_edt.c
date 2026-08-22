@@ -45,6 +45,16 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     if(niter_override >= 1)
         class->niter = niter_override;
 
+    /* The matrix is built and gathered in na/blk equal row blocks, so a
+       blocking that does not divide the class size leaves the tail block
+       undefined. */
+    if(class->blk < 1 || class->na % class->blk != 0) {
+        ocrPrintf("cg: blocking -b %u must be >= 1 and divide the class size %lu\n",
+                  class->blk, class->na);
+        ocrShutdown();
+        return NULL_GUID;
+    }
+
     timerdb_t* timer; ocrGuid_t timerid;
     timer_init(&timer, &timerid, class, class->on);
     ocrPrintf("CG Benchmark: size=%lu, iterations=%u\n", class->na, class->niter);

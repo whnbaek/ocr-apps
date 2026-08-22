@@ -115,8 +115,17 @@ ocrGuid_t spmv_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
     u64 paramv2[2] = {paramv[0], paramv[2]};
     ocrGuid_t assgnt,assgn;
-    ocrEdtTemplateCreate(&assgnt,assign_edt,2,paramv[0]/paramv[1]);
-    ocrEdtCreate(&assgn,assgnt,2,paramv2,paramv[0]/paramv[1],NULL,0,NULL_HINT,NULL);
+    /* One gather dependence per row block: the count follows the blocking, so
+       it can exceed what the runtime accepts as a dependence count.  Both
+       calls leave their guid untouched when they refuse, so neither return
+       may be dropped. */
+    if(ocrEdtTemplateCreate(&assgnt,assign_edt,2,paramv[0]/paramv[1]) != 0
+    || ocrEdtCreate(&assgn,assgnt,2,paramv2,paramv[0]/paramv[1],NULL,0,NULL_HINT,NULL) != 0) {
+        ocrPrintf("cg: gather of %lu row blocks exceeds the runtime's limit on"
+                  " dependences per EDT; raise the blocking (-b)\n",
+                  paramv[0]/paramv[1]);
+        ocrAbort(1);
+    }
     ocrEdtTemplateDestroy(assgnt);
 
     ocrGuid_t rowvect;
