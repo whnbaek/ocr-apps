@@ -191,6 +191,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #define nanny NULL
 #endif
 
+         ocrHint_t contHint;
          gasket__ocrEdtCreate(&meta->blockClone_Edt,                     // Guid of the EDT created to continue at function blockContinuaiton_Func.
                               SLOT(blockClone_Deps_t, whoAmI_Dep),
                               myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -199,7 +200,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                               countof_blockClone_fixedDeps_t + faceCount,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,
@@ -538,6 +540,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #define nanny NULL
 #endif
 
+            ocrHint_t contHint;
             gasket__ocrEdtCreate(&meta->blockClone_Edt,                     // Guid of the EDT created to continue at function blockContinuaiton_Func.
                                  SLOT(blockClone_Deps_t, whoAmI_Dep),
                                  myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -546,7 +549,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                                  countof_blockClone_fixedDeps_t + auxDepIdx_notFiner,
                                  NULL,
                                  EDT_PROP_NONE,
-                                 NULL_HINT,
+                                 amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                    control->npx, control->npy, control->npz),
                                  NULL,
                                  __FILE__,
                                  __func__,
@@ -972,6 +976,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #define nanny NULL
 #endif
 //001 *((int *) 123) = 456; // COVERAGE!
+         ocrHint_t contHint;
          gasket__ocrEdtCreate(&meta->blockClone_Edt,                     // Guid of the EDT created to continue at function blockContinuaiton_Func.
                               SLOT(blockClone_Deps_t, whoAmI_Dep),
                               myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -980,7 +985,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                               countof_blockClone_fixedDeps_t + auxDepIdx,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,
@@ -1262,6 +1268,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
       if (auxDepIdx != 0) {         // If any of my non-sibling neighbors need to hear from me, clone to season the datablocks.
 
 //014 *((int *) 123) = 456; // COVERAGE!
+         ocrHint_t contHint;
          gasket__ocrEdtCreate(&meta->blockClone_Edt,                     // Guid of the EDT created to continue at function blockContinuaiton_Func.
                               SLOT(blockClone_Deps_t, whoAmI_Dep),
                               myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -1270,7 +1277,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                               countof_blockClone_fixedDeps_t + auxDepIdx,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,
@@ -1417,6 +1425,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #else
 #define nanny NULL
 #endif
+         ocrHint_t contHint;
          gasket__ocrEdtCreate(&meta->blockClone_Edt,                     // Guid of the EDT created to continue at function blockContinuaiton_Func.
                               SLOT(blockClone_Deps_t, whoAmI_Dep),
                               myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -1425,7 +1434,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                               countof_blockClone_fixedDeps_t + auxDepIdx,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,

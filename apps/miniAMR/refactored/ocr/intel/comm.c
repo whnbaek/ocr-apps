@@ -203,6 +203,7 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
 #define nanny NULL
 #endif
 
+         ocrHint_t contHint;
          gasket__ocrEdtCreate(&meta->blockClone_Edt,                     // Guid of the EDT created to continue at function blockContinuaiton_Func.
                               SLOT(blockClone_Deps_t, whoAmI_Dep),
                               myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -211,7 +212,8 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
                               countof_blockClone_fixedDeps_t + faceCount,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,
@@ -534,6 +536,7 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
 #define nanny NULL
 #endif
 
+         ocrHint_t contHint;
          gasket__ocrEdtCreate(&meta->blockClone_Edt,                     // Guid of the EDT created to continue at function blockContinuaiton_Func.
                               SLOT(blockClone_Deps_t, whoAmI_Dep),
                               myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -542,7 +545,8 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
                               countof_blockClone_fixedDeps_t + faceCount,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,

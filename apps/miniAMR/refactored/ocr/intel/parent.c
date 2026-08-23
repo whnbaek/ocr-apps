@@ -312,6 +312,8 @@ ocrGuid_t parentClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
    meta->cloningState.topPtrAdjRecOffset = ((int) ((unsigned long long) meta->cloningState.topPtrAdjRec) - ((unsigned long long) meta->cloningState.stack));
 
    ocrGuid_t parentClone_Edt;
+   ocrHint_t parentClone_Hint;
+   Control_t * pctl = (Control_t *) myDeps->control_Dep.ptr;
 #ifdef NANNY_ON_STEROIDS
    sprintf(nanny, "lvl=%2d, xPos=%4d, yPos=%4d, zPos=%4d, clone=%5d", meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, meta->cloningState.cloneNum);
 #else
@@ -326,11 +328,13 @@ ocrGuid_t parentClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
                         NULL,
 #ifdef BIG_SYNC
                         EDT_PROP_FINISH,
-                        NULL_HINT,
+                        amrEdtHintForBlock(&parentClone_Hint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                           pctl->npx, pctl->npy, pctl->npz),
                         meta->bigSync_Event,
 #else
                         EDT_PROP_NONE,
-                        NULL_HINT,
+                        amrEdtHintForBlock(&parentClone_Hint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                           pctl->npx, pctl->npy, pctl->npz),
                         NULL,
 #endif
                         __FILE__,

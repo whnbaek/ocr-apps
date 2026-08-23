@@ -99,6 +99,14 @@ void gasket__ocrDbCreate ( ocrGuid_t  * guid,     // Guid of created datablock.
                            const char * detail,   // Context of the calling site.
                            const char * name);    // Name of the datablock being created.
 
+// Static block-to-policy-domain placement (see util.c).
+// Available in both builds: without the placement layer it answers 0, so a
+// call site does not have to be conditional.
+int  amrNumPolicyDomains(void);
+int  amrBlockHomePD(int x, int y, int z, int level, int npx, int npy, int npz);
+ocrHint_t * amrEdtHintForPD(ocrHint_t * hint, int pd);
+ocrHint_t * amrEdtHintForBlock(ocrHint_t * hint, int x, int y, int z, int level, int npx, int npy, int npz);
+
 u8 gasket__ocrEventCreate(ocrGuid_t *guid, ocrEventTypes_t eventType, u16 properties,
                         char       * file,        // File of calling site.
                         const char * func,        // Function of calling site.

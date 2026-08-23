@@ -34,6 +34,7 @@
 #include <ocr.h>
 #include <ocr-guid-functions.h>
 #include <extensions/ocr-labeling.h>
+#include <extensions/ocr-affinity.h>
 //#include <mpi.h>
 
 #ifdef NANNY_FUNC_NAMES
@@ -45,6 +46,106 @@ double wtime();
 double timer(void)
 {
    return(wtime());
+}
+
+
+// Static block-to-policy-domain placement.
+//
+// A block is identified by its integer grid position (x,y,z) at a refinement
+// `level`, within a base grid of npx*npy*npz unrefined blocks.  We map it to a
+// policy domain by a Cartesian partition of the domain across the available
+// PDs.  The map is normalized by the level extent (npx<<level), so it is
+// level-consistent: a predecessor computing a successor's PD at fork time and
+// the successor recomputing its own PD from its stored coordinates agree.
+// Consequently a block keeps a single home PD across its whole continuation
+// chain, and spatially adjacent blocks (regardless of level) tend to co-locate,
+// while distinct spatial regions distribute across PDs.
+
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+
+// Factor P into a 3-D grid (px*py*pz == P) as close to cubic as possible.
+static void amr_factor3(int P, int * px, int * py, int * pz) {
+   int z = 1, i;
+   for (i = 1; (long) i * i * i <= (long) P; i++) if (P % i == 0) z = i;   // largest divisor <= cbrt(P)
+   int rem = P / z, y = 1;
+   for (i = 1; (long) i * i <= (long) rem; i++) if (rem % i == 0) y = i;   // largest divisor <= sqrt(rem)
+   *pz = z; *py = y; *px = rem / y;
+}
+
+int amrNumPolicyDomains(void) {
+   // The domain count is fixed for the run; resolving it per EDT creation is
+   // pure overhead in a program that creates tens of millions of them.
+   static int cached = 0;
+   if (cached == 0) {
+      u64 n = 1;
+      ocrAffinityCount(AFFINITY_PD, &n);
+      cached = (n < 1) ? 1 : (int) n;
+   }
+   return cached;
+}
+
+int amrBlockHomePD(int x, int y, int z, int level, int npx, int npy, int npz) {
+   int P = amrNumPolicyDomains();
+   if (P <= 1) return 0;
+   // The factorization depends only on the domain count, so it is done once.
+   static int PDx = 0, PDy = 0, PDz = 0;
+   if (PDx == 0) amr_factor3(P, &PDx, &PDy, &PDz);
+   int ex = npx << level, ey = npy << level, ez = npz << level;
+   int px = (ex > 0) ? (int) (((long) x * PDx) / ex) : 0;
+   int py = (ey > 0) ? (int) (((long) y * PDy) / ey) : 0;
+   int pz = (ez > 0) ? (int) (((long) z * PDz) / ez) : 0;
+   if (px < 0) px = 0; else if (px >= PDx) px = PDx - 1;
+   if (py < 0) py = 0; else if (py >= PDy) py = PDy - 1;
+   if (pz < 0) pz = 0; else if (pz >= PDz) pz = PDz - 1;
+   return PDx * PDy * pz + PDx * py + px;
+}
+
+#else  // OCR_APP_OPTIMIZED_PLACEMENT
+
+int amrNumPolicyDomains(void) { return 1; }
+int amrBlockHomePD(int x, int y, int z, int level, int npx, int npy, int npz) {
+   (void)x; (void)y; (void)z; (void)level; (void)npx; (void)npy; (void)npz;
+   return 0;
+}
+
+#endif // OCR_APP_OPTIMIZED_PLACEMENT
+
+ocrHint_t * amrEdtHintForPD(ocrHint_t * hint, int pd) {
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+   // One hint per domain, built once and thereafter copied.  A domain's
+   // affinity does not change, and a program that creates tens of millions of
+   // EDTs cannot afford a runtime query plus a hint rebuild at every one.
+   #define AMR_MAX_CACHED_PD 256
+   static ocrHint_t cache[AMR_MAX_CACHED_PD];
+   static char      cachedPD[AMR_MAX_CACHED_PD];
+   ocrGuid_t aff;
+   if (pd >= 0 && pd < AMR_MAX_CACHED_PD) {
+      if (!cachedPD[pd]) {
+         ocrAffinityGetAt(AFFINITY_PD, (u64) pd, &aff);
+         ocrHintInit(&cache[pd], OCR_HINT_EDT_T);
+         ocrSetHintValue(&cache[pd], OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+         cachedPD[pd] = 1;
+      }
+      (void) hint;                 // the create only reads the hint
+      return &cache[pd];
+   }
+   ocrAffinityGetAt(AFFINITY_PD, (u64) pd, &aff);
+   ocrHintInit(hint, OCR_HINT_EDT_T);
+   ocrSetHintValue(hint, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+   return hint;
+#else
+   (void)hint; (void)pd;
+   return NULL_HINT;
+#endif
+}
+
+ocrHint_t * amrEdtHintForBlock(ocrHint_t * hint, int x, int y, int z, int level, int npx, int npy, int npz) {
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+   return amrEdtHintForPD(hint, amrBlockHomePD(x, y, z, level, npx, npy, npz));
+#else
+   (void)hint; (void)x; (void)y; (void)z; (void)level; (void)npx; (void)npy; (void)npz;
+   return NULL_HINT;
+#endif
 }
 
 
@@ -85,6 +186,12 @@ void gasket__ocrDbCreate (ocrGuid_t  * guid,     // Guid of created datablock.
                           const char * detail,   // Context of the calling site.
                           const char * name) {   // Name of the datablock being created.
 
+   // Home is left policy-selected, and that is measured rather than assumed:
+   // homing each refined child's blocks on the domain its own tasks run at
+   // changed nothing at 1, 2, 4 or 8 nodes (44.8/26.2/17.0/11.9 s against
+   // 44.7/26.2/17.0/11.9).  A block's datablocks are acquired RW by that
+   // block's task immediately after creation, so the payload moves once
+   // either way and the home is only a directory entry.
    ocrDbCreate (guid, addr, size, 0, NULL_HINT, NO_ALLOC);
 
 #ifdef NANNY_ON_STEROIDS

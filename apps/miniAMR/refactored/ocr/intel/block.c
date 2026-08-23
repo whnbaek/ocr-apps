@@ -98,6 +98,7 @@ ocrGuid_t blockLaunch_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
    blockInit_Params_t * blockInit_Params = myParams;
 
    ocrGuid_t     blockInit_Edt;
+   ocrHint_t     blockInit_Hint;
 #ifdef NANNY_ON_STEROIDS
    sprintf(nanny, "xPos=%4d, yPos=%4d, zPos=%4d", myParams->xPos, myParams->yPos, myParams->zPos);
 #endif
@@ -109,7 +110,8 @@ ocrGuid_t blockLaunch_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
                         EDT_PARAM_DEF,
                         NULL,
                         EDT_PROP_NONE,
-                        NULL_HINT,
+                        amrEdtHintForBlock(&blockInit_Hint, myParams->xPos, myParams->yPos, myParams->zPos, 0,
+                                           initialControl->npx, initialControl->npy, initialControl->npz),
                         NULL,
                         __FILE__,
                         __func__,
@@ -262,6 +264,7 @@ ocrGuid_t blockInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
 #else
 #define nanny NULL
 #endif
+   ocrHint_t blockClone_Hint;
    gasket__ocrEdtCreate(&blockClone_Edt,
                         SLOT(blockClone_Deps_t, whoAmI_Dep),
                         myParams->template.blockClone_Template,
@@ -270,7 +273,8 @@ ocrGuid_t blockInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                         countof_blockClone_fixedDeps_t,
                         NULL,
                         EDT_PROP_NONE,
-                        NULL_HINT,
+                        amrEdtHintForBlock(&blockClone_Hint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                           control->npx, control->npy, control->npz),
                         NULL,
                         __FILE__,
                         __func__,
@@ -495,6 +499,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
 
          ocrGuid_t blockClone_Edt = meta->blockClone_Edt;
          if (ocrGuidIsNull(blockClone_Edt)) {
+            ocrHint_t contHint;
             gasket__ocrEdtCreate(&blockClone_Edt,                           // Guid of the EDT created to continue at function blockContinuaiton_Func.
                                  SLOT(blockClone_Deps_t, whoAmI_Dep),
                                  myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -503,7 +508,8 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
                                  countof_blockClone_fixedDeps_t,
                                  NULL,
                                  EDT_PROP_NONE,
-                                 NULL_HINT,
+                                 amrEdtHintForBlock(&contHint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                    control->npx, control->npy, control->npz),
                                  NULL,
                                  __FILE__,
                                  __func__,
@@ -540,6 +546,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          meta->cloningState.topPtrAdjRecOffset = ((int) ((unsigned long long) meta->cloningState.topPtrAdjRec) - ((unsigned long long) meta->cloningState.stack));
 
          ocrGuid_t parentInit_Edt;
+         ocrHint_t parentInit_Hint;
          parentInit_Params_t parentInit_Params;
          parentInit_Params.parentInit_Template      = myParams->template.parentInit_Template;
          parentInit_Params.parentClone_Template     = myParams->template.parentClone_Template;
@@ -559,7 +566,8 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
                               EDT_PARAM_DEF,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              amrEdtHintForBlock(&parentInit_Hint, meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,
@@ -588,6 +596,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
 #endif
             gasket__ocrEventCreate(&myParams->conveyServiceRequestToParent_Event,                OCR_EVENT_STICKY_T, EVT_PROP_TAKES_ARG, __FILE__, __func__, __LINE__, nanny,"conveyServiceRequestToParent_Event");
                                                                                                                                    // 000 use ALL to plumb to its clone.
+            ocrHint_t childHint;
             gasket__ocrEdtCreate(&blockClone_Edt[myParams->prongNum],       // Guid of the EDT created to continue at function blockContinuaiton_Func.
                                  SLOT(blockClone_Deps_t, whoAmI_Dep),
                                  myParams->template.blockClone_Template,    // Template for the EDT we are creating.
@@ -596,7 +605,15 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
                                  countof_blockClone_fixedDeps_t,
                                  NULL,
                                  EDT_PROP_NONE,
-                                 NULL_HINT,
+                                 // A child's position at the finer level is the parent's
+                                 // doubled, plus one bit of the prong number per axis; the
+                                 // child recomputes the same position for itself later.
+                                 amrEdtHintForBlock(&childHint,
+                                                    (meta->xPos << 1) + (myParams->prongNum & 1),
+                                                    (meta->yPos << 1) + ((myParams->prongNum >> 1) & 1),
+                                                    (meta->zPos << 1) + ((myParams->prongNum >> 2) & 1),
+                                                    meta->refinementLevel + 1,
+                                                    control->npx, control->npy, control->npz),
                                  NULL,
                                  __FILE__,
                                  __func__,
@@ -643,9 +660,9 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
             ocrGuid_t newControl_dblk;
             ocrGuid_t newBlock_dblk;
             ocrGuid_t newAllObjects_dblk;
-            gasket__ocrDbCreate(&newControl_dblk,       &dummy,                               sizeof_Control_t,      __FILE__, __func__, __LINE__, nanny, "control");
-            gasket__ocrDbCreate(&newBlock_dblk,         &dummy,                               sizeof_Block_t,        __FILE__, __func__, __LINE__, nanny, "block");
-            gasket__ocrDbCreate(&newAllObjects_dblk,    &dummy,                               sizeof_AllObjects_t,   __FILE__, __func__, __LINE__, nanny, "allObjects");
+            gasket__ocrDbCreate(&newControl_dblk,       &dummy,                               sizeof_Control_t,    __FILE__, __func__, __LINE__, nanny, "control");
+            gasket__ocrDbCreate(&newBlock_dblk,         &dummy,                               sizeof_Block_t,      __FILE__, __func__, __LINE__, nanny, "block");
+            gasket__ocrDbCreate(&newAllObjects_dblk,    &dummy,                               sizeof_AllObjects_t, __FILE__, __func__, __LINE__, nanny, "allObjects");
             ADD_DEPENDENCE(newControl_dblk,             blockClone_Edt[i], blockClone_Deps_t, control_Dep,           DB_MODE_RW,                   nanny, "control")
             ADD_DEPENDENCE(newBlock_dblk,               blockClone_Edt[i], blockClone_Deps_t, block_Dep,             DB_MODE_RW,                   nanny, "block")
             ADD_DEPENDENCE(newAllObjects_dblk,          blockClone_Edt[i], blockClone_Deps_t, allObjects_Dep,        DB_MODE_RW,                   nanny, "allObjects")
@@ -660,7 +677,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          gasket__ocrDbRelease(myDeps->meta_Dep.guid,                                                                 __FILE__, __func__, __LINE__, nanny, "meta");
          for (i = 0; i < 8; i++) {
             ocrGuid_t newMeta_dblk;
-            gasket__ocrDbCreate(&newMeta_dblk,          &dummy,                               sizeof_BlockMeta_t,    __FILE__, __func__, __LINE__, nanny, "meta");
+            gasket__ocrDbCreate(&newMeta_dblk,          &dummy,                               sizeof_BlockMeta_t,  __FILE__, __func__, __LINE__, nanny, "meta");
             ADD_DEPENDENCE(myDeps->meta_Dep.guid,       blockClone_Edt[i], blockClone_Deps_t, metaPred_Dep,          DB_MODE_RO,                   nanny, "meta --> metaPred")
             ADD_DEPENDENCE(newMeta_dblk,                blockClone_Edt[i], blockClone_Deps_t, meta_Dep,              DB_MODE_RW,                   nanny, "meta")
          }
@@ -760,6 +777,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
 #else
 #define nanny NULL
 #endif
+         ocrHint_t joinHint;
          gasket__ocrEventCreate(&myParams->parentMetaToJoinClone_Event, OCR_EVENT_STICKY_T, EVT_PROP_TAKES_ARG,     __FILE__, __func__, __LINE__, nanny, "parentMetaToJoinClone");
          gasket__ocrEdtCreate(&blockClone_Edt,                           // Guid of the EDT created to continue at function blockContinuaiton_Func.
                               SLOT(blockClone_Deps_t, whoAmI_Dep),
@@ -769,7 +787,11 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
                               countof_blockClone_fixedDeps_t + 8,
                               NULL,
                               EDT_PROP_NONE,
-                              NULL_HINT,
+                              // The merged block returns to the coarser level, so it takes
+                              // the coarser position (child >> 1) one level up.
+                              amrEdtHintForBlock(&joinHint, meta->xPos >> 1, meta->yPos >> 1,
+                                                 meta->zPos >> 1, meta->refinementLevel - 1,
+                                                 control->npx, control->npy, control->npz),
                               NULL,
                               __FILE__,
                               __func__,
@@ -782,10 +804,10 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          ocrGuid_t            newControl_dblk;
          ocrGuid_t            newAllObjects_dblk;
          void               * dummy = NULL;
-         gasket__ocrDbCreate(    &joinBlock_dblk,        &dummy,                          sizeof_Block_t,            __FILE__, __func__, __LINE__, nanny, "join block");
-         gasket__ocrDbCreate(    &newMeta_dblk,          &dummy,                          sizeof_BlockMeta_t,        __FILE__, __func__, __LINE__, nanny, "meta");
-         gasket__ocrDbCreate(    &newControl_dblk,       &dummy,                          sizeof_Control_t,          __FILE__, __func__, __LINE__, nanny, "control");
-         gasket__ocrDbCreate(    &newAllObjects_dblk,    &dummy,                          sizeof_AllObjects_t,       __FILE__, __func__, __LINE__, nanny, "allObjects");
+         gasket__ocrDbCreate(    &joinBlock_dblk,        &dummy,                          sizeof_Block_t,          __FILE__, __func__, __LINE__, nanny, "join block");
+         gasket__ocrDbCreate(    &newMeta_dblk,          &dummy,                          sizeof_BlockMeta_t,      __FILE__, __func__, __LINE__, nanny, "meta");
+         gasket__ocrDbCreate(    &newControl_dblk,       &dummy,                          sizeof_Control_t,        __FILE__, __func__, __LINE__, nanny, "control");
+         gasket__ocrDbCreate(    &newAllObjects_dblk,    &dummy,                          sizeof_AllObjects_t,     __FILE__, __func__, __LINE__, nanny, "allObjects");
 
          gasket__ocrDbRelease(    myDeps->control_Dep.guid,                                                          __FILE__, __func__, __LINE__, nanny, "control");
          ADD_DEPENDENCE(          newControl_dblk,                        blockClone_Edt, blockClone_Deps_t, control_Dep,            DB_MODE_RW,   nanny, "control")
