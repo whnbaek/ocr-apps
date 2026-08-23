@@ -93,18 +93,23 @@ ocrGuid_t rootLaunch_Func ( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
             *((int *) 123) = 456;
             ocrShutdown();
          }
-         if (i == argc) {
+         if (i + 1 == argc) {
             printf ("Number of objects must appear after the --num_objects keyword on the command-line.\n"); fflush(stdout);
             *((int *) 123) = 456;
             ocrShutdown();
          }
          num_objects = atoi(ocrGetArgv(argv, ++i));
+         if (num_objects < 0) {
+            printf ("Number of objects must be non-negative.\n"); fflush(stdout);
+            *((int *) 123) = 456;
+            ocrShutdown();
+         }
       }
       if (!strcmp(ocrGetArgv(argv, i), "--npx") || !strcmp(ocrGetArgv(argv, i), "--npy") || !strcmp(ocrGetArgv(argv, i), "--npz")) {
          num_blocks *= atoi(ocrGetArgv(argv, ++i));
       }
    }
-   if (num_objects == -9999) num_objects = 1;
+   if (num_objects == -9999) num_objects = 0;   // Must match rootInit_Func's default for control->num_objects: this pre-scan sizes the allObjects datablock that control->num_objects later indexes.
    if (num_blocks > MAX_NUM_UNREFINED_BLOCKS) {
       printf ("Number of totally unrefined blocks, i.e. npx*npy*npz, is excessive.  Recommendation:\n");
       printf ("reduce, and plan to do more refinement.  Otherwise, modify limits and try again.\n");
@@ -238,7 +243,7 @@ ocrGuid_t rootInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[])
    control->code = 0;
    control->permute = 0;
    control->refine_ghost = 0;
-   control->num_objects = -1;
+   control->num_objects = 0;
 
 //   * Parse the command line into control_t and allScratchObjects_t.
 
@@ -294,6 +299,11 @@ ocrGuid_t rootInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[])
       } else if (!strcmp(ocrGetArgv(argv, i), "--num_objects")) {
          control->num_objects = atoi(ocrGetArgv(argv, ++i));
          object_num = 0;
+         // Datablock payload is not zeroed by ocrDbCreate; any object not
+         // covered by an --object spec must still land on a well-defined
+         // (inert) entry rather than whatever bytes the allocator returned.
+         if (control->num_objects > 0)
+            memset(scratchAllObjects->object, 0, control->num_objects * sizeof(Object_t));
       } else if (!strcmp(ocrGetArgv(argv, i), "--object")) {
          if (object_num >= control->num_objects) {
             printf("object number greater than num_objects\n"); fflush(stdout);
@@ -482,6 +492,7 @@ TODO:
             EVT_DEPENDENCE(blockLaunch_Params.conveyServiceRequestToParent_Event, rootClone_Edt, rootClone_Deps_t, serviceRequest_Dep[idep], DB_MODE_RO, "rootInit", nanny);
 
             ocrGuid_t   blockLaunch_Edt;
+            ocrHint_t   blockLaunch_Hint;
 #ifdef NANNY_ON_STEROIDS
             sprintf(nanny, "creating: xPos=%4d, yPos=%4d, zPos=%4d, clone=%5d", blockLaunch_Params.xPos, blockLaunch_Params.yPos, blockLaunch_Params.zPos, meta->cloningState.cloneNum);
 #else
@@ -495,7 +506,8 @@ TODO:
                                  EDT_PARAM_DEF,
                                  NULL,
                                  EDT_PROP_NONE,
-                                 NULL_HINT,
+                                 amrEdtHintForBlock(&blockLaunch_Hint, blockLaunch_Params.xPos, blockLaunch_Params.yPos,
+                                                    blockLaunch_Params.zPos, 0, xLim, yLim, zLim),
                                  NULL,
                                 __FILE__,
                                 __func__,
@@ -881,6 +893,10 @@ int check_input(Control_t * control) {
       control->comm_vars = control->num_vars;
    if (control->code < 0 || control->code > 2) {
       printf("code must be 0, 1, or 2\n"); fflush(stdout);
+      error = 1;
+   }
+   if (control->num_objects < 0) {
+      printf("number of objects must be non-negative\n"); fflush(stdout);
       error = 1;
    }
 

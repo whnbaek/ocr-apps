@@ -35,7 +35,9 @@ typedef struct RootMeta_t RootMeta_t;
 // 1000 is plenty!  It supports 10x10x10 unrefined blocks.  If you need more, you can always get the same effect by adding more refinement levels.  Remember, you need to compile OCR to support
 // ceiling(MAX_NUM_UNREFINED_BLOCKS+6)/64 slot bit vectors.
 
+#ifndef MAX_NUM_UNREFINED_BLOCKS
 #define MAX_NUM_UNREFINED_BLOCKS 1000
+#endif
 
 #include "commhdr.h"
 #include "clone.h"
