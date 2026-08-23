@@ -61,9 +61,10 @@ ocrGuid_t commRefnNbrsEdt(EDT_ARGS)
     // Do halo-exchange along one axis
     ocrGuid_t exchangeDataEDT, exchangeDataOEVT, exchangeDataOEVTS;
 
+    OEVT_COUNTED_PRE(exchangeDataOEVT);
     ocrEdtCreate( &exchangeDataEDT, exchangeDataTML, //exchangeDataEdt
                   EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &exchangeDataOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &exchangeDataOEVT );
 
     createEventHelper( &exchangeDataOEVTS, 1);
     ocrAddDependence( exchangeDataOEVT, exchangeDataOEVTS, 0, DB_MODE_NULL );
@@ -169,9 +170,10 @@ ocrGuid_t exchangeDataEdt(EDT_ARGS)
 
     ocrGuid_t packRefnBufsEDT, packRefnBufsOEVT, packRefnBufsOEVTS;
 
+    OEVT_COUNTED_PRE(packRefnBufsOEVT);
     ocrEdtCreate( &packRefnBufsEDT, packRefnBufsTML, //packRefnBufsEdt
                   EDT_PARAM_DEF, paramv, nNbrs+1, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &packRefnBufsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &packRefnBufsOEVT );
 
     createEventHelper( &packRefnBufsOEVTS, 1);
     ocrAddDependence( packRefnBufsOEVT, packRefnBufsOEVTS, 0, DB_MODE_NULL );

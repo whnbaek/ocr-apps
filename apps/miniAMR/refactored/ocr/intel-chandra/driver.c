@@ -91,9 +91,10 @@ _OCR_TASK_FNC_( FNC_timestepLoop )
 
         int istage = 0;
         stageLoopPRM_t stageLoopPRM = {istage, ts};
+        OEVT_COUNTED_PRE(stageLoopOEVT);
         ocrEdtCreate( &stageLoopEDT, TML_stageLoop, //FNC_stageLoop
                       EDT_PARAM_DEF, (u64*)&stageLoopPRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &stageLoopOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &stageLoopOEVT );
         createEventHelper(&stageLoopOEVTS, 1);
         ocrAddDependence( stageLoopOEVT, stageLoopOEVTS, 0, DB_MODE_NULL );
 
@@ -109,9 +110,10 @@ _OCR_TASK_FNC_( FNC_timestepLoop )
            movePRM_t movePRM = {ts};
            ocrGuid_t moveEDT;
            ocrEVT_t moveOEVT, moveOEVTS;
+           OEVT_COUNTED_PRE(moveOEVT);
            ocrEdtCreate( &moveEDT, TML_move,
                          EDT_PARAM_DEF, (u64*)&movePRM, EDT_PARAM_DEF, NULL,
-                         EDT_PROP_FINISH, &myEdtAffinityHNT, &moveOEVT); //FNC_move
+                         OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &moveOEVT); //FNC_move
             createEventHelper(&moveOEVTS, 1);
             ocrAddDependence( moveOEVT, moveOEVTS, 0, DB_MODE_NULL );
 
@@ -194,9 +196,10 @@ _OCR_TASK_FNC_( FNC_stageLoop )
     // Do one stage
     ocrGuid_t stageEDT, stageOEVT, stageOEVTS;
 
+    OEVT_COUNTED_PRE(stageOEVT);
     ocrEdtCreate( &stageEDT, PTR_rankTemplateH->TML_stage, //FNC_stage
                   EDT_PARAM_DEF, (u64*)stageLoopPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &stageOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &stageOEVT );
     createEventHelper(&stageOEVTS, 1);
     ocrAddDependence( stageOEVT, stageOEVTS, 0, DB_MODE_NULL );
 
@@ -249,9 +252,10 @@ _OCR_TASK_FNC_( FNC_stage )
 
     int istart = 0;
     varsLoopPRM_t varsLoopPRM = {istart, istage, ts};
+    OEVT_COUNTED_PRE(varsLoopOEVT);
     ocrEdtCreate( &varsLoopEDT, PTR_rankTemplateH->TML_varsLoop, //FNC_varsLoop
                   EDT_PARAM_DEF, (u64*)&varsLoopPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &varsLoopOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &varsLoopOEVT );
     createEventHelper(&varsLoopOEVTS, 1);
     ocrAddDependence( varsLoopOEVT, varsLoopOEVTS, 0, DB_MODE_NULL );
 
@@ -288,9 +292,10 @@ _OCR_TASK_FNC_( FNC_varsLoop )
     // Do one vars
     ocrGuid_t varsEDT, varsOEVT, varsOEVTS;
 
+    OEVT_COUNTED_PRE(varsOEVT);
     ocrEdtCreate( &varsEDT, PTR_rankTemplateH->TML_vars, //FNC_vars
                   EDT_PARAM_DEF, (u64*)varsLoopPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &varsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &varsOEVT );
     createEventHelper(&varsOEVTS, 1);
     ocrAddDependence( varsOEVT, varsOEVTS, 0, DB_MODE_NULL );
 
@@ -353,9 +358,10 @@ _OCR_TASK_FNC_( FNC_vars )
     int iAxis = 0;
     commPRM_t commPRM = {iAxis, istart, iend, istage, ts};
 
+    OEVT_COUNTED_PRE(commOEVT);
     ocrEdtCreate( &commEDT, PTR_rankTemplateH->TML_comm, //FNC_comm
                   EDT_PARAM_DEF, (u64*)&commPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &commOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &commOEVT );
     createEventHelper(&commOEVTS, 1);
     ocrAddDependence( commOEVT, commOEVTS, 0, DB_MODE_NULL );
 
@@ -367,9 +373,10 @@ _OCR_TASK_FNC_( FNC_vars )
     ocrGuid_t calcLoopEDT, calcLoopOEVT, calcLoopOEVTS;
 
     calcLoopPRM_t calcLoopPRM = {istart, iend, istage, ts};
+    OEVT_COUNTED_PRE(calcLoopOEVT);
     ocrEdtCreate( &calcLoopEDT, PTR_rankTemplateH->TML_calcLoop, //FNC_calcLoop
                   EDT_PARAM_DEF, (u64*)&calcLoopPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &calcLoopOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &calcLoopOEVT );
     createEventHelper(&calcLoopOEVTS, 1);
     ocrAddDependence( calcLoopOEVT, calcLoopOEVTS, 0, DB_MODE_NULL );
 
@@ -417,9 +424,10 @@ _OCR_TASK_FNC_( FNC_calcLoop )
     ocrGuid_t calcEDT, calcOEVT, calcOEVTS;
 
     calcPRM_t calcPRM = {istart, istage, ts};
+    OEVT_COUNTED_PRE(calcOEVT);
     ocrEdtCreate( &calcEDT, PTR_rankTemplateH->TML_calc, //FNC_calc
                   EDT_PARAM_DEF, (u64*)&calcPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &calcOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &calcOEVT );
     createEventHelper(&calcOEVTS, 1);
     ocrAddDependence( calcOEVT, calcOEVTS, 0, DB_MODE_NULL );
 
@@ -441,9 +449,10 @@ _OCR_TASK_FNC_( FNC_calcLoop )
         ocrGuid_t checkSumEDT, checkSumOEVT, checkSumOEVTS;
 
         checkSumPRM_t checkSumPRM = {istart, istage, ts};
+        OEVT_COUNTED_PRE(checkSumOEVT);
         ocrEdtCreate( &checkSumEDT, PTR_rankTemplateH->TML_checkSum, //FNC_checkSum
                       EDT_PARAM_DEF, (u64*)&checkSumPRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &PTR_rankH->myEdtAffinityHNT, &checkSumOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &PTR_rankH->myEdtAffinityHNT, &checkSumOEVT );
 
         createEventHelper(&checkSumOEVTS, 1);
         ocrAddDependence( checkSumOEVT, checkSumOEVTS, 0, DB_MODE_NULL );
@@ -528,9 +537,10 @@ _OCR_TASK_FNC_( FNC_checkSumLoop )
     ocrGuid_t checkSumEDT, checkSumOEVT, checkSumOEVTS;
 
     checkSumPRM_t checkSumPRM = {istart, istage, ts};
+    OEVT_COUNTED_PRE(checkSumOEVT);
     ocrEdtCreate( &checkSumEDT, TML_checkSum, //FNC_checkSum
                   EDT_PARAM_DEF, (u64*)&checkSumPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &checkSumOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &checkSumOEVT );
 
     createEventHelper(&checkSumOEVTS, 1);
     ocrAddDependence( checkSumOEVT, checkSumOEVTS, 0, DB_MODE_NULL );
@@ -739,9 +749,10 @@ _OCR_TASK_FNC_( FNC_finalize )
     reducePRM_t reducePRM = {-1, ts, phase, r, number};
     ocrGuid_t reduceAllUpEDT, reduceAllUpOEVT, reduceAllUpOEVTS;
 
+    OEVT_COUNTED_PRE(reduceAllUpOEVT);
     ocrEdtCreate( &reduceAllUpEDT, TML_reduceAllUp, //FNC_reduceAllUp
                   EDT_PARAM_DEF, (u64*) &reducePRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &reduceAllUpOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &reduceAllUpOEVT );
     createEventHelper(&reduceAllUpOEVTS, 1);
     ocrAddDependence( reduceAllUpOEVT, reduceAllUpOEVTS, 0, DB_MODE_NULL );
 

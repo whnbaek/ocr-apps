@@ -674,9 +674,10 @@ ocrGuid_t channelSetupEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
         int istart = 0; int iend = PTR_cmd->num_vars-1;
         int istage = 0; int ts = 0;
         checkSumLoopPRM_t checkSumLoopPRM = {istart, iend, istage, ts};
+        OEVT_COUNTED_PRE(checkSumLoopOEVT);
         ocrEdtCreate( &checkSumLoopEDT, TML_checkSumLoop, //FNC_checkSumLoop
                       EDT_PARAM_DEF, (u64*)&checkSumLoopPRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &checkSumLoopOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &checkSumLoopOEVT );
 
         createEventHelper(&checkSumLoopOEVTS, 1);
         ocrAddDependence( checkSumLoopOEVT, checkSumLoopOEVTS, 0, DB_MODE_NULL );

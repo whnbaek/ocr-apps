@@ -261,9 +261,10 @@ _OCR_TASK_FNC_( FNC_continuation )
         //update block counts
         ocrGuid_t reduceBlockCountsEDT, reduceBlockCountsOEVT, reduceBlockCountsOEVTS;
         reduceBlockCountsPRM_t reduceBlockCountsPRM = {irefine, ts};
+        OEVT_COUNTED_PRE(reduceBlockCountsOEVT);
         ocrEdtCreate( &reduceBlockCountsEDT, TML_reduceBlockCounts,
                       EDT_PARAM_DEF, (u64*)&reduceBlockCountsPRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &reduceBlockCountsOEVT ); //FNC_reduceBlockCounts
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &reduceBlockCountsOEVT ); //FNC_reduceBlockCounts
         createEventHelper(&reduceBlockCountsOEVTS, 1);
         ocrAddDependence( reduceBlockCountsOEVT, reduceBlockCountsOEVTS, 0, DB_MODE_NULL );
 
@@ -275,9 +276,10 @@ _OCR_TASK_FNC_( FNC_continuation )
         //Loadbalancing
         loadbalancePRM_t loadbalancePRM = {ts};
         ocrGuid_t loadbalanceEDT, loadbalanceOEVT, loadbalanceOEVTS;
+        OEVT_COUNTED_PRE(loadbalanceOEVT);
         ocrEdtCreate( &loadbalanceEDT, TML_loadbalance,
                       EDT_PARAM_DEF, (u64*)&loadbalancePRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &loadbalanceOEVT ); //FNC_loadbalance
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &loadbalanceOEVT ); //FNC_loadbalance
         createEventHelper(&loadbalanceOEVTS, 1);
         ocrAddDependence( loadbalanceOEVT, loadbalanceOEVTS, 0, DB_MODE_NULL );
 

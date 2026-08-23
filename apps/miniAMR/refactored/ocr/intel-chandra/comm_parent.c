@@ -89,9 +89,10 @@ ocrGuid_t commRefnSibsEdt(EDT_ARGS)
 
     ocrGuid_t packRefnBufsSibsEDT, packRefnBufsSibsOEVT, packRefnBufsSibsOEVTS;
 
+    OEVT_COUNTED_PRE(packRefnBufsSibsOEVT);
     ocrEdtCreate( &packRefnBufsSibsEDT, packRefnBufsSibsTML, //packRefnBufsSibsEdt
                   EDT_PARAM_DEF, paramv, nSibs+1, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &packRefnBufsSibsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &packRefnBufsSibsOEVT );
 
     createEventHelper( &packRefnBufsSibsOEVTS, 1);
     ocrAddDependence( packRefnBufsSibsOEVT, packRefnBufsSibsOEVTS, 0, DB_MODE_NULL );
@@ -113,9 +114,10 @@ ocrGuid_t commRefnSibsEdt(EDT_ARGS)
 
     ocrGuid_t unpackRefnBufsSibsEDT, unpackRefnBufsSibsOEVT, unpackRefnBufsSibsOEVTS;
 
+    OEVT_COUNTED_PRE(unpackRefnBufsSibsOEVT);
     ocrEdtCreate( &unpackRefnBufsSibsEDT, unpackRefnBufsSibsTML, //unpackRefnBufsSibsEdt
                   EDT_PARAM_DEF, paramv, nSibs+2, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &unpackRefnBufsSibsOEVT);
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &unpackRefnBufsSibsOEVT);
 
     createEventHelper( &unpackRefnBufsSibsOEVTS, 1);
     ocrAddDependence( unpackRefnBufsSibsOEVT, unpackRefnBufsSibsOEVTS, 0, DB_MODE_NULL );

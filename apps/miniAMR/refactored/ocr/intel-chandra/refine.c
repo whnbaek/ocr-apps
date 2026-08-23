@@ -90,9 +90,10 @@ _OCR_TASK_FNC_( FNC_refine )
 
     ocrGuid_t reduceBlockCountsEDT, reduceBlockCountsOEVT, reduceBlockCountsOEVTS;
     reduceBlockCountsPRM_t reduceBlockCountsPRM = {irefine, ts};
+    OEVT_COUNTED_PRE(reduceBlockCountsOEVT);
     ocrEdtCreate( &reduceBlockCountsEDT, TML_reduceBlockCounts,
                   EDT_PARAM_DEF, (u64*)&reduceBlockCountsPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &reduceBlockCountsOEVT ); //FNC_reduceBlockCounts
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &reduceBlockCountsOEVT ); //FNC_reduceBlockCounts
     createEventHelper(&reduceBlockCountsOEVTS, 1);
     ocrAddDependence( reduceBlockCountsOEVT, reduceBlockCountsOEVTS, 0, DB_MODE_NULL );
 
@@ -106,9 +107,10 @@ _OCR_TASK_FNC_( FNC_refine )
     commRefnNbrsPRM_t commRefnNbrsPRM = {irefine, iAxis, flag};
     ocrGuid_t commRefnNbrsEDT, commRefnNbrsOEVT, commRefnNbrsOEVTS;
 
+    OEVT_COUNTED_PRE(commRefnNbrsOEVT);
     ocrEdtCreate( &commRefnNbrsEDT, TML_commRefnNbrs, //commRefnNbrsEdt
                   EDT_PARAM_DEF, (u64*) &commRefnNbrsPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &commRefnNbrsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &commRefnNbrsOEVT );
     createEventHelper(&commRefnNbrsOEVTS, 1);
     ocrAddDependence( commRefnNbrsOEVT, commRefnNbrsOEVTS, 0, DB_MODE_NULL );
 
@@ -120,9 +122,10 @@ _OCR_TASK_FNC_( FNC_refine )
     commRefnSibsPRM_t commRefnSibsPRM = {irefine, flag, 0};
     ocrGuid_t commRefnSibsEDT, commRefnSibsOEVT, commRefnSibsOEVTS;
 
+    OEVT_COUNTED_PRE(commRefnSibsOEVT);
     ocrEdtCreate( &commRefnSibsEDT, TML_commRefnSibs, //commRefnSibsEdt
                   EDT_PARAM_DEF, (u64*) &commRefnSibsPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &commRefnSibsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &commRefnSibsOEVT );
     createEventHelper(&commRefnSibsOEVTS, 1);
     ocrAddDependence( commRefnSibsOEVT, commRefnSibsOEVTS, 0, DB_MODE_NULL );
 
@@ -133,9 +136,10 @@ _OCR_TASK_FNC_( FNC_refine )
     refineAllLevelsPRM_t refineAllLevelsPRM = {irefine};
     ocrGuid_t refineAllLevelsEDT, refineAllLevelsOEVT, refineAllLevelsOEVTS;
 
+    OEVT_COUNTED_PRE(refineAllLevelsOEVT);
     ocrEdtCreate( &refineAllLevelsEDT, TML_refineAllLevels, //FNC_refineAllLevels
                   EDT_PARAM_DEF, (u64*) &refineAllLevelsPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &refineAllLevelsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &refineAllLevelsOEVT );
     createEventHelper(&refineAllLevelsOEVTS, 1);
     ocrAddDependence( refineAllLevelsOEVT, refineAllLevelsOEVTS, 0, DB_MODE_NULL );
 
@@ -148,9 +152,10 @@ _OCR_TASK_FNC_( FNC_refine )
     splitBlocksPRM_t splitBlocksPRM = {irefine};
     ocrGuid_t splitBlocksEDT, splitBlocksOEVT, splitBlocksOEVTS;
 
+    OEVT_COUNTED_PRE(splitBlocksOEVT);
     ocrEdtCreate( &splitBlocksEDT, TML_splitBlocks, //FNC_splitBlocks
                   EDT_PARAM_DEF, (u64*)&splitBlocksPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &splitBlocksOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &splitBlocksOEVT );
     createEventHelper(&splitBlocksOEVTS, 1);
     ocrAddDependence( splitBlocksOEVT, splitBlocksOEVTS, 0, DB_MODE_NULL );
 
@@ -345,9 +350,10 @@ _OCR_TASK_FNC_( FNC_refineAllLevels )
     refineLevelsPRM_t refine1Levels = { irefine, ilevel, phase, iter };
     ocrGuid_t refine1AllLevelsEDT, refine1AllLevelsOEVT, refine1AllLevelsOEVTS;
 
+    OEVT_COUNTED_PRE(refine1AllLevelsOEVT);
     ocrEdtCreate( &refine1AllLevelsEDT, TML_refine1AllLevels, //FNC_refine1AllLevels
                   EDT_PARAM_DEF, (u64*) &refine1Levels, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &refine1AllLevelsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &refine1AllLevelsOEVT );
     createEventHelper(&refine1AllLevelsOEVTS, 1);
     ocrAddDependence( refine1AllLevelsOEVT, refine1AllLevelsOEVTS, 0, DB_MODE_NULL );
 
@@ -586,9 +592,10 @@ _OCR_TASK_FNC_( FNC_refine1Level ) //Make sure irefine is set to '0' the first t
 
         ocrGuid_t scatterRefineEDT, scatterRefineOEVT, scatterRefineOEVTS;
 
+        OEVT_COUNTED_PRE(scatterRefineOEVT);
         ocrEdtCreate( &scatterRefineEDT, TML_scatterRefine, //FNC_scatterRefine
                       EDT_PARAM_DEF, paramv, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &scatterRefineOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &scatterRefineOEVT );
         createEventHelper(&scatterRefineOEVTS, 1);
         ocrAddDependence( scatterRefineOEVT, scatterRefineOEVTS, 0, DB_MODE_NULL );
 
@@ -662,9 +669,10 @@ _OCR_TASK_FNC_( FNC_scatterRefine )
         ocrGuid_t commRefnNbrsReverseEDT, commRefnNbrsReverseOEVT, commRefnNbrsReverseOEVTS;
 
         //refineIntentionNbrsHaloExchangeReverse();
+        OEVT_COUNTED_PRE(commRefnNbrsReverseOEVT);
         ocrEdtCreate( &commRefnNbrsReverseEDT, TML_commRefnNbrs, //commRefnNbrsEdt
                       EDT_PARAM_DEF, (u64*) &commRefnNbrsReversePRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &commRefnNbrsReverseOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &commRefnNbrsReverseOEVT );
         createEventHelper(&commRefnNbrsReverseOEVTS, 1);
         ocrAddDependence( commRefnNbrsReverseOEVT, commRefnNbrsReverseOEVTS, 0, DB_MODE_NULL );
 
@@ -677,9 +685,10 @@ _OCR_TASK_FNC_( FNC_scatterRefine )
         commRefnSibsPRM_t commRefnSibsReversePRM = {irefine, flag, 0};
         ocrGuid_t commRefnSibsReverseEDT, commRefnSibsReverseOEVT, commRefnSibsReverseOEVTS;
 
+        OEVT_COUNTED_PRE(commRefnSibsReverseOEVT);
         ocrEdtCreate( &commRefnSibsReverseEDT, TML_commRefnSibs, //commRefnSibsEdt
                       EDT_PARAM_DEF, (u64*) &commRefnSibsReversePRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &commRefnSibsReverseOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &commRefnSibsReverseOEVT );
         createEventHelper(&commRefnSibsReverseOEVTS, 1);
         ocrAddDependence( commRefnSibsReverseOEVT, commRefnSibsReverseOEVTS, 0, DB_MODE_NULL );
 
@@ -693,9 +702,10 @@ _OCR_TASK_FNC_( FNC_scatterRefine )
         ocrGuid_t commRefnNbrsEDT, commRefnNbrsOEVT, commRefnNbrsOEVTS;
 
         //refineIntentionNbrsHaloExchange();
+        OEVT_COUNTED_PRE(commRefnNbrsOEVT);
         ocrEdtCreate( &commRefnNbrsEDT, TML_commRefnNbrs, //commRefnNbrsEdt
                       EDT_PARAM_DEF, (u64*) &commRefnNbrsPRM, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_FINISH, &myEdtAffinityHNT, &commRefnNbrsOEVT );
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &commRefnNbrsOEVT );
         createEventHelper(&commRefnNbrsOEVTS, 1);
         ocrAddDependence( commRefnNbrsOEVT, commRefnNbrsOEVTS, 0, DB_MODE_NULL );
 

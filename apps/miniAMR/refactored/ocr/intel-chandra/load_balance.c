@@ -72,9 +72,10 @@ _OCR_TASK_FNC_( FNC_loadbalance )
 
     ocrGuid_t idgatherEDT, idgatherOEVT, idgatherOEVTS;
 
+    OEVT_COUNTED_PRE(idgatherOEVT);
     ocrEdtCreate( &idgatherEDT, TML_idgather,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &idgatherOEVT ); //FNC_idgather
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &idgatherOEVT ); //FNC_idgather
     createEventHelper(&idgatherOEVTS, 1);
     ocrAddDependence( idgatherOEVT, idgatherOEVTS, 0, DB_MODE_NULL );
 

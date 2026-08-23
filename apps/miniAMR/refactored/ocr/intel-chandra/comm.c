@@ -77,9 +77,10 @@ _OCR_TASK_FNC_( FNC_comm )
 
     ocrGuid_t commHaloNbrsEDT, commHaloNbrsOEVT, commHaloNbrsOEVTS;
 
+    OEVT_COUNTED_PRE(commHaloNbrsOEVT);
     ocrEdtCreate( &commHaloNbrsEDT, commHaloNbrsTML, //commHaloNbrsEdt
                   EDT_PARAM_DEF, (u64*)commPRM, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_FINISH, &myEdtAffinityHNT, &commHaloNbrsOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &commHaloNbrsOEVT );
 
     createEventHelper( &commHaloNbrsOEVTS, 1);
     ocrAddDependence( commHaloNbrsOEVT, commHaloNbrsOEVTS, 0, DB_MODE_NULL );
@@ -183,9 +184,10 @@ _OCR_TASK_FNC_( commHaloNbrsEdt )
 
     ocrGuid_t packHalosEDT, packHalosOEVT, packHalosOEVTS;
 
+    OEVT_COUNTED_PRE(packHalosOEVT);
     ocrEdtCreate( &packHalosEDT, packHalosTML, //packHalosEdt
                   EDT_PARAM_DEF, (u64*)commPRM, nNbrs+2, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, &packHalosOEVT );
+                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &packHalosOEVT );
 
     createEventHelper( &packHalosOEVTS, 1);
     ocrAddDependence( packHalosOEVT, packHalosOEVTS, 0, DB_MODE_NULL );
