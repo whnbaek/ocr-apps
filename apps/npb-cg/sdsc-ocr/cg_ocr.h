@@ -49,6 +49,10 @@ void conj_grad(u64 n, u64 blk, ocrGuid_t a, ocrGuid_t x, ocrGuid_t cont, u32 dep
 
 int makea(classdb_t* class, ocrGuid_t* a);
 
+/* one row's random entries; the draw count is data-dependent, so the stream
+   position after a row is only known by having drawn it */
+void sprnvc(u32 n, u32* nz, u32 nn1, double* v, u32* iv, u32 di, double dv, randdb_t* randdb);
+
 ocrGuid_t square(u64 n, ocrGuid_t* o);
 
 void alphas(u64 n, ocrGuid_t r, ocrGuid_t p, ocrGuid_t q, ocrGuid_t* al, ocrGuid_t* nal);

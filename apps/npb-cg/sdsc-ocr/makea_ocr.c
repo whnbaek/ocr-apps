@@ -11,7 +11,7 @@
 // generate nz values for different indexes, which are stored in iv,
 // and ensures that the index di is present or adds it with value dv,
 // in which case there will be nz+1 values and nz is incremented accordingly
-static void sprnvc(u32 n, u32* nz, u32 nn1, double* v, u32* iv, u32 di, double dv, randdb_t* randdb)
+void sprnvc(u32 n, u32* nz, u32 nn1, double* v, u32* iv, u32 di, double dv, randdb_t* randdb)
 {
     int nzv = 0;
     while(nzv<*nz) {
