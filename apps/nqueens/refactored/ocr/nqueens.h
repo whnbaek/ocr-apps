@@ -14,6 +14,7 @@ struct nqueens_args
     u32       ldiag;
     u32       cols;
     u32       rdiag;
+    u32       rr_levels;      /* tree levels scattered before pinning */
 };
 
 struct shutdown_args
@@ -23,6 +24,7 @@ struct shutdown_args
     u32 n;
     u32 cutoff;
     u32 rounds_left;
+    u32 rr_levels;
     timestamp_t start;
 };
 

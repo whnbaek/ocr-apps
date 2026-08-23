@@ -8,12 +8,30 @@
 #include "ocr.h"
 #include "ocr-std.h"
 #include "macros.h"
+#include "extensions/ocr-affinity.h"
 
 
 #include "stdlib.h"
 
+/* Placement-optimization layer: with OCR_APP_OPTIMIZED_PLACEMENT defined the
+ * helpers below fill *h and return it; otherwise they return NULL_HINT and
+ * the application keeps its as-born placement. */
+
+/* Top recursion levels whose EDTs are round-robin distributed across policy
+ * domains keyed on a deterministic path id; below this the whole subtree pins
+ * to the creating rank and runs wire-free.  The depth is an argument, not a
+ * constant: it trades scatter against the migrations a subtree would have
+ * amortised locally, so it is calibrated by measurement.  This is only the
+ * default when the argument is absent. */
+#ifndef FIB_RR_LEVELS
+#define FIB_RR_LEVELS 11
+#endif
+
 typedef struct {
     ocrGuid_t completeGuid;
+    u64 level;
+    u64 pathId;
+    u64 rrLevels;
 } fibPRM_t;
 
 typedef struct {
@@ -23,6 +41,52 @@ typedef struct {
 typedef struct {
     u64 correctAns;
 }absFinalPRM_t;
+
+/* Finalizer-style bit mix: the path id is the branch sequence read as a
+ * binary number, so its low bits are the most recent branches and a raw
+ * modulus aliases with the tree's own shape -- sibling subtrees of very
+ * different size land on the same rank.  Mixing first breaks the alias. */
+static inline u64 fibMixKey(u64 x) {
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+/* Pin the sum EDT to the creating rank. */
+static ocrHint_t * fibLocalEdtHint(ocrHint_t * h) {
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    ocrGuid_t aff;
+    ocrAffinityGetCurrent(&aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+#else
+    (void)h;
+    return NULL_HINT;
+#endif
+}
+
+/* Top-level children scatter round-robin on their path id; deeper children
+ * stay on the creating rank so the subtree beneath them is wire-free. */
+static ocrHint_t * fibChildEdtHint(ocrHint_t * h, u64 childLevel, u64 childPath,
+                                   u64 rrLevels) {
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    ocrGuid_t aff;
+    if (childLevel <= rrLevels)
+        ocrAffinityGetAt(AFFINITY_PD, fibMixKey(childPath) % nranks, &aff);
+    else
+        ocrAffinityGetCurrent(&aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+#else
+    (void)h; (void)childLevel; (void)childPath; (void)rrLevels;
+    return NULL_HINT;
+#endif
+}
 
 ocrGuid_t complete(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     completePRM_t *completeParamvIn = (completePRM_t *)paramv;
@@ -58,6 +122,9 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
     fibPRM_t *fibParamvIn = (fibPRM_t *)paramv;
     inDep = fibParamvIn->completeGuid;
+    u64 level = fibParamvIn->level;
+    u64 pathId = fibParamvIn->pathId;
+    u64 rrLevels = fibParamvIn->rrLevels;
 
     u32 n = *(u32*)(depv[0].ptr);
     /* This EDT only reads the argument block; release it before any
@@ -79,8 +146,9 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         completeParamv.depGuid = inDep;
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, complete, PRMNUM(complete), 3);
+        ocrHint_t compHint;
         ocrEdtCreate(&comp, templateGuid, PRMNUM(complete), (u64 *)&completeParamv, 3, NULL, EDT_PROP_NONE,
-                     NULL_HINT, NULL);
+                     fibLocalEdtHint(&compHint), NULL);
         ocrEdtTemplateDestroy(templateGuid);
     }
     //ocrPrintf("In fibEdt(%u) -- spawned complete EDT GUID 0x%llx\n", n, (u64)comp);
@@ -103,11 +171,16 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     fibPRM_t fibParamv0;
     {
         fibParamv0.completeGuid = fibDone[0];
+        fibParamv0.level = level + 1;
+        fibParamv0.pathId = pathId * 2 + 0;
+        fibParamv0.rrLevels = rrLevels;
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
+        ocrHint_t fib0Hint;
         ocrEdtCreate(&fib0, templateGuid, PRMNUM(fib), (u64 *)&fibParamv0, 1, NULL, EDT_PROP_NONE,
-                     NULL_HINT, NULL);
+                     fibChildEdtHint(&fib0Hint, fibParamv0.level, fibParamv0.pathId,
+                                     rrLevels), NULL);
         ocrEdtTemplateDestroy(templateGuid);
         /* The child only reads its argument; wire it RO, after the release
          * above published the value. */
@@ -123,11 +196,16 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     fibPRM_t fibParamv1;
     {
         fibParamv1.completeGuid = fibDone[1];
+        fibParamv1.level = level + 1;
+        fibParamv1.pathId = pathId * 2 + 1;
+        fibParamv1.rrLevels = rrLevels;
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
+        ocrHint_t fib1Hint;
         ocrEdtCreate(&fib1, templateGuid, PRMNUM(fib), (u64 *)&fibParamv1, 1, NULL, EDT_PROP_NONE,
-                     NULL_HINT, NULL);
+                     fibChildEdtHint(&fib1Hint, fibParamv1.level, fibParamv1.pathId,
+                                     rrLevels), NULL);
         ocrEdtTemplateDestroy(templateGuid);
         /* The child only reads its argument; wire it RO, after the release
          * above published the value. */
@@ -163,12 +241,15 @@ u64 fib(u32 n)
 ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrPrintf("Starting mainEdt\n");
     u32 input;
+    u64 rrLevels = FIB_RR_LEVELS;
     u32 argc = ocrGetArgc(depv[0].ptr);
-    if((argc != 2)) {
-        ocrPrintf("Usage: fib <num>, defaulting to 10\n");
+    if(argc < 2 || argc > 3) {
+        ocrPrintf("Usage: fib <num> [scatter-levels], defaulting to 10\n");
         input = 10;
     } else {
         input = atoi(ocrGetArgv(depv[0].ptr, 1));
+        if(argc == 3)
+            rrLevels = strtoull(ocrGetArgv(depv[0].ptr, 2), NULL, 10);
     }
 
     ocrGuid_t fibC, totallyDoneEvent, absFinalEdt, templateGuid;
@@ -207,6 +288,9 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     /* create the EDT with the done_event as the argument */
     {
         fibParamv.completeGuid = totallyDoneEvent;
+        fibParamv.level = 0;
+        fibParamv.pathId = 0;
+        fibParamv.rrLevels = rrLevels;
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
