@@ -293,7 +293,7 @@ ocrPrintf("//// create a template for cfar_async function\n");RAG_FLUSH;
 			PRMNUM(CFARAsync), // paramc
 			5);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = cfar_async_clg;
+	RAG_TEMPLATE_REGISTER(cfar_async_clg);
 
 #ifdef RAG_NEW_BLK_SIZE
 	for(int m=0; m<Mwins; m+=CFAR_ASYNC_BLOCK_SIZE_M) {

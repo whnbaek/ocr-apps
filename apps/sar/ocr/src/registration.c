@@ -301,7 +301,7 @@ ocrGuid_t affine_async_2_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, o
 			PRMNUM(affineAsync), // paramc
 			5);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = affine_async_2_clg;
+	RAG_TEMPLATE_REGISTER(affine_async_2_clg);
 
 	struct async_2_args_t *async_2_args_ptr; ocrGuid_t async_2_args_dbg;
 	async_2_args_ptr = bsm_malloc(&async_2_args_dbg,sizeof(struct async_2_args_t));
@@ -663,7 +663,7 @@ ocrPrintf("//// create a template for affine_async_1_edt function (N=%d)\n",N);R
 			0,			// paramc
 			8);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = affine_async_1_clg;
+	RAG_TEMPLATE_REGISTER(affine_async_1_clg);
 
 #ifdef TRACE_LVL_2
 ocrPrintf("//// create a ctrl_pt affine_async_1_edt\n");RAG_FLUSH;

@@ -158,6 +158,21 @@ void rag_memcpy(void *out, void *in, size_t size);
 // _dbp => data block pointer
 // _lcl => data on stack
 
+#define RAG_TEMPLATE_MAX 25
+// The registry is a fixed-size array claimed with an atomic bump, so a claim
+// past its end has to be caught before the store: it would land on whatever
+// follows the array, not on a slot of it.
+#define RAG_TEMPLATE_REGISTER(tpl) \
+do { \
+	int __idx__ = __sync_fetch_and_add(&templateIndex,1); \
+	if(__idx__ >= RAG_TEMPLATE_MAX) { \
+		ocrPrintf("templateList overflow: template %d exceeds capacity %d. Exiting.\n", \
+			__idx__+1, RAG_TEMPLATE_MAX); RAG_FLUSH; \
+		xe_exit(1); \
+	} \
+	templateList[__idx__] = (tpl); \
+} while(0)
+
 void *spad_calloc(ocrGuid_t *dbg, size_t n, size_t size);
 void *spad_malloc(ocrGuid_t *dbg, size_t size);
 void  spad_free(void *dbp, ocrGuid_t dbg );

@@ -26,7 +26,7 @@ ocrGuid_t backproject_async_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc
   RAG_REF_MACRO_BSM( struct complexData **,image,NULL,NULL,image_dbg,2);
   RAG_REF_MACRO_BSM( struct complexData **,Xin,NULL,NULL,Xin_dbg,3);
   RAG_REF_MACRO_BSM( float **,platpos,NULL,NULL,platpos_dbg,4);
-  RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,4);
+  RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,5);
 
   // Rebuild the row-pointer tables against this node's copies before any
   // image[m][n] / Xin[k][b] / platpos[k][c] access.  Xin is X (P3==P1 rows,
@@ -523,7 +523,7 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
 	PRMNUM(backProjAsync),
 	6);			// depc
     assert(retval==0);
-    templateList[__sync_fetch_and_add(&templateIndex,1)] = backproject_async_clg;
+    RAG_TEMPLATE_REGISTER(backproject_async_clg);
 
 #ifdef RAG_NEW_BLK_SIZE
     for(int m=m1; m<m2; m+=BACK_PROJ_ASYNC_BLOCK_SIZE_M) {
@@ -601,7 +601,7 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
 	PRMNUM(backProjAsync), // paramc
 	6);			// depc
     assert(retval==0);
-    templateList[__sync_fetch_and_add(&templateIndex,1)] = backproject_async_clg;
+    RAG_TEMPLATE_REGISTER(backproject_async_clg);
 
 #ifdef RAG_NEW_BLK_SIZE
     for(int m=m1; m<m2; m+=BACK_PROJ_ASYNC_BLOCK_SIZE_M) {

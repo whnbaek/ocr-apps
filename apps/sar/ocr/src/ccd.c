@@ -161,7 +161,7 @@ ocrPrintf("//// create a template for ccd_async function\n");RAG_FLUSH;
 			PRMNUM(ccdAsync), // paramc
 			4);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = ccd_async_clg;
+	RAG_TEMPLATE_REGISTER(ccd_async_clg);
 
 #ifdef RAG_NEW_BLK_SIZE
 	for(int m=0; m<Mwins; m+=CCD_ASYNC_BLOCK_SIZE_M) {

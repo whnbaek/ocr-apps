@@ -89,7 +89,7 @@ ocrPrintf("//// create a template for post_FormImage function\n");RAG_FLUSH;
 #endif
 		);
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = post_FormImage_clg;
+	RAG_TEMPLATE_REGISTER(post_FormImage_clg);
 
 #ifdef TRACE_LVL_2
 ocrPrintf("//// create an edt for post_FormImage\n");RAG_FLUSH;
@@ -240,7 +240,7 @@ ocrPrintf("//// create a template for BackProj function\n");RAG_FLUSH;
 				PRMNUM(backProj), // paramc
 				7);			// depc
 		assert(retval==0);
-		templateList[__sync_fetch_and_add(&templateIndex,1)] = BackProj_clg;
+		RAG_TEMPLATE_REGISTER(BackProj_clg);
 
 #ifdef TRACE_LVL_2
 ocrPrintf("//// create an edt for BackProj\n");RAG_FLUSH;

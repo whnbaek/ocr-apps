@@ -47,7 +47,7 @@
 #include "argv.h"
 #endif
 
-SHARED ocrGuid_t templateList[25];
+SHARED ocrGuid_t templateList[RAG_TEMPLATE_MAX];
 SHARED int templateIndex = 0;
 
 #ifndef TG_ARCH // FIX-ME
@@ -162,6 +162,15 @@ ocrPrintf("allocate AffineParams\n");RAG_FLUSH;
 	const char *in_pulsetime = argv_3;
 	{
 		uint64_t rag_argc = ocrGetArgc(depv[0].ptr);
+		/* The four paths are all-or-nothing: a partial argv is a typo, not a
+		 * request for the compiled defaults, and taking the defaults there
+		 * fails the validation opens below naming paths nobody typed. */
+		if( rag_argc > 1 && rag_argc < 5 ) {
+			ocrPrintf("USAGE: %s <data file> <platform position file>"
+				" <pulse transmission time file> <detects output file>"
+				" [parameter file]\n",ocrGetArgv(depv[0].ptr, 0));RAG_FLUSH;
+			xe_exit(1);
+		}
 		if( rag_argc >= 5 ) {
 			in_data      = ocrGetArgv(depv[0].ptr, 1);
 			in_platpos   = ocrGetArgv(depv[0].ptr, 2);
@@ -606,7 +615,7 @@ ocrPrintf("// create a template for post_main_edt function\n");RAG_FLUSH;
 			0,			// paramc
 			15);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = post_main_clg;
+	RAG_TEMPLATE_REGISTER(post_main_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create an edt for post_main_edt\n");RAG_FLUSH;
@@ -654,7 +663,7 @@ ocrPrintf("// create a template for main_body_edt function\n");RAG_FLUSH;
 			PRMNUM(mainBody),			// paramc
 			12);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = main_body_clg;
+	RAG_TEMPLATE_REGISTER(main_body_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create an edt for main_body_edt\n");RAG_FLUSH;
@@ -740,7 +749,7 @@ ocrPrintf("// create a template for ReadData_edt\n");RAG_FLUSH;
 			PRMNUM(readData),			// paramc
 			5);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = ReadData_clg;
+	RAG_TEMPLATE_REGISTER(ReadData_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for FormImage_edt\n");RAG_FLUSH;
@@ -758,7 +767,7 @@ ocrPrintf("// create a template for FormImage_edt\n");RAG_FLUSH;
 #endif
 		);
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = FormImage_clg;
+	RAG_TEMPLATE_REGISTER(FormImage_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for Affine_edt function\n");RAG_FLUSH;
@@ -771,7 +780,7 @@ ocrPrintf("// create a template for Affine_edt function\n");RAG_FLUSH;
 			PRMNUM(affine),			// paramc
 			4);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = Affine_clg;
+	RAG_TEMPLATE_REGISTER(Affine_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for post_Affine_edt function\n");RAG_FLUSH;
@@ -784,7 +793,7 @@ ocrPrintf("// create a template for post_Affine_edt function\n");RAG_FLUSH;
 			0,			// paramc
 			5);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = post_Affine_clg;
+	RAG_TEMPLATE_REGISTER(post_Affine_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for post_affine_async_1_edt function\n");RAG_FLUSH;
@@ -797,7 +806,7 @@ ocrPrintf("// create a template for post_affine_async_1_edt function\n");RAG_FLU
 			PRMNUM(postAffineAsync),				// paramc
 			9);				// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = post_affine_async_1_clg;
+	RAG_TEMPLATE_REGISTER(post_affine_async_1_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for post_affine_async_2_edt function\n");RAG_FLUSH;
@@ -810,7 +819,7 @@ ocrPrintf("// create a template for post_affine_async_2_edt function\n");RAG_FLU
 			0,				// paramc
 			9);				// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = post_affine_async_2_clg;
+	RAG_TEMPLATE_REGISTER(post_affine_async_2_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for CCD_edt function\n");RAG_FLUSH;
@@ -823,7 +832,7 @@ ocrPrintf("// create a template for CCD_edt function\n");RAG_FLUSH;
 			0,			// paramc
 			5);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = CCD_clg;
+	RAG_TEMPLATE_REGISTER(CCD_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create a template for post_CFAR function\n");RAG_FLUSH;
@@ -835,7 +844,7 @@ ocrPrintf("// create a template for post_CFAR function\n");RAG_FLUSH;
 			PRMNUM(postCFAR),			// paramc
 			3);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = post_CFAR_clg;
+	RAG_TEMPLATE_REGISTER(post_CFAR_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create an edt for post_CFAR\n");RAG_FLUSH;
@@ -879,7 +888,7 @@ ocrPrintf("// create a template for CFAR_edt function\n");RAG_FLUSH;
 			PRMNUM(CFAR),			// paramc
 			5);			// depc
 	assert(retval==0);
-	templateList[__sync_fetch_and_add(&templateIndex,1)] = CFAR_clg;
+	RAG_TEMPLATE_REGISTER(CFAR_clg);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// create an edt for CFAR_edt\n");RAG_FLUSH;
@@ -1107,7 +1116,13 @@ RAG_DEF_MACRO_SPAD(refFormImage_scg,NULL,NULL,NULL,NULL,dig_spot_dbg,7);
 //	FormImage(image_params_dbg,radar_params_dbg,
 //		curImage_dbg,X,Pt,Tp,NULL_GUID);
 #endif
-	assert(image_params->numImages == 2);
+	// The DAG below forms exactly one reference and one current image, so
+	// NumberImages is not a free parameter: any other value would report a
+	// scalar for a problem the program did not run.
+	if( image_params->numImages != 2 ) {
+		ocrPrintf("NumberImages must be 2. %d Exiting.\n",image_params->numImages);RAG_FLUSH;
+		xe_exit(1);
+	}
 	for(int image=1;image<image_params->numImages;image++) {
 #ifdef TRACE_LVL_1
 ocrPrintf("// Read second set of input data\n");RAG_FLUSH;
