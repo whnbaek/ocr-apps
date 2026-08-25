@@ -158,7 +158,11 @@ void rag_memcpy(void *out, void *in, size_t size);
 // _dbp => data block pointer
 // _lcl => data on stack
 
-#define RAG_TEMPLATE_MAX 25
+/* Templates are registered so they can be destroyed at the end.  The count is
+   not one per function: the tasks that build a phase create their templates
+   when they run, so a program that forms two images registers each of those
+   twice.  Sized with room for that rather than for the function count. */
+#define RAG_TEMPLATE_MAX 256
 // The registry is a fixed-size array claimed with an atomic bump, so a claim
 // past its end has to be caught before the store: it would land on whatever
 // follows the array, not on a slot of it.
@@ -365,7 +369,7 @@ extern double round(double arg);
 #include <math.h>
 #endif
 
-extern SHARED ocrGuid_t templateList[25];
+extern SHARED ocrGuid_t templateList[RAG_TEMPLATE_MAX];
 extern SHARED int templateIndex;
 
 #endif // RAG_OCR_H
