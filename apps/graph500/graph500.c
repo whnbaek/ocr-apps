@@ -12,7 +12,9 @@
 #include <inttypes.h>
 
 #ifndef NO_AFFINITIES
+#ifndef ENABLE_EXTENSION_AFFINITY
 #define ENABLE_EXTENSION_AFFINITY
+#endif
 #endif
 #include <ocr.h>
 #ifndef NO_MAP
@@ -486,8 +488,22 @@ void myAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot, ocrDbAcc
 #endif
 }
 
+#ifdef NO_MAP
+// The pre-created EDTs live in three MAX_LEVEL-deep regions laid back to back,
+// so a level at the cap does not run off the block: it addresses the next EDT
+// kind's region and silently wires the wrong EDT.
+void checkLevel(u64 level) {
+	if (level >= MAX_LEVEL) {
+		ocrPrintf("ERROR: BFS level %" PRId64 " reaches the pre-created EDT depth MAX_LEVEL=%d."
+			" Raise MAX_LEVEL and rebuild.\n", level, (int)MAX_LEVEL); FLUSH;
+		ocrAbort(1);
+	}
+}
+#endif
+
 ocrGuid_t getDistribute(ocrGuid_t* constguidPTR, u64 level, u64 w, u64 R, u64 C) {
 #ifdef NO_MAP
+	checkLevel(level);
 	return constguidPTR[INDEX_OF_DISTRIBUTEEDT(w, level)];
 #else
 	ocrGuid_t ret;
@@ -497,6 +513,7 @@ ocrGuid_t getDistribute(ocrGuid_t* constguidPTR, u64 level, u64 w, u64 R, u64 C)
 }
 ocrGuid_t getSearch(ocrGuid_t* constguidPTR, u64 level, u64 w, u64 R, u64 C) {
 #ifdef NO_MAP
+	checkLevel(level);
 	return constguidPTR[INDEX_OF_SEARCHEDT(w, level)];
 #else
 	ocrGuid_t ret;
@@ -506,6 +523,7 @@ ocrGuid_t getSearch(ocrGuid_t* constguidPTR, u64 level, u64 w, u64 R, u64 C) {
 }
 ocrGuid_t getApply(ocrGuid_t* constguidPTR, u64 level, u64 w, u64 R, u64 C) {
 #ifdef NO_MAP
+	checkLevel(level);
 	return constguidPTR[INDEX_OF_APPLYEDT(w, level)];
 #else
 	ocrGuid_t ret;
@@ -515,9 +533,46 @@ ocrGuid_t getApply(ocrGuid_t* constguidPTR, u64 level, u64 w, u64 R, u64 C) {
 }
 
 #ifdef NO_MAP
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+/* The workers form an R x C grid over the adjacency matrix, and one BFS level
+ * exchanges along the whole of a worker's row and the whole of its column.
+ * Indexing places by the worker id alone puts every one of those partners on
+ * another place as soon as there is more than one: the id is row-major, so
+ * consecutive ids are row partners and ids C apart are column partners, and
+ * both strides are lost to the modulo.
+ *
+ * Give each place a contiguous tile of the grid instead.  A worker then keeps
+ * C/pc of its row and R/pr of its column on its own place, and the split is
+ * chosen to maximise that sum -- which, with the tile count fixed, favours
+ * leaving one axis whole rather than halving both.  Every place still holds
+ * the same number of workers, so nothing is traded away in balance.
+ *
+ * Falls back to the shipped mapping when the place count does not divide the
+ * grid, since a partial tile would leave places holding different counts. */
+static int gridTiles(u64 R, u64 C, u64 P, u64 * o_pr, u64 * o_pc) {
+	u64 pr, best = 0;
+	int found = 0;
+	for (pr = 1; pr <= P; ++pr) {
+		u64 pc, local;
+		if (P % pr || R % pr) continue;
+		pc = P / pr;
+		if (C % pc) continue;
+		local = R / pr + C / pc;
+		if (local > best) { best = local; *o_pr = pr; *o_pc = pc; found = 1; }
+	}
+	return found;
+}
+
+u64 getAffinityIndex(u64 w, u64 R, u64 C, u64 affinityCount) {
+	u64 pr = 0, pc = 0;
+	if (!gridTiles(R, C, affinityCount, &pr, &pc)) return w % affinityCount;
+	return (w / C) / (R / pr) * pc + (w % C) / (C / pc);
+}
+#else
 u64 getAffinityIndex(u64 w, u64 R, u64 C, u64 affinityCount) {
 	return w % affinityCount;
 }
+#endif
 #endif
 
 u64 xorshift64star(u64 *x) {
@@ -1666,6 +1721,13 @@ ocrGuid_t shutDownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 		ocrDbDestroy(depv[i].guid);
 	//END CLEANING
 
+	/* Shutdown moves to a dedicated EDT on this EDT's output event: this body
+	 * still owes the release of its acquired dependences, and a mid-body
+	 * shutdown would truncate that release work out of the measured run. */
+	return NULL_GUID;
+}
+
+ocrGuid_t finalShutdownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	ocrShutdown();
 	return NULL_GUID;
 }
@@ -1884,10 +1946,20 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 	// SHUTDOWN EDT
 	ocrGuid_t shutDownEDT;
-	ocrEdtCreate(&shutDownEDT, shutDownTMP, EDT_PARAM_DEF, &NUMBER_OF_SEARCH, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, local_hint, NULL);
+	/* The output event fires only after shutDownEdt's dependence releases have
+	 * completed; the dedicated final-shutdown EDT below therefore never
+	 * truncates in-flight release work out of the measured run. */
+	ocrGuid_t shutDownOET;
+	ocrEdtCreate(&shutDownEDT, shutDownTMP, EDT_PARAM_DEF, &NUMBER_OF_SEARCH, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, local_hint, &shutDownOET);
 	myAddDependence(paramDBK, shutDownEDT, SHUTDOWN_SLOT_PARAM, PARAMDBK_MODE);
 	constguidPTR[INDEX_OF_SHUTDOWNEDT] = shutDownEDT;
 	ocrEdtTemplateDestroy(shutDownTMP);
+
+	ocrGuid_t finalShutdownTMP, finalShutdownEDT;
+	ocrEdtTemplateCreate(&finalShutdownTMP, finalShutdownEdt, 0, 1);
+	ocrEdtCreate(&finalShutdownEDT, finalShutdownTMP, 0, NULL, 1, NULL, EDT_PROP_NONE, local_hint, NULL);
+	ocrAddDependence(shutDownOET, finalShutdownEDT, 0, DB_MODE_NULL);
+	ocrEdtTemplateDestroy(finalShutdownTMP);
 
 	ocrGuid_t loadEndEVT;
 	ocrEventCreate(&loadEndEVT, OCR_EVENT_LATCH_T, EVT_PROP_NONE);
