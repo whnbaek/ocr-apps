@@ -10,31 +10,47 @@
 #include "blas.h"
 
 #ifdef NKEBONE_USE_CHANNEL_FOR_HALO_EXCHANGES
+#   ifndef ENABLE_EXTENSION_LABELING
 #   define ENABLE_EXTENSION_LABELING // For labeled GUIDs
+#   endif
 #   include "extensions/ocr-labeling.h" // For labeled GUIDs
 #endif
 
 #define XMEMSET(SRC, CHARC, SZ) {unsigned int xmIT; for(xmIT=0; xmIT<SZ; ++xmIT) *((char*)SRC+xmIT)=CHARC;}
 #define XMEMCPY(DEST, SRC, SZ) {unsigned int xmIT; for(xmIT=0; xmIT<SZ; ++xmIT) *((char*)DEST+xmIT)=*((char*)SRC+xmIT);}
 
-unsigned int myAtoU(const char *in)
+// The token must be a non-empty run of decimal digits: anything else is
+// reported through io_err and returns 0, since a value silently derived from
+// non-numeric text would set up a lattice nobody asked for.
+unsigned int myAtoU(const char *in, Err_t * io_err)
 {
     const long max_length = 2048;
     unsigned int res = 0;
 
     const char * p = in;
     while( *p != '\0' && (*p==' ' || *p=='\t') ) {
-            if(p-in > max_length) return res; //Error: text too long
+            if(p-in > max_length) { //Error: text too long
+                ocrPrintf("ERROR: command line argument is longer than %ld characters\n", max_length);
+                if(!*io_err) *io_err = __LINE__;
+                return 0;
+            }
             ++p;
     }
     if(*p=='\0'){
-        return res;
+        ocrPrintf("ERROR: command line argument \"%s\" is empty\n", in);
+        if(!*io_err) *io_err = __LINE__;
+        return 0;
     }
 
     int i;
     for(i = 0; p[i] != '\0'; ++i){
         if( p[i] == ' ' || p[i] == '\t') {
             break;
+        }
+        if( p[i] < '0' || p[i] > '9') {
+            ocrPrintf("ERROR: command line argument \"%s\" is not a number\n", in);
+            if(!*io_err) *io_err = __LINE__;
+            return 0;
         }
         res = res*10U + p[i] - '0';
     }
@@ -94,14 +110,15 @@ Err_t init_NEKOstatics(NEKOstatics_t * io, void * in_programArgv)
 //            argEz = (unsigned int) atoi(ocrGetArgv(in_programArgv, k++));
 //            argPDOF_begin = (unsigned int) atoi(ocrGetArgv(in_programArgv, k++));
 //            argCGcount = (unsigned int) atoi(ocrGetArgv(in_programArgv, k++));
-            argRx = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
-            argRy = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
-            argRz = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
-            argEx = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
-            argEy = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
-            argEz = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
-            argPDOF_begin = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
-            argCGcount = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++));
+            argRx = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            argRy = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            argRz = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            argEx = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            argEy = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            argEz = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            argPDOF_begin = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            argCGcount = (unsigned int) myAtoU(ocrGetArgv(in_programArgv, k++), &err);
+            IFEB;
 
             //ocrPrintf("DBG> init_NEKOstatics> ARGV= %u %u %u  %u %u %u  %u %u \n",
             //       argRx, argRy, argRz,  argEx, argEy, argEz, argPDOF_begin, argCGcount);
@@ -454,10 +471,73 @@ unsigned long calcPDid_G(NEKOglobals_t * in)
                                        //to be the same as the parent EDT.
                                        //See ocrXget(Edt|Dbk)Hint for details.
 }
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+// Split the rank lattice into one contiguous box per place, choosing the most
+// cubic factorisation of the place count that divides the lattice.  The halo
+// exchange is over the 26 neighbours of a rank, so which ranks share a place
+// decides how much of that exchange is local; the ranks of a box share all of
+// their interior faces.  Every place gets the same number of ranks and every
+// rank the same number of elements, so this trades nothing away in balance.
+int nekbone_placeGrid(unsigned int in_places, Triplet in_lattice, Triplet * o_grid)
+{
+    int found = 0;
+    double best = 0.0;
+    unsigned int nx, ny, nz;
+    for(nx=1; nx<=in_places; ++nx){
+        if(in_places % nx || in_lattice.a % nx) continue;
+        for(ny=1; ny*nx<=in_places; ++ny){
+            if(in_places % (nx*ny) || in_lattice.b % ny) continue;
+            nz = in_places/(nx*ny);
+            if(in_lattice.c % nz) continue;
+            {   // Rank the candidate by the box's surface: the faces a place
+                // does NOT own are exactly the halo it has to exchange, so the
+                // least surface per unit volume is the least remote exchange.
+                const double bx = (double)in_lattice.a/nx, by = (double)in_lattice.b/ny,
+                             bz = (double)in_lattice.c/nz;
+                const double surface = bx*by + by*bz + bx*bz;
+                const double score = (bx*by*bz)/surface;
+                // A box one rank thick on an axis keeps none of that axis's
+                // neighbours, so it does not trade remote exchange for local
+                // -- it only narrows the exchange onto fewer peers, which
+                // measures worse than spreading it.  Such a split is not a
+                // placement win and is left to the default mapping.
+                if(bx < 2.0 || by < 2.0 || bz < 2.0) continue;
+                if(score > best){ best = score; o_grid->a=nx; o_grid->b=ny; o_grid->c=nz; found=1; }
+            }
+        }
+    }
+    return found;
+}
+#endif
+
 unsigned long calcPDid_S(unsigned int in_OCR_affinityCount, unsigned int in_rankID)
 {
     const unsigned long x = in_rankID % in_OCR_affinityCount;
     return x;
+}
+
+
+unsigned long calcPDid_lattice(unsigned int in_OCR_affinityCount, unsigned int in_rankID,
+                               Triplet in_lattice)
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    Triplet grid = {0};
+    if(nekbone_placeGrid(in_OCR_affinityCount, in_lattice, &grid)){
+        const Triplet at = index_to_coords((Idz)in_rankID, in_lattice);
+        const unsigned long bx = (unsigned long)(in_lattice.a/grid.a);
+        const unsigned long by = (unsigned long)(in_lattice.b/grid.b);
+        const unsigned long bz = (unsigned long)(in_lattice.c/grid.c);
+        const unsigned long px = (unsigned long)at.a / bx;
+        const unsigned long py = (unsigned long)at.b / by;
+        const unsigned long pz = (unsigned long)at.c / bz;
+        return px + (unsigned long)grid.a * (py + (unsigned long)grid.b * pz);
+    }
+    // No box worth having: leave the mapping as the program shipped it.
+    return calcPDid_S(in_OCR_affinityCount, in_rankID);
+#else
+    (void)in_lattice;
+    return calcPDid_S(in_OCR_affinityCount, in_rankID);
+#endif
 }
 
 Err_t ocrXgetEdtHint(unsigned long in_pdID, ocrHint_t * io_HNT, ocrHint_t ** o_pHNT)

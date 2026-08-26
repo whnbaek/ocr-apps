@@ -15,6 +15,7 @@
 
 ocrGuid_t mainEdt(EDT_ARGS);
 ocrGuid_t finalEDT(EDT_ARGS);
+ocrGuid_t shutdownEDT(EDT_ARGS);
 ocrGuid_t SetupBtForkJoin(EDT_ARGS);
 ocrGuid_t ConcludeBtForkJoin(EDT_ARGS);
 ocrGuid_t BtForkIF(EDT_ARGS);
@@ -81,7 +82,14 @@ ocrGuid_t mainEdt(EDT_ARGS)
 
         //----- Create children EDTs
         ocrGuid_t ga_finalEDT = NULL_GUID;
-        err = ocrEdtXCreate(finalEDT, 0, NULL, 2, NULL, EDT_PROP_NONE, NULL_HINT, &ga_finalEDT, NULL); IFEB;
+        /* The output event fires only after finalEDT's dependence releases
+         * have completed; the dedicated shutdown EDT below therefore never
+         * truncates in-flight release work out of the measured run. */
+        ocrGuid_t ga_finalOut = NULL_GUID;
+        err = ocrEdtXCreate(finalEDT, 0, NULL, 2, NULL, EDT_PROP_NONE, NULL_HINT, &ga_finalEDT, &ga_finalOut); IFEB;
+        ocrGuid_t ga_shutdownEDT = NULL_GUID;
+        err = ocrEdtXCreate(shutdownEDT, 0, NULL, 1, NULL, EDT_PROP_NONE, NULL_HINT, &ga_shutdownEDT, NULL); IFEB;
+        err = ocrAddDependence(ga_finalOut, ga_shutdownEDT, 0, DB_MODE_NULL); IFEB;
         ocrGuid_t ga_SetupBtForkJoin = NULL_GUID;
         err = ocrEdtXCreate(SetupBtForkJoin, 0, NULL, 4, NULL, EDT_PROP_NONE, NULL_HINT, &ga_SetupBtForkJoin, NULL); IFEB;
 
@@ -141,11 +149,18 @@ ocrGuid_t finalEDT(EDT_ARGS)
         //Skipping destruction of a NULL_GUID data block.
         err = ocrDbDestroy( IN_derefs_E0_1_dep_reducSharedRef.guid ); IFEB;
 
-        //----- Link to other EDTs using Events
-        ocrShutdown();
+        /* Shutdown moves to a dedicated EDT on this EDT's output event: this
+         * body still owes the release of its acquired dependences, and a
+         * mid-body shutdown would truncate that release work out of the
+         * measured run. */
         break; //while(!err)
     }
     EDT_ERROR(err);
+    return NULL_GUID;
+}
+ocrGuid_t shutdownEDT(EDT_ARGS)
+{
+    ocrShutdown();
     return NULL_GUID;
 }
 ocrGuid_t SetupBtForkJoin(EDT_ARGS)
@@ -267,7 +282,8 @@ ocrGuid_t BtForkIF(EDT_ARGS)
         SPMD_GlobalData_t * in_SPMDglobals = IN_derefs_E2_4_dep_SPMDGlobals.ptr;
         ocrEdtDep_t IN_derefs_E2_4_dep_NEKOstatics = depv[3];
         NEKOstatics_t * in_NEKOstatics = IN_derefs_E2_4_dep_NEKOstatics.ptr;
-        unsigned long pdID = calcPDid_S(in_NEKOstatics->OCR_affinityCount, rankID);
+        Triplet rankLattice = { in_NEKOstatics->Rx, in_NEKOstatics->Ry, in_NEKOstatics->Rz };
+        unsigned long pdID = calcPDid_lattice(in_NEKOstatics->OCR_affinityCount, rankID, rankLattice);
         ocrHint_t hintEDT, *pHintEDT=0, hintDBK, *pHintDBK=0;
         err = ocrXgetEdtHint(pdID, &hintEDT, &pHintEDT); IFEB;
         err = ocrXgetDbkHint(pdID, &hintDBK, &pHintDBK); IFEB;
@@ -534,7 +550,7 @@ ocrGuid_t BtForkTransition_Start(EDT_ARGS)
         err = init_NEKOglobals(io_NEKOstatics, rankID, o_NEKOglobals); IFEB;
         err = nekbone_setup(io_NEKOstatics, o_NEKOglobals, o_lglel, o_glo_num); IFEB;
         *o_gDone2 = ga_setupTailRecursion;
-        err = NEKO_ForkTransit_reduction(rankID, in_reducShare, o_reducPrivate); IFEB;
+        err = NEKO_ForkTransit_reduction(rankID, io_NEKOstatics, in_reducShare, o_reducPrivate); IFEB;
 
         //----- Release or destroy data blocks
         err = ocrDbRelease(gd_gDone); IFEB;
@@ -1592,7 +1608,9 @@ ocrGuid_t tailRecursionIFThen(EDT_ARGS)
 
             //----- User section
             err = tailRecurElseClause(io_tailRecurIterate); IFEB;
-            err = nekbone_tailRecursionELSE(io_CGtimes); IFEB;
+            err = nekbone_tailRecursionELSE(IN_derefs_E19_20_dep_NEKOglobals.ptr,
+                                            IN_derefs_E19_20_dep_nekCGscalars.ptr,
+                                            io_CGtimes); IFEB;
 
             //----- Release or destroy data blocks
             err = ocrDbDestroy( IN_derefs_E19_20_dep_TailRecurIterate.guid ); IFEB;

@@ -197,10 +197,23 @@ Err_t nekbone_CGstep0_stop(NEKOstatics_t * in_NEKOstatics, NEKOglobals_t * in_NE
     return err;
 }
 
-Err_t nekbone_tailRecursionELSE(NEKO_CGtimings_t * io_CGtimes)
+Err_t nekbone_tailRecursionELSE(NEKOglobals_t * in_NEKOglobals, NEKO_CGscalars_t * in_CGscalars,
+                                NEKO_CGtimings_t * io_CGtimes)
 {
     Err_t err=0;
     while(!err){
+        //The residual the CG loop ends on: the counterpart of the rnorminit
+        //that nekbone_CGstep0_stop reports before the loop.  It is the rnorm
+        //nekbone_rtr_stop computed on the last iteration.
+#       ifdef NEK_USE_ADVANCED_FUNCTIONS
+            if(in_NEKOglobals->rankID == 0){
+                ocrPrintf("INFO> CGloop_stop> rnormfinal = %24.14E\n", in_CGscalars->rnorm);
+            }
+#       else
+            if(in_NEKOglobals->rankID == 0){
+                ocrPrintf("INFO> CGloop_stop> rnormfinal^2 = %24.14E\n", in_CGscalars->rnorm);
+            }
+#       endif
         print_NEKO_CGtimings(io_CGtimes);
         err = destroy_NEKO_CGtimings(io_CGtimes); IFEB;
         break;

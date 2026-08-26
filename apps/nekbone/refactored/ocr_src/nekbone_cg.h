@@ -79,7 +79,8 @@ Err_t nekbone_CGstep0_stop(NEKOstatics_t * in_NEKOstatics, NEKOglobals_t * in_NE
                           NEKO_CGscalars_t * io_CGscalars, NEKO_CGtimings_t * io_CGtimes,
                           ocrGuid_t in_sum_guid, ReducSum_t * in_sum);
 
-Err_t nekbone_tailRecursionELSE(NEKO_CGtimings_t * io_CGtimes);
+Err_t nekbone_tailRecursionELSE(NEKOglobals_t * in_NEKOglobals, NEKO_CGscalars_t * in_CGscalars,
+                                NEKO_CGtimings_t * io_CGtimes);
 
 Err_t nekbone_tailTransitBegin(long in_currentIteration,
                                NEKO_CGscalars_t * in_CGstats, NEKO_CGscalars_t * io_CGstats,

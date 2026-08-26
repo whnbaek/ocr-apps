@@ -655,7 +655,7 @@ def theMain():
     dbk = copy.deepcopy(dbk_nekCGscalars);dbk.flight = 'flLANDING'; OA.addDataBlocks(G, nc, dbk)
     dbk = copy.deepcopy(dbk_CGtimes);dbk.flight = 'flLANDING'; OA.addDataBlocks(G, nc, dbk)
     dbk = copy.deepcopy(dbk_reducPrivate);dbk.flight = 'flTAGO'; OA.addDataBlocks(G, nc, dbk)
-    tailRecursionELSEt = 'err = nekbone_tailRecursionELSE(io_CGtimes); IFEB;'  # Check tailRecursionIFThen for io_CGtimes
+    tailRecursionELSEt = 'err = nekbone_tailRecursionELSE(IN_derefs_E19_20_dep_NEKOglobals.ptr, IN_derefs_E19_20_dep_nekCGscalars.ptr, io_CGtimes); IFEB;'  # Check tailRecursionIFThen for io_CGtimes
     OA.addCustomText(G, nc, tailRecursionELSEt)
 
     nc += 1;  taskName="tailRecurTransitBEGIN"; OA.graphAddNode(G,nc,taskName)

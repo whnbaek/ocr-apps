@@ -6,6 +6,7 @@
 #include "app_ocr_err_util.h"
 #include "timing.h"
 #include "spmd_global_data.h"
+#include "nekos_triplet.h"   // Triplet, for the rank-lattice placement below
 
 //Some values are set in Nekbone which cannot be changed without having
 //to re-architect most of the Nekbone baseline.
@@ -229,6 +230,17 @@ void  print_NEKOglobals(NEKOglobals_t * in);
 //NOTE: The round abound way with o_HNT is because NULL_HINT is 0x0.
 unsigned long calcPDid_G(NEKOglobals_t * in);
 unsigned long calcPDid_S(unsigned int in_OCR_affinityCount, unsigned int in_rankID);
+// Which place a rank belongs to, given the rank lattice.  Under the optimized
+// placement this is a box decomposition; otherwise it is calcPDid_S.
+unsigned long calcPDid_lattice(unsigned int in_OCR_affinityCount, unsigned int in_rankID,
+                               Triplet in_lattice);
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+// The box decomposition the placement uses: returns non-zero and fills o_grid
+// with the number of places along each axis.  Exposed because the restructured
+// tier's participant numbering has to agree with it about which ranks share a
+// place (see the ocr_dist source).
+int nekbone_placeGrid(unsigned int in_places, Triplet in_lattice, Triplet * o_grid);
+#endif
 Err_t ocrXgetEdtHint(unsigned long in_pdID, ocrHint_t * io_HNT, ocrHint_t ** o_pHNT);
 Err_t ocrXgetDbkHint(unsigned long in_pdID, ocrHint_t * io_HNT, ocrHint_t ** o_pHNT);
 

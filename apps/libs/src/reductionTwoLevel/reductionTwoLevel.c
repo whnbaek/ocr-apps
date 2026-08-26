@@ -1,0 +1,688 @@
+/*
+ Author: David S Scott
+ Copyright Intel Corporation 2015
+
+ This file is subject to the license agreement located in the file ../../../../LICENSE (apps/LICENSE)
+ and cannot be distributed without it. This notice cannot be removed or modified.
+*/
+
+/*
+an OCR "library" for computing global reductions using labeled GUIDs.
+
+See reduction.h for details
+
+The code implements an ARITY tree to reduce a set of local values to a single "global" set
+
+ARITY is defined in reduction.h it can be changed and recompiled if desired.
+
+March 2016: modify to use channel events
+April 2016: modify to send results back down tree
+May 2016: fixed bug to use local downDBK (rather than everyone using the one from rank 0)
+June 2016: fixed a race condition and added a release to reductionLaunch
+
+*/
+
+#ifndef TG_ARCH
+#include <string.h>   //for memcpy
+#include <stdio.h>   //for printf
+#endif
+
+#include "ocr.h"
+#include "extensions/ocr-labeling.h"
+#include "extensions/ocr-affinity.h"
+#include "macros.h"
+
+#include "reduction.h"
+
+u64 reductionsizeof(reductionOperator_t operator) {
+    if(operator == REDUCTION_F8_ADD) return(8);
+    if(operator == REDUCTION_F8_MULTIPLY) return(8);
+    if(operator == REDUCTION_F8_MAX) return(8);
+    if(operator == REDUCTION_F8_MIN) return(8);
+    if(operator == REDUCTION_U8_ADD) return(8);
+    if(operator == REDUCTION_U8_MULTIPLY) return(8);
+    if(operator == REDUCTION_U8_MAX) return(8);
+    if(operator == REDUCTION_U8_MIN) return(8);
+    if(operator == REDUCTION_S8_MAX) return(8);
+    if(operator == REDUCTION_S8_MIN) return(8);
+    if(operator == REDUCTION_U8_BITAND) return(8);
+    if(operator == REDUCTION_U8_BITOR) return(8);
+    if(operator == REDUCTION_U8_BITXOR) return(8);
+    if(operator == REDUCTION_F4_ADD) return(4);
+    if(operator == REDUCTION_F4_MULTIPLY) return(4);
+    if(operator == REDUCTION_F4_MAX) return(4);
+    if(operator == REDUCTION_F4_MIN) return(4);
+    if(operator == REDUCTION_U4_ADD) return(4);
+    if(operator == REDUCTION_U4_MULTIPLY) return(4);
+    if(operator == REDUCTION_U4_MAX) return(4);
+    if(operator == REDUCTION_U4_MIN) return(4);
+    if(operator == REDUCTION_S4_MAX) return(4);
+    if(operator == REDUCTION_S4_MIN) return(4);
+    if(operator == REDUCTION_U4_BITAND) return(4);
+    if(operator == REDUCTION_U4_BITOR) return(4);
+    if(operator == REDUCTION_U4_BITXOR) return(4);
+    ocrPrintf("UNSUPPORTED reductionOperator\n");
+    ocrShutdown();
+    return (u64)-1; // Let's keep the compiler happy
+}
+
+void reductionOperation(u64 length, void * a, void * b, reductionOperator_t operator){
+    u64 i;
+    double * af8p, * bf8p;
+    float  * af4p, * bf4p;
+    u64    * au8p, * bu8p;
+    s64    * as8p, * bs8p;
+    u32    * au4p, * bu4p;
+    s32    * as4p, * bs4p;
+
+    switch(operator) {
+
+        case REDUCTION_F8_ADD:
+        af8p = (double *) a;
+        bf8p = (double *) b;
+        for(i=0;i<length;i++) {
+            *af8p++ += *bf8p++;
+        }
+        return;
+
+        case REDUCTION_F8_MULTIPLY:
+        af8p = (double *) a;
+        bf8p = (double *) b;
+        for(i=0;i<length;i++) *af8p++ *= *bf8p++;
+            return;
+
+        case REDUCTION_F8_MAX:
+        af8p = (double *) a;
+        bf8p = (double *) b;
+        for(i=0;i<length;i++) if(*af8p++ < *bf8p++) *(af8p-1) = *(bf8p-1);
+            return;
+
+        case REDUCTION_F8_MIN:
+        af8p = (double *) a;
+        bf8p = (double *) b;
+        for(i=0;i<length;i++) if(*af8p++ > *bf8p++) *(af8p-1) = *(bf8p-1);
+            return;
+
+        case REDUCTION_U8_ADD:
+        au8p = (u64 *) a;
+        bu8p = (u64 *) b;
+        for(i=0;i<length;i++) *au8p++ += *bu8p++;
+            return;
+
+        case REDUCTION_U8_MULTIPLY:
+        au8p = (u64 *) a;
+        bu8p = (u64 *) b;
+        for(i=0;i<length;i++) *au8p++ *= *bu8p++;
+            return;
+
+        case REDUCTION_U8_MAX:
+        au8p = (u64 *) a;
+        bu8p = (u64 *) b;
+        for(i=0;i<length;i++) if(*au8p++ < *bu8p++) *(au8p-1) = *(bu8p-1);
+            return;
+
+        case REDUCTION_U8_MIN:
+        au8p = (u64 *) a;
+        bu8p = (u64 *) b;
+        for(i=0;i<length;i++) if(*au8p++ > *bu8p++) *(au8p-1) = *(bu8p-1);
+            return;
+
+        case REDUCTION_S8_MAX:
+        as8p = (s64 *) a;
+        bs8p = (s64 *) b;
+        for(i=0;i<length;i++) if(*as8p++ < *bs8p++) *(as8p-1) = *(bs8p-1);
+            return;
+
+        case REDUCTION_S8_MIN:
+        as8p = (s64 *) a;
+        bs8p = (s64 *) b;
+        for(i=0;i<length;i++) if(*as8p++ > *bs8p++) *(as8p-1) = *(bs8p-1);
+            return;
+
+        case REDUCTION_U8_BITAND:
+        au8p = (u64 *) a;
+        bu8p = (u64 *) b;
+        for(i=0;i<length;i++) *au8p++ &= *bu8p++;
+            return;
+
+        case REDUCTION_U8_BITOR:
+        au8p = (u64 *) a;
+        bu8p = (u64 *) b;
+        for(i=0;i<length;i++) *au8p++ |= *bu8p++;
+            return;
+
+        case REDUCTION_U8_BITXOR:
+        au8p = (u64 *) a;
+        bu8p = (u64 *) b;
+        for(i=0;i<length;i++) *au8p++ ^= *bu8p++;
+            return;
+
+        case REDUCTION_F4_ADD:
+        af4p = (float *) a;
+        bf4p = (float *) b;
+        for(i=0;i<length;i++) *af4p++ += *bf4p++;
+            return;
+
+        case REDUCTION_F4_MULTIPLY:
+        af4p = (float *) a;
+        bf4p = (float *) b;
+        for(i=0;i<length;i++) *af4p++ *= *bf4p++;
+            return;
+
+        case REDUCTION_F4_MAX:
+        af4p = (float *) a;
+        bf4p = (float *) b;
+        for(i=0;i<length;i++) if(*af4p++ < *bf4p++) *(af4p-1) = *(bf4p-1);
+            return;
+
+        case REDUCTION_F4_MIN:
+        af4p = (float *) a;
+        bf4p = (float *) b;
+        for(i=0;i<length;i++) if(*af4p++ > *bf4p++) *(af4p-1) = *(bf4p-1);
+            return;
+
+        case REDUCTION_U4_ADD:
+        au4p = (u32 *) a;
+        bu4p = (u32 *) b;
+        for(i=0;i<length;i++) *au4p++ += *bu4p++;
+            return;
+
+        case REDUCTION_U4_MULTIPLY:
+        au4p = (u32 *) a;
+        bu4p = (u32 *) b;
+        for(i=0;i<length;i++) *au4p++ *= *bu4p++;
+            return;
+
+        case REDUCTION_U4_MAX:
+        au4p = (u32 *) a;
+        bu4p = (u32 *) b;
+        for(i=0;i<length;i++) if(*au4p++ < *bu4p++) *(au4p-1) = *(bu4p-1);
+            return;
+
+        case REDUCTION_U4_MIN:
+        au4p = (u32 *) a;
+        bu4p = (u32 *) b;
+        for(i=0;i<length;i++) if(*au4p++ > *bu4p++) *(au4p-1) = *(bu4p-1);
+            return;
+
+        case REDUCTION_S4_MAX:
+        as4p = (s32 *) a;
+        bs4p = (s32 *) b;
+        for(i=0;i<length;i++) if(*as4p++ < *bs4p++) *(as4p-1) = *(bs4p-1);
+            return;
+
+        case REDUCTION_S4_MIN:
+        as4p = (s32 *) a;
+        bs4p = (s32 *) b;
+        for(i=0;i<length;i++) if(*as4p++ > *bs4p++) *(as4p-1) = *(bs4p-1);
+            return;
+
+        case REDUCTION_U4_BITAND:
+        au4p = (u32 *) a;
+        bu4p = (u32 *) b;
+        for(i=0;i<length;i++) *au4p++ &= *bu4p++;
+            return;
+
+        case REDUCTION_U4_BITOR:
+        au4p = (u32 *) a;
+        bu4p = (u32 *) b;
+        for(i=0;i<length;i++) *au4p++ |= *bu4p++;
+            return;
+
+        case REDUCTION_U4_BITXOR:
+        au4p = (u32 *) a;
+        bu4p = (u32 *) b;
+        for(i=0;i<length;i++) *au4p++ ^= *bu4p++;
+            return;
+    }
+
+    ocrPrintf("unsupported operator type %d \n", operator);
+    ocrShutdown();
+    return;
+}
+
+typedef struct{
+ ocrEdtDep_t reductionPrivate;
+ ocrEdtDep_t buffer[1];
+} reductionSendChannelDEPV_t;
+
+ocrGuid_t reductionSendChannelEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
+
+    DEPVDEF(reductionSendChannel);
+    ocrGuid_t rpDBK = DEPV(reductionSendChannel,reductionPrivate,guid);
+    reductionPrivate_t * rpPTR = DEPV(reductionSendChannel,reductionPrivate,ptr);
+
+    ocrGuid_t bufferDBK = DEPVARRAY(reductionSendChannel,buffer,0,guid);
+    ocrGuid_t * bufferPTR = (ocrGuid_t *) DEPVARRAY(reductionSendChannel,buffer,0,ptr);
+
+//create channel events
+    ocrGuid_t channelUpEVT, channelDownEVT;
+    ocrEventParams_t params;
+    params.EVENT_CHANNEL.maxGen = 2;
+    params.EVENT_CHANNEL.nbSat = 1;
+    params.EVENT_CHANNEL.nbDeps = 1;
+    ocrEventCreateParams(&channelUpEVT, OCR_EVENT_CHANNEL_T, false, &params);
+    rpPTR->sendUpEVT = channelUpEVT;
+    ocrEventCreateParams(&channelDownEVT, OCR_EVENT_CHANNEL_T, false, &params);
+    rpPTR->recvDownEVT = channelDownEVT;
+
+//send channel events
+    ocrGuid_t sendEVT;
+    ocrGuidFromIndex(&sendEVT, rpPTR->rangeGUID, rpPTR->myrank-1);
+    u64 errno = ocrEventCreate(&sendEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
+    bufferPTR[0] = channelUpEVT;
+    bufferPTR[1] = channelDownEVT;
+    ocrDbRelease(bufferDBK);
+    ocrEventSatisfy(sendEVT, bufferDBK);
+
+//return (to receive or reduction)
+    ocrDbRelease(rpDBK);
+    return rpDBK;
+}
+
+typedef struct{
+ ocrEdtDep_t reductionPrivate;
+ ocrEdtDep_t buffer[RED_FANIN];
+} reductionRecvChannelDEPV_t;
+
+ocrGuid_t reductionRecvChannelEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
+
+    DEPVDEF(reductionRecvChannel);
+    ocrGuid_t rpDBK = DEPV(reductionRecvChannel,reductionPrivate,guid);
+    reductionPrivate_t * rpPTR = DEPV(reductionRecvChannel,reductionPrivate,ptr);
+
+    u64 nrank = rpPTR->nrank;
+    u64 myrank = rpPTR->myrank;
+
+    u64 i, src;
+
+    for(i=0;i<RED_FANIN;i++)
+        if(DEPVARRAY(reductionRecvChannel,buffer,i,ptr) != NULL){
+            rpPTR->recvUpEVT[i] =  ((ocrGuid_t *) DEPVARRAY(reductionRecvChannel,buffer,i,ptr))[0];
+            rpPTR->sendDownEVT[i] =  ((ocrGuid_t *) DEPVARRAY(reductionRecvChannel,buffer,i,ptr))[1];
+            ocrDbDestroy(DEPVARRAY(reductionRecvChannel,buffer,i,guid));
+        } else {
+            rpPTR->recvUpEVT[i] = NULL_GUID;
+            rpPTR->sendDownEVT[i] = NULL_GUID;
+        }
+
+//return to reduction)
+    ocrDbRelease(rpDBK);
+    return rpDBK;
+}
+
+typedef struct{
+    ocrEdtDep_t reductionPrivate;
+    ocrEdtDep_t mydata;
+    ocrEdtDep_t yourdata[1];
+ } reductionDEPV_t;
+
+/* Where a participant sits in the reduction tree.
+ *
+ * Flat: parent is (i-1)/ARITY, children are i*ARITY+1 upward.  That says
+ * nothing about where either end runs, so with more than one place every level
+ * of the tree costs messages between places.
+ *
+ * Two-level: with L participants per place and the participants
+ * numbered so a place's are consecutive, a place reduces among itself and only
+ * the places' roots reduce with each other.  A place's root therefore has both
+ * its own place's children and, in the upper tree, the roots below it -- which
+ * is why the incoming channel array is two arities wide.  The upper tree's
+ * internal nodes are roots of distinct places, so the work does not pile onto
+ * one of them.
+ */
+static u64 red_L(reductionPrivate_t * rp, u64 nrank)
+{
+    const u64 L = rp->nrankPerPlace;
+    if(L > 1 && L <= nrank && (nrank % L) == 0) return L;
+    return nrank;   /* one place, or no grouping to use: the flat tree */
+}
+
+/* Fills o_child with this participant's children and returns how many. */
+static u64 red_children(u64 me, u64 L, u64 nrank, u64 * o_child)
+{
+    if(L == 0) return 0;   /* no participants: nothing to receive from */
+
+    const u64 local = me % L, base = (me/L)*L, place = me/L, P = nrank/L;
+    u64 n = 0, j;
+    for(j = 0; j < ARITY; ++j) {
+        const u64 cl = local*ARITY + j + 1;
+        if(cl >= L) break;
+        if(base + cl < nrank) o_child[n++] = base + cl;
+    }
+    if(local == 0) {
+        for(j = 0; j < ARITY; ++j) {
+            const u64 q = place*ARITY + j + 1;
+            if(q >= P) break;
+            o_child[n++] = q*L;
+        }
+    }
+    return n;
+}
+
+void reductionSendUp(reductionPrivate_t * rpPTR, void * data) {
+    ocrGuid_t localDBK;
+    void * localPTR;
+    ocrDbCreate(&(localDBK), (void**) &localPTR, rpPTR->size, 0, NULL_HINT, NO_ALLOC);
+#ifdef TG_ARCH
+    u32 i;
+    for(i=0;i<rpPTR->size;i++) ((char *) localPTR)[i] = ((char *) data)[i];
+#else
+    memcpy(localPTR, data, rpPTR->size);
+#endif
+    ocrDbRelease(localDBK);
+    ocrEventSatisfy(rpPTR->sendUpEVT, localDBK);
+    return;
+}
+
+void reductionRecvUp(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK, ocrGuid_t mydataDBK) {
+
+    u32 i;
+    ocrGuid_t reductionEDT;
+    /* Pass phase=1 as EDT parameter to avoid race condition with shared DB
+     * state */
+    u64 phaseParam = 1;
+    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, RED_FANIN + 2,
+                 NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+    ocrAddDependence(mydataDBK, reductionEDT, SLOT(reduction,mydata), DB_MODE_RW);
+    for (i = 0; i < RED_FANIN; i++)
+      ocrAddDependence(rpPTR->recvUpEVT[i], reductionEDT,
+                       SLOTARRAY(reduction, yourdata, i), DB_MODE_RO);
+    ocrDbRelease(reductionPrivateDBK);
+    ocrAddDependence(reductionPrivateDBK, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+    return;
+}
+
+void reductionRecvDown(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK) {
+
+    u32 i;
+    ocrGuid_t reductionEDT;
+    /* Pass phase=2 as EDT parameter to avoid race condition with shared DB
+     * state */
+    u64 phaseParam = 2;
+    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, 2, NULL,
+                 EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+    ocrAddDependence(rpPTR->recvDownEVT, reductionEDT, SLOT(reduction, mydata),
+                     DB_MODE_RO);
+    ocrDbRelease(reductionPrivateDBK);
+    ocrAddDependence(reductionPrivateDBK, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+    return;
+}
+
+void reductionSendDown(reductionPrivate_t * rpPTR, void * data) {
+    ocrGuid_t localDBK;
+    void * localPTR;
+    u32 i;
+
+    for(i=0;i<RED_FANIN;i++) {
+        if(!ocrGuidIsNull(rpPTR->sendDownEVT[i])){
+            ocrDbCreate(&(localDBK), (void**) &localPTR, rpPTR->size, 0, NULL_HINT, NO_ALLOC);
+#ifdef TG_ARCH
+            u32 j;
+            for(j=0;j<rpPTR->size;j++) ((char *) localPTR)[j] = ((char *) data)[j];
+#else
+            memcpy(localPTR, data, rpPTR->size);
+#endif
+            ocrDbRelease(localDBK);
+            ocrEventSatisfy(rpPTR->sendDownEVT[i], localDBK);
+        }
+    }
+    return;
+}
+
+/*
+ * C function callable from an SPMD set of EDTs to execute a reduction tree and return the answer.
+ * Requires setting certain parameters in a "reductionPrivate" block
+ */
+ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
+
+  /*
+  depv
+  0: private block
+  1: mydata
+  2 to ARITY+1: the datablocks from your children
+  going down, yourdata[0] is the result to send back and down
+
+  paramv[0]: phase (0=initial, 1=received up, 2=received down)
+             This is passed as parameter to avoid race condition with shared DB.
+  */
+
+  DEPVDEF(reduction);
+  ocrGuid_t rpDBK = DEPV(reduction, reductionPrivate, guid);
+  reductionPrivate_t *rpPTR = DEPV(reduction, reductionPrivate, ptr);
+
+  /* Get phase from parameter instead of shared DB to avoid race condition */
+  u64 phase = (paramc > 0 && paramv != NULL) ? paramv[0] : 0;
+
+  u64 nrank = rpPTR->nrank;
+  u64 myrank = rpPTR->myrank;
+  u64 ndata = rpPTR->ndata;
+
+  ocrGuid_t returnEVT = rpPTR->returnEVT;
+
+  if (nrank == 1) { // nothing to do
+    if (!ocrGuidIsNull(rpPTR->returnEVT)) {
+      /* A DB handed off through a satisfy must be released first: the release
+       * orders the block's writeback ahead of any consumer observing it. */
+      ocrDbRelease(DEPV(reduction, mydata, guid));
+      ocrEventSatisfy(rpPTR->returnEVT, DEPV(reduction, mydata, guid));
+    }
+    return NULL_GUID;
+  }
+
+    void ** yourdataPTR, **mydataPTR;
+    mydataPTR = DEPV(reduction,mydata,ptr);
+
+    if(rpPTR->new == 1) { //create channel events and use labeled GUIDs to initialize tree
+        u64 errno, i, src;
+        ocrGuid_t reductionEDT;
+        ocrGuid_t recvEVT;
+        rpPTR->new = 0;
+        rpPTR->phase = 0;
+
+//initialize to NULL GUIDs
+        rpPTR->sendUpEVT = NULL_GUID;
+        rpPTR->recvDownEVT = NULL_GUID;
+
+        for(i=0;i<RED_FANIN;i++) {
+            rpPTR->sendDownEVT[i] = NULL_GUID;
+            rpPTR->recvUpEVT[i] = NULL_GUID;
+        }
+
+//create clone to continue after channel events are installed
+        /* Pass phase=0 as EDT parameter */
+        u64 phaseParam = 0;
+        ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, 2,
+                     NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+        ocrAddDependence(DEPV(reduction,mydata,guid), reductionEDT, SLOT(reduction,mydata), DB_MODE_RW);
+
+        ocrGuid_t SendOutputEVT = NULL_GUID;
+        ocrGuid_t reductionSendChannelTML, reductionSendChannelEDT, bufferDBK;
+
+// Setup the reduction tree based on arity and number of ranks participating
+
+//create Send
+        const u64 red_Lv = red_L(rpPTR, nrank);
+        u64 red_kid[RED_FANIN];
+        const u64 red_nkid = red_children(myrank, red_Lv, nrank, red_kid);
+        if(myrank != 0) {
+            double dummy;
+            ocrEdtTemplateCreate(&reductionSendChannelTML, reductionSendChannelEdt, 0, DEPVNUM(reductionSendChannel));
+            ocrEdtCreate(&reductionSendChannelEDT, reductionSendChannelTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &rpPTR->myAffinity, &SendOutputEVT);
+            ocrDbCreate(&bufferDBK, (void**) &dummy, 2*sizeof(ocrGuid_t), 0, NULL_HINT, NO_ALLOC);
+            ocrDbRelease(bufferDBK);
+            ocrAddDependence(bufferDBK, reductionSendChannelEDT, SLOT(reductionSendChannel,buffer), DB_MODE_RW);
+        }
+
+//create Receive
+        ocrGuid_t RecvOutputEVT = NULL_GUID;
+        ocrGuid_t reductionRecvChannelTML, reductionRecvChannelEDT;
+        if(red_nkid > 0) {
+            ocrEdtTemplateCreate(&reductionRecvChannelTML, reductionRecvChannelEdt, 0, DEPVNUM(reductionRecvChannel));
+            ocrEdtCreate(&reductionRecvChannelEDT, reductionRecvChannelTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &rpPTR->myAffinity, &RecvOutputEVT);
+            for(i=0;i<RED_FANIN;i++) {
+                if(i < red_nkid) {
+                    // Distributed creation of labeled sticky event.  A child
+                    // publishes into the event at its OWN index, so naming the
+                    // children is the whole of agreeing on the tree.
+                    src = red_kid[i];
+                    ocrGuidFromIndex(&recvEVT, rpPTR->rangeGUID, src-1);
+                    errno = ocrEventCreate(&recvEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
+                    //TODO shoudn't we check errno here ?
+                    // This event will be satisfied with the Channel's event GUID to receive from
+                    ocrAddDependence(recvEVT, reductionRecvChannelEDT, SLOTARRAY(reductionRecvChannel,buffer,i), DB_MODE_RO);
+                } else {
+                    ocrAddDependence(NULL_GUID, reductionRecvChannelEDT, SLOTARRAY(reductionRecvChannel,buffer,i), DB_MODE_RO);
+                }
+            }
+        }
+
+//launch all
+        ocrDbRelease(DEPV(reduction,reductionPrivate,guid));
+        if(ocrGuidIsNull(SendOutputEVT)) //no send
+            if(ocrGuidIsNull(RecvOutputEVT)) { //neither
+                ocrAddDependence(rpDBK, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+            } else { //only Recv
+                ocrAddDependence(RecvOutputEVT, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+                ocrAddDependence(rpDBK, reductionRecvChannelEDT, SLOT(reductionRecvChannel,reductionPrivate), DB_MODE_RW);
+            }
+        else
+            if(ocrGuidIsNull(RecvOutputEVT)) {//only send
+                ocrAddDependence(SendOutputEVT, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+                ocrAddDependence(rpDBK, reductionSendChannelEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+            } else { //all 3
+                ocrAddDependence(SendOutputEVT, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+                ocrAddDependence(RecvOutputEVT, reductionSendChannelEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+                ocrAddDependence(rpDBK, reductionRecvChannelEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+            }
+        return NULL_GUID; //done with initialization
+    }
+
+//channels in place
+
+    ocrGuid_t reductionPrivateDBK = DEPV(reduction,reductionPrivate,guid);
+
+    switch (phase) {
+    case 0: //first real call, figure out what to do
+        switch(rpPTR->type) {
+        case BROADCAST:
+            if(rpPTR->myrank == 0)
+                reductionSendDown(rpPTR, mydataPTR);
+            else
+                reductionRecvDown(rpPTR, DEPV(reduction, reductionPrivate, guid));
+            return NULL_GUID;
+
+        case REDUCE:
+            if(!ocrGuidIsNull(rpPTR->recvUpEVT[0]))
+                reductionRecvUp(rpPTR, DEPV(reduction, reductionPrivate, guid), DEPV(reduction, mydata, guid));
+            else {
+                reductionSendUp(rpPTR, mydataPTR);
+#ifdef OCR_APP_DESTROY_REDUCTION_TEMPS
+                /* A leaf contributes by COPY: reductionSendUp mints its own
+                 * block for the up-edge.  This one was minted by
+                 * reductionLaunch for this task alone and is named by nothing
+                 * else, so it dies here.  With children it would instead be
+                 * carried forward by reductionRecvUp, which is why the two
+                 * arms differ. */
+                ocrDbDestroy(DEPV(reduction, mydata, guid));
+#endif
+            }
+            return NULL_GUID;
+
+        case ALLREDUCE:
+            if(!ocrGuidIsNull(rpPTR->recvUpEVT[0]))
+                reductionRecvUp(rpPTR,DEPV(reduction, reductionPrivate,guid), DEPV(reduction,mydata,guid));
+            else {
+                reductionSendUp(rpPTR, mydataPTR);
+                reductionRecvDown(rpPTR, DEPV(reduction,reductionPrivate,guid));
+            }
+            return NULL_GUID;
+        }
+
+    case 1: //I have received up
+    {
+        int i;
+        for(i=0;i<RED_FANIN;i++) {
+            if(!ocrGuidIsNull(DEPVARRAY(reduction,yourdata,i,guid))) {
+                yourdataPTR = DEPVARRAY(reduction,yourdata,i,ptr);
+                reductionOperation(rpPTR->ndata, mydataPTR, yourdataPTR, rpPTR->reductionOperator);
+                ocrDbDestroy(DEPVARRAY(reduction,yourdata,i,guid));
+            }
+        }
+        if(myrank != 0) {
+            reductionSendUp(rpPTR, mydataPTR);
+#ifdef OCR_APP_DESTROY_REDUCTION_TEMPS
+            /* Same argument one level up: the children's blocks were freed
+             * above, the partial has been copied onto the up-edge, and only
+             * the ROOT hands its accumulator to the caller through returnEVT.
+             * A non-root accumulator is reachable from nowhere after this. */
+            ocrDbDestroy(DEPV(reduction, mydata, guid));
+#endif
+            if(rpPTR->type == ALLREDUCE)
+                reductionRecvDown(rpPTR, DEPV(reduction, reductionPrivate, guid));
+            return NULL_GUID;
+        } else {
+            if(rpPTR->type == ALLREDUCE)
+                reductionSendDown(rpPTR, mydataPTR);
+            /* Phase is now passed as parameter, no need to reset in DB */
+            ocrDbRelease(reductionPrivateDBK);
+            ocrDbRelease(DEPV(reduction,mydata,guid));
+            ocrEventSatisfy(returnEVT, DEPV(reduction,mydata,guid));
+            return NULL_GUID;
+        } // This seemed to be missing
+    }
+    case 2: //I have received down
+        if(!ocrGuidIsNull(rpPTR->sendDownEVT[0]))
+            reductionSendDown(rpPTR,mydataPTR);
+        /* Phase is now passed as parameter, no need to reset in DB */
+        ocrDbRelease(reductionPrivateDBK);
+        ocrDbRelease(DEPV(reduction,mydata,guid));
+        ocrEventSatisfy(returnEVT, DEPV(reduction,mydata,guid));
+        return NULL_GUID;
+    } // end outermost switch
+}
+
+/*
+ * C function callable from an SPMD set of EDTs to execute a reduction tree and return the answer.
+ * Requires setting certain parameters in a "reductionPrivate" block
+ */
+void reductionLaunch(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK, void * mydataPTR){
+    ocrGuid_t reductionEDT, localDBK;
+    void * localPTR;
+    if(rpPTR->new) {
+      /* Template now takes 1 parameter (phase) to avoid race condition with
+       * shared DB */
+      ocrEdtTemplateCreate(&(rpPTR->reductionTML), reductionEdt, 1,
+                           EDT_PARAM_UNK);
+      if (rpPTR->type != BROADCAST) {
+        rpPTR->size = rpPTR->ndata * reductionsizeof(rpPTR->reductionOperator);
+      } else {
+        rpPTR->size = rpPTR->ndata;
+      }
+
+        ocrHintInit(&rpPTR->myAffinity,OCR_HINT_EDT_T);
+#ifdef ENABLE_EXTENSION_AFFINITY
+        ocrGuid_t myAffinity;
+        ocrAffinityGetCurrent(&(myAffinity));
+        ocrSetHintValue(&rpPTR->myAffinity, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(myAffinity));
+#endif
+    }
+
+    /* Pass phase=0 as EDT parameter to avoid race condition */
+    u64 phaseParam = 0;
+    ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, 2, NULL,
+                 EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+    ocrDbCreate(&(localDBK), (void**) &localPTR, rpPTR->ndata*reductionsizeof(rpPTR->reductionOperator), 0, NULL_HINT, NO_ALLOC);
+#ifndef TG_ARCH
+        memcpy(localPTR, mydataPTR, rpPTR->size);
+#else
+u32 j;
+    for(j=0;j<rpPTR->size;j++) ((char *) localPTR)[j] = ((char *) mydataPTR)[j];
+#endif
+    ocrDbRelease(localDBK);
+    ocrAddDependence(localDBK, reductionEDT, SLOT(reduction,mydata), DB_MODE_RW);
+    ocrDbRelease(reductionPrivateDBK);
+    ocrAddDependence(reductionPrivateDBK, reductionEDT, SLOT(reduction,reductionPrivate), DB_MODE_RW);
+    return;
+}
+

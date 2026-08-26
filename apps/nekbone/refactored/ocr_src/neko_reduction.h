@@ -2,6 +2,7 @@
 #define NEKBONE_REDUCTION_H
 
 #include "app_ocr_err_util.h"
+#include "neko_globals.h"   // NEKOstatics_t, for the reduction numbering
 #include "ocr.h"
 #include "ocr-std.h"
 
@@ -45,7 +46,8 @@ Err_t NEKO_mainEdt_reduction(unsigned long in_nrank,unsigned long in_ndata,
 
 Err_t NEKO_finalEdt_reduction(Reduct_shared_t * io_sharedRef);
 
-Err_t NEKO_ForkTransit_reduction(unsigned int in_rankID, Reduct_shared_t * in_shared,
+Err_t NEKO_ForkTransit_reduction(unsigned int in_rankID, NEKOstatics_t * in_NEKOstatics,
+                                 Reduct_shared_t * in_shared,
                                  reductionPrivate_t * io_reducPrivate);
 
 #endif // NEKBONE_REDUCTION_H
