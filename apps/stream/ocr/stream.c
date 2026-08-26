@@ -9,6 +9,39 @@
 #define _GNU_SOURCE
 #endif
 #include "ocr.h"
+
+/* Placement-optimization layer.  Each thread runs one sequential chain over
+ * its own slice, and every kernel in it CREATES its output array: copy makes
+ * c from a, scale makes b from c, add makes c from a+b, triad makes a from
+ * b+c.  A created datablock is homed where its creator ran, and the next
+ * kernel is a fresh EDT the runtime may place anywhere, so with no hint every
+ * array is written on one rank and read from another, once per kernel per
+ * sweep.
+ *
+ * The chains themselves are spread across the machine by mainEdt (the
+ * DISPERSE hint on the mainLet EDTs); what this layer adds is that a chain,
+ * once placed, stays put -- the four kernels and the loop driver that
+ * re-creates them are pinned to the place the chain is already running on.
+ * That keeps every array where it was made without concentrating the work:
+ * the same number of chains still runs on each rank.
+ *
+ * Making the arrays persistent instead of re-created is a different change,
+ * and it is a separate source (stream_dist). */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#include <extensions/ocr-affinity.h>
+static ocrHint_t * streamHereEdtHint(ocrHint_t *h) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetCurrent(&aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+#else
+#define streamHereEdtHint(h) NULL_HINT
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -236,10 +269,14 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t copy_output, scale_output, add_output, triad_output;
   ocrGuid_t edt_copy, edt_scale, edt_add, edt_triad;
 
-  ocrEdtCreate(&edt_copy, tmp_copy_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &copy_output);
-  ocrEdtCreate(&edt_scale, tmp_scale_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &scale_output);
-  ocrEdtCreate(&edt_add, tmp_add_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &add_output);
-  ocrEdtCreate(&edt_triad, tmp_triad_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &triad_output);
+  ocrHint_t copyHNT;
+  ocrEdtCreate(&edt_copy, tmp_copy_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, streamHereEdtHint(&copyHNT), &copy_output);
+  ocrHint_t scaleHNT;
+  ocrEdtCreate(&edt_scale, tmp_scale_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, streamHereEdtHint(&scaleHNT), &scale_output);
+  ocrHint_t addHNT;
+  ocrEdtCreate(&edt_add, tmp_add_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, streamHereEdtHint(&addHNT), &add_output);
+  ocrHint_t triadHNT;
+  ocrEdtCreate(&edt_triad, tmp_triad_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, streamHereEdtHint(&triadHNT), &triad_output);
 
   /* edt_triad / edt_add deps are relay-style (slots 1/2 wait on
    * scale_output / add_output / copy_output); none is runnable yet. */
@@ -262,7 +299,8 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       paramv[5], paramv[6], paramv[7], pts, ntimes
     };
     ocrGuid_t edt_loop;
-    ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, next_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
+    ocrHint_t loopHNT;
+    ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, next_param, EDT_PARAM_DEF, NULL, PROPERTIES, streamHereEdtHint(&loopHNT), NULL);
 
     ocrAddDependence(triad_output, edt_loop, 0, DB_MODE_RW);
   } else {
