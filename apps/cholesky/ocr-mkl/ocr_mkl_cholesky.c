@@ -5,6 +5,7 @@
  */
 
 #include "ocr.h"
+#include "extensions/ocr-affinity.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <getopt.h>
@@ -261,6 +262,35 @@ ocrGuid_t wrap_up_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
     return NULL_GUID;
 }
 
+/* 2-D block-cyclic (ScaLAPACK) owner map for a right-looking tiled factorization.
+ * Factor the affinity (policy-domain) count into a near-square P x Q grid with
+ * P >= Q, then place tile (row,col) on rank (row % P) * Q + (col % Q).  Keying
+ * each kernel EDT on the coordinate of the single tile it writes co-locates the
+ * kernel with its RW output, so the per-tile ownership acquire settles locally.
+ * The two independent mod axes keep the concurrently-active trailing submatrix
+ * spread across all P*Q ranks rather than folding a whole frontier onto one rank
+ * (which a single linear index mod rank-count would do). */
+static ocrHint_t * choleskyTileHint(ocrHint_t * h, u32 row, u32 col) {
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    if (nranks <= 1) return NULL_HINT; /* co-location needs another PD to avoid */
+    u64 P = 1;
+    for (u64 p = 1; p <= nranks; ++p) {
+        if (nranks % p == 0 && p * p >= nranks) { P = p; break; }
+    }
+    u64 Q = nranks / P;
+    u64 home = ((u64)row % P) * Q + ((u64)col % Q);
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, home, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+#else
+    (void)h; (void)row; (void)col;
+    return NULL_HINT;
+#endif
+}
 
 inline static void lapacke_dpotrf_task_prescriber (ocrGuid_t edtTemp, u32 k,
                                                    u32 tileSize, ocrGuid_t*** lkji_event_guids) {
@@ -271,8 +301,9 @@ inline static void lapacke_dpotrf_task_prescriber (ocrGuid_t edtTemp, u32 k,
     func_args[1] = tileSize;
     func_args[2] = (u64)(lkji_event_guids[k][k][k + 1].guid);
 
+    ocrHint_t edtHint;
     ocrEdtCreate(&seq_cholesky_task_guid, edtTemp, 3, func_args, 1, NULL,
-                 PROPERTIES, NULL_HINT, NULL);
+                 PROPERTIES, choleskyTileHint(&edtHint, k, k), NULL);
 
     ocrAddDependence(lkji_event_guids[k][k][k], seq_cholesky_task_guid, 0, DB_MODE_RW);
 }
@@ -287,8 +318,9 @@ inline static void cblas_dtrsm_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
     func_args[2] = tileSize;
     func_args[3] = (u64)(lkji_event_guids[j][k][k + 1].guid);
 
+    ocrHint_t edtHint;
     ocrEdtCreate(&cblas_dtrsm_task_guid, edtTemp, 4, func_args, 2, NULL,
-                 PROPERTIES, NULL_HINT, NULL);
+                 PROPERTIES, choleskyTileHint(&edtHint, j, k), NULL);
 
     ocrAddDependence(lkji_event_guids[j][k][k], cblas_dtrsm_task_guid, 0, DB_MODE_RW);
     ocrAddDependence(lkji_event_guids[k][k][k+1], cblas_dtrsm_task_guid, 1, DB_MODE_RO);
@@ -305,8 +337,9 @@ inline static void cblas_dgemm_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
     func_args[3] = tileSize;
     func_args[4] = (u64)(lkji_event_guids[j][i][k + 1].guid);
 
+    ocrHint_t edtHint;
     ocrEdtCreate(&cblas_dgemm_task_guid, edtTemp, 5, func_args, 3, NULL,
-                 PROPERTIES, NULL_HINT, NULL);
+                 PROPERTIES, choleskyTileHint(&edtHint, j, i), NULL);
 
     ocrAddDependence(lkji_event_guids[j][i][k], cblas_dgemm_task_guid, 0, DB_MODE_RW);
     ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dgemm_task_guid, 1, DB_MODE_RO);
@@ -325,8 +358,9 @@ inline static void cblas_dsyrk_task_prescriber ( ocrGuid_t edtTemp, u32 k, u32 j
     func_args[3] = tileSize;
     func_args[4] = (u64)(lkji_event_guids[j][j][k + 1].guid);
 
+    ocrHint_t edtHint;
     ocrEdtCreate(&cblas_dsyrk_task_guid, edtTemp, 5, func_args, 2, NULL,
-                 PROPERTIES, NULL_HINT, NULL);
+                 PROPERTIES, choleskyTileHint(&edtHint, j, j), NULL);
 
     ocrAddDependence(lkji_event_guids[j][j][k], cblas_dsyrk_task_guid, 0, DB_MODE_RW);
     ocrAddDependence(lkji_event_guids[j][k][k+1], cblas_dsyrk_task_guid, 1, DB_MODE_RO);
@@ -448,6 +482,42 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize, double** matr
 }
 #endif
 
+/* Tile-stream binary input: the lower-triangular tiles in (i, j<=i) order,
+ * each tileSize*tileSize doubles, row-major within the tile, host byte order --
+ * the same layout convertData emits.
+ * Streams each tile straight into its datablock, so no whole-matrix buffer is
+ * built and no per-element conversion happens.  Returns 0 on success; a short
+ * read is reported and fails the run.
+ *
+ * Reading the same matrix as text costs one fscanf per ELEMENT: at a 10000-wide
+ * matrix that is 100 million calls against 5,050 freads, and it is the entire
+ * run rather than a detail of it.  With the two ports reading differently, the
+ * pair measures two different things -- one the factorization, the other the
+ * scanner -- which is the opposite of what a same-DAG/different-kernel pair is
+ * for. */
+inline static int satisfyInitialTilesBinary(u32 numTiles, u32 tileSize, FILE* fin,
+                                            ocrGuid_t*** lkji_event_guids) {
+    u32 i, j;
+
+    for( i = 0 ; i < numTiles ; ++i ) {
+        for( j = 0 ; j <= i ; ++j ) {
+            ocrGuid_t db_guid;
+            void *temp_db;
+            ocrDbCreate(&db_guid, &temp_db, sizeof(double) * tileSize * tileSize,
+                        FLAGS, NULL_HINT, NO_ALLOC);
+
+            if( fread(temp_db, sizeof(double) * tileSize * tileSize, 1, fin) != 1 ) {
+                ocrPrintf("Tile-binary input ends short at tile (%u,%u)\n", i, j);
+                return -1;
+            }
+            /* Release precedes any exposure of the block. */
+            ocrDbRelease(db_guid);
+            ocrEventSatisfy(lkji_event_guids[i][j][0], db_guid);
+        }
+    }
+    return 0;
+}
+
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     u32 matrixSize = -1;
     u32 tileSize = -1;
@@ -462,7 +532,9 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 
     char *nparamv[argc];
 
-    char *fileNameIn, *fileNameOut = "ocr_mkl_cholesky.out";
+    char *fileNameIn = NULL, *fileNameOut = "ocr_mkl_cholesky.out";
+    /* --fib selects the tile-stream binary, --fi the text matrix. */
+    int inputIsBinary = 0;
 
     for (i=0; i< argc; i++)
     {
@@ -478,7 +550,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrPrintf("Arguments:\n");
         ocrPrintf("\t--ds -- Specify the Size of the Input Matrix\n");
         ocrPrintf("\t--ts -- Specify the Tile Size\n");
-        ocrPrintf("\t--fi -- Specify the Input File Name of the Matrix\n");
+        ocrPrintf("\t--fi -- Specify the Input File Name of the Matrix (whitespace text)\n");
+        ocrPrintf("\t--fib -- Specify the Input File Name of the Matrix (tile-stream binary, see convertData)\n");
 //        ocrPrintf("\t--fo -- Specify an Output File Name (default: ocr_mkl_cholesky.out)\n");
         ocrPrintf("\t--ol -- Output Selection Level:\n");
         ocrPrintf("\t\t0: Print solution to stdout\n");
@@ -501,6 +574,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
                     {"ds", required_argument, 0, 'a'},
                     {"ts", required_argument, 0, 'b'},
                     {"fi", required_argument, 0, 'c'},
+                    {"fib", required_argument, 0, 'f'},
                     {"fo", required_argument, 0, 'd'},
                     {"ol", required_argument, 0, 'e'},
                     {0, 0, 0, 0}
@@ -508,7 +582,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 
             u32 option_index = 0;
 
-            c = getopt_long(argc, nparamv, "a:b:c:d:e", long_options, &option_index);
+            c = getopt_long(argc, nparamv, "a:b:c:d:e:f:", long_options, &option_index);
 
             if (c == -1) // Detect the end of the options
                 break;
@@ -528,12 +602,18 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
                 break;
             case 'd':
                 //ocrPrintf("Option d: fileNameOut with value '%s'\n", optarg);
-                fileNameOut = (char*) realloc(fileNameOut, sizeof(optarg));
-                strcpy(fileNameOut, optarg);
+                /* The default is a string literal, so it cannot be realloc'd;
+                 * getopt's optarg lives as long as argv does, and the sibling
+                 * input option already just points at it. */
+                fileNameOut = optarg;
                 break;
             case 'e':
                 //ocrPrintf("Option e: outSelLevel with value '%s'\n", optarg);
                 outSelLevel = (u32) atoi(optarg);
+                break;
+            case 'f':
+                fileNameIn = optarg;
+                inputIsBinary = 1;
                 break;
             default:
                 ocrPrintf("ERROR: Invalid argument switch\n\n");
@@ -545,7 +625,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
                 ocrPrintf("Arguments:\n");
                 ocrPrintf("\t--ds -- Specify the Size of the Input Matrix\n");
                 ocrPrintf("\t--ts -- Specify the Tile Size\n");
-                ocrPrintf("\t--fi -- Specify the Input File Name of the Matrix\n");
+                ocrPrintf("\t--fi -- Specify the Input File Name of the Matrix (whitespace text)\n");
+        ocrPrintf("\t--fib -- Specify the Input File Name of the Matrix (tile-stream binary, see convertData)\n");
 //                ocrPrintf("\t--fo -- Specify an Output File Name (default: ocr_mkl_cholesky.out)\n");
                 ocrPrintf("\t--ol -- Output Selection Level:\n");
                 ocrPrintf("\t\t0: Print solution to stdout\n");
@@ -608,14 +689,44 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     }
 
     FILE *in;
-    in = fopen(fileNameIn, "r");
+    if( fileNameIn == NULL ) {
+        ocrPrintf("Must specify an input matrix with --fi or --fib\n");
+        ocrShutdown();
+        return NULL_GUID;
+    }
+    in = fopen(fileNameIn, inputIsBinary ? "rb" : "r");
     if( !in ) {
         ocrPrintf("Cannot find file: %s\n", fileNameIn);
         ocrShutdown();
         return NULL_GUID;
     }
 
-    matrix = readMatrix(matrixSize, in);
+    /* The binary path holds no whole-matrix buffer: its tiles stream straight
+     * into their datablocks below, once the events they satisfy exist. */
+    matrix = NULL;
+    if( !inputIsBinary ) {
+        matrix = readMatrix(matrixSize, in);
+        if( !matrix ) {
+            ocrPrintf("Cannot allocate %d x %d matrix\n", matrixSize, matrixSize);
+            fclose(in);
+            ocrShutdown();
+            return NULL_GUID;
+        }
+    } else {
+        long expect = (long)(numTiles + 1) * numTiles / 2
+                    * (long)tileSize * tileSize * (long)sizeof(double);
+        if( fseek(in, 0, SEEK_END) == 0 ) {
+            long got = ftell(in);
+            if( got != expect ) {
+                ocrPrintf("Tile-binary input is %ld bytes, expected %ld for "
+                          "ds=%d ts=%d\n", got, expect, matrixSize, tileSize);
+                fclose(in);
+                ocrShutdown();
+                return NULL_GUID;
+            }
+            rewind(in);
+        }
+    }
 
     if(outSelLevel == 5)
     {
@@ -647,7 +758,21 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 #ifdef TG_ARCH
     satisfyInitialTiles(numTiles, tileSize, lkji_event_guids);
 #else
-    satisfyInitialTiles(numTiles, tileSize, matrix, lkji_event_guids);
+    if( inputIsBinary ) {
+        if( satisfyInitialTilesBinary(numTiles, tileSize, in, lkji_event_guids) != 0 ) {
+            fclose(in);
+            ocrShutdown();
+            return NULL_GUID;
+        }
+    } else {
+        satisfyInitialTiles(numTiles, tileSize, matrix, lkji_event_guids);
+
+        /* The tiles own their bytes from here on. */
+        for( i = 0; i < matrixSize; ++i ) free(matrix[i]);
+        free(matrix);
+        matrix = NULL;
+    }
+    fclose(in);
 #endif
 
     for ( k = 0; k < numTiles; ++k ) {
@@ -679,8 +804,11 @@ static double** readMatrix( u32 matrixSize, FILE* in ) {
     u32 i,j;
     double **A = (double**) aligned_malloc(sizeof(double*)*matrixSize, INTEL_BB);
 
-    for( i = 0; i < matrixSize; ++i)
+    if( A == NULL ) return NULL;
+    for( i = 0; i < matrixSize; ++i) {
         A[i] = (double*) aligned_malloc(sizeof(double)*matrixSize, INTEL_BB);
+        if( A[i] == NULL ) return NULL;
+    }
 
     for( i = 0; i < matrixSize; ++i ) {
         for( j = 0; j < matrixSize-1; ++j )
