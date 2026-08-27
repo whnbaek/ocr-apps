@@ -239,7 +239,8 @@ ocrGuid_t packTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
 }
 
-// paramv: {d, m, t, places, wave, nwave, row-tile event[tiles of d]}
+// paramv: {d, m, t, places, wave, nwave, row-tile event[tiles of d],
+//          source event[places]}
 // depv: this wave's arrival from every place (RO)
 // The receiving half of the pair-wise exchange: it cuts one wave's arrivals
 // into one block per row tile, so a row tile takes one dependence per wave
@@ -260,6 +261,7 @@ ocrGuid_t unpackTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     u64 lod, hid, tpd, a, ci, rl, j, ntw = 0;
     tileRange(d, t, places, &lod, &hid);
     tpd = hid - lod;
+    const u64 *src = paramv + 6 + tpd;          //the events this task consumed
     for(a = 0; a < places; a++) ntw += waveTiles(a, t, places, wave, nwave, NULL);
 
     for(rl = 0; rl < tpd; rl++) {
@@ -282,7 +284,13 @@ ocrGuid_t unpackTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrDbRelease(db);
         ocrEventSatisfy((ocrGuid_t){.guid = evt[rl]}, db);
     }
-    for(a = 0; a < places; a++) ocrDbDestroy(depv[a].guid);
+    /* The exchange events are sticky, so they do not reclaim themselves when
+     * they fire.  This task is their only consumer and has just run, so it is
+     * the one place that can know they are finished with. */
+    for(a = 0; a < places; a++) {
+        ocrDbDestroy(depv[a].guid);
+        ocrEventDestroy((ocrGuid_t){.guid = src[a]});
+    }
     return NULL_GUID;
 }
 
@@ -437,13 +445,16 @@ ocrGuid_t rankInitTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 
     //one unpack per wave, taking this place's arrival from every place
     {
-        u64 *unpPrm = (u64*)malloc((6 + tpg) * sizeof(u64));
+        u64 *unpPrm = (u64*)malloc((6 + tpg + places) * sizeof(u64));
         for(gi = 0; gi < ngrp; gi++) {
             ocrGuid_t unpTml, unpEdt;
             unpPrm[0] = g; unpPrm[1] = m; unpPrm[2] = t; unpPrm[3] = places;
             unpPrm[4] = gi; unpPrm[5] = ngrp;
             for(k = 0; k < tpg; k++) unpPrm[6 + k] = (u64)rowEvt[gi * tpg + k].guid;
-            ocrEdtTemplateCreate(&unpTml, unpackTask, (u32)(6 + tpg), (u32)places);
+            for(a = 0; a < places; a++)
+                unpPrm[6 + tpg + a] = xevt[(a * ngrp + gi) * places + g];
+            ocrEdtTemplateCreate(&unpTml, unpackTask,
+                                 (u32)(6 + tpg + places), (u32)places);
             ocrEdtCreate(&unpEdt, unpTml, EDT_PARAM_DEF, unpPrm, EDT_PARAM_DEF,
                          NULL, EDT_PROP_NONE, &h, NULL);
             ocrEdtTemplateDestroy(unpTml);
@@ -567,14 +578,23 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     //a message.  The receiver's unpack is what turns an arrival into per-reader
     //blocks, so nothing is held longer for it than for a per-row-block split.
     //the grid is [place][pack wave][place]; the wave count is derived by the
-    //same rule on both sides, so the two index it identically
+    //same rule on both sides, so the two index it identically.
+    //
+    //These are STICKY, and that is a correctness requirement rather than a
+    //preference.  A ONCE event delivers to the waiters registered when it is
+    //satisfied and is gone afterwards, but the consumer here registers inside
+    //the DESTINATION place's own init task while the producer satisfies from
+    //the SOURCE place's pack -- two tasks on two ranks whose only common
+    //ancestor is this one, so nothing orders the registration before the
+    //satisfy.  A sticky event delivers to a late registrant; the consuming
+    //unpack destroys it, since a sticky event does not reclaim itself.
     u64 ngrp = waveCount(t, places);
     ocrGuid_t *xevt =
         (ocrGuid_t*)malloc(places * ngrp * places * sizeof(ocrGuid_t));
     ocrGuid_t *devt = (ocrGuid_t*)malloc(places * sizeof(ocrGuid_t));
     for(r = 0; r < places; r++) {
         for(s = 0; s < ngrp * places; s++)
-            ocrEventCreate(&xevt[r * ngrp * places + s], OCR_EVENT_ONCE_T,
+            ocrEventCreate(&xevt[r * ngrp * places + s], OCR_EVENT_STICKY_T,
                            EVT_PROP_TAKES_ARG);
         ocrEventCreate(&devt[r], OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG);
         ocrAddDependence(devt[r], finishEdt, (u32)r, DB_MODE_RO);
