@@ -20,6 +20,45 @@
 #include "stdlib.h"
 #include "macros.h"
 
+/* Placement-optimization layer.  The whole recursion -- every fftStartEdt,
+ * fftEndEdt and fftEndSlaveEdt -- slices ONE shared data block acquired
+ * DB_MODE_RW; there is no per-subtree data to distribute.  Write access is
+ * exclusive at rank granularity, so scattering the tree cannot add
+ * parallelism across ranks: it can only hand the whole block from rank to
+ * rank, paying a full transfer per hop.  The best a hint can do is keep the
+ * tree where the block is; a real multinode FFT needs the restructured
+ * decomposition, not a hint. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#include <extensions/ocr-affinity.h>
+/* Placement-optimization layer.  A subtree's tasks are placed by the part of
+ * the transform they own -- its output offset -- rather than by where they were
+ * created, so the tasks that revisit a region of the block keep returning to
+ * the same place while the offsets, being a partition of the transform, keep
+ * every place equally loaded.  The whole extent needs no extra parameter: the
+ * recursion halves N and doubles the step, so N * stepSize is invariant and
+ * equals the transform length at every level.
+ *
+ * Placing by the creating task instead would keep the entire recursion on the
+ * one place the root started on -- perfectly local, and using a single node of
+ * however many the machine has.  That is not a scheduling answer, and a run
+ * that leaves most of the machine idle is not comparable with one that does
+ * not. */
+static ocrHint_t * fftRangeEdtHint(ocrHint_t *h, u64 offset, u64 totalN) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    u64 place = totalN ? (offset * pdCount) / totalN : 0;
+    if (place >= pdCount) place = pdCount - 1;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, place, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+#else
+#define fftRangeEdtHint(h, off, tot) NULL_HINT
+#endif
+
 #define SERIAL_BLOCK_SIZE_DEFAULT (1024*16)
 
 extern void ditfft2(float *X_real, float *X_imag, float *x_in, u32 N, u32 step);
@@ -68,10 +107,27 @@ typedef struct {
     u64 N;
     u64 verbose;
     u64 printResults;
+    u64 serialBlockSize;
     ocrGuid_t startTempGuid;
     ocrGuid_t endTempGuid;
     ocrGuid_t endSlaveTempGuid;
 }printPRM_t;
+
+/* The result scalar is summed where the values are produced rather than in one
+ * sweep afterwards: the last combine phase already touches every output, and a
+ * separate pass over it is a serial task on the critical path whose cost grows
+ * with the transform.  The slaves of that phase partition the output, so each
+ * accumulates its own share into its own slot -- no two of them write the same
+ * word -- and the final task adds the slots up.
+ *
+ * The slots live past the three arrays in the same block, which is why the
+ * block is created with room for them.  Both sides derive the count with this
+ * function so the layout cannot disagree. */
+static u64 fftPartialSlots(u64 N, u64 serialBlockSize) {
+    if(N <= serialBlockSize) return 0;          /* no combine phase at all */
+    if(N/2 > serialBlockSize) return (N/2)/serialBlockSize;
+    return 1;
+}
 
 // Performs one entire iteration of FFT.
 // These are meant to be chained serially for timing and testing.
@@ -105,8 +161,10 @@ ocrGuid_t fftIterationEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t dependencies[1] = { depv[0].guid };
 
     ocrGuid_t edtGuid;
+    ocrHint_t edtHNT;
     ocrEdtCreate(&edtGuid, startTempGuid, EDT_PARAM_DEF, (u64 *)&startParamv, 1,
-                 dependencies, EDT_PROP_FINISH, NULL_HINT, NULL);
+                 dependencies, EDT_PROP_FINISH,
+                 fftRangeEdtHint(&edtHNT, 0, startParamv.N), NULL);
 
     return NULL_GUID;
 }
@@ -160,11 +218,14 @@ ocrGuid_t fftStartEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrPrintf("Creating children of size %d\n",N/2);
         ocrGuid_t edtGuid, edtGuid2, endEdtGuid, finishEventGuid, finishEventGuid2;
 
+        ocrHint_t edtHNT;
         ocrEdtCreate(&edtGuid, startGuid, EDT_PARAM_DEF, (u64 *)&childParamv,
-                     EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_HINT,
+                     EDT_PARAM_DEF, NULL, EDT_PROP_FINISH,
+                     fftRangeEdtHint(&edtHNT, childParamv.offset, N * step),
                      &finishEventGuid);
         ocrEdtCreate(&edtGuid2, startGuid, EDT_PARAM_DEF, (u64 *)&childParamv2,
-                     EDT_PARAM_DEF, NULL, EDT_PROP_FINISH, NULL_HINT,
+                     EDT_PARAM_DEF, NULL, EDT_PROP_FINISH,
+                     fftRangeEdtHint(&edtHNT, childParamv2.offset, N * step),
                      &finishEventGuid2);
             ocrPrintf("finishEventGuid after create: 0x"GUIDF"\n", GUIDA(finishEventGuid));
 
@@ -174,7 +235,8 @@ ocrGuid_t fftStartEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrGuid_t endDependencies[3] = { dataGuid, finishEventGuid, finishEventGuid2 };
         // Do calculations after having divided and conquered
         ocrEdtCreate(&endEdtGuid, endGuid, EDT_PARAM_DEF, paramv, 3,
-                     endDependencies, EDT_PROP_FINISH, NULL_HINT, NULL);
+                     endDependencies, EDT_PROP_FINISH,
+                     fftRangeEdtHint(&edtHNT, offset, N * step), NULL);
 
         ocrAddDependence(dataGuid, edtGuid, 0, DB_MODE_RW);
         ocrAddDependence(dataGuid, edtGuid2, 0, DB_MODE_RW);
@@ -222,13 +284,17 @@ ocrGuid_t fftEndEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
             slaveParamv.kstart = i*serialBlockSize;
             slaveParamv.kend = (i+1)*serialBlockSize;
 
+            ocrHint_t slaveHNT;
             ocrEdtCreate(slaveGuids+i, endSlaveGuid, EDT_PARAM_DEF,
                          (u64 *)&slaveParamv, EDT_PARAM_DEF, &dataGuid,
-                         EDT_PROP_NONE, NULL_HINT, NULL);
+                         EDT_PROP_NONE,
+                         fftRangeEdtHint(&slaveHNT, offset + slaveParamv.kstart,
+                                         N * step), NULL);
         }
     } else {
         ocrGuid_t slaveGuids[1];
         endSlavePRM_t slaveParamv;
+        ocrHint_t slaveHNT2;
 
         slaveParamv.N = N;
         slaveParamv.step = step;
@@ -237,7 +303,8 @@ ocrGuid_t fftEndEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         slaveParamv.kend = N/2;
 
         ocrEdtCreate(slaveGuids, endSlaveGuid, EDT_PARAM_DEF, (u64 *)&slaveParamv,
-                     EDT_PARAM_DEF, &dataGuid, EDT_PROP_NONE, NULL_HINT, NULL);
+                     EDT_PARAM_DEF, &dataGuid, EDT_PROP_NONE,
+                     fftRangeEdtHint(&slaveHNT2, offset, N * step), NULL);
     }
     return NULL_GUID;
 }
@@ -256,6 +323,11 @@ ocrGuid_t fftEndSlaveEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) 
     float *X_imag = (float*)(data+offset + 2*N*step);
     u64 kStart = slaveParamvIn->kstart;
     u64 kEnd = slaveParamvIn->kend;
+
+    /* step is 1 only at the root of the recursion, and it is the root's
+     * combine phase that writes the transform's actual output. */
+    int atTop = (step == 1);
+    double part = 0.0;
 
     u32 k;
     for(k=kStart;k<kEnd;k++) {
@@ -277,6 +349,17 @@ ocrGuid_t fftEndSlaveEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) 
             (twiddle_real*xr - twiddle_imag*xi);
         X_imag[k+N/2] = t_imag -
             (twiddle_imag*xr + twiddle_real*xi);
+
+        if(atTop) {
+            part += fabs((double)X_real[k])       + fabs((double)X_imag[k])
+                  + fabs((double)X_real[k+N/2])   + fabs((double)X_imag[k+N/2]);
+        }
+    }
+
+    if(atTop) {
+        /* The slaves partition k, so this slot belongs to this slave alone. */
+        double *slot = (double*)(data + 3*N);
+        slot[kStart / (kEnd - kStart)] = part;
     }
 
     return NULL_GUID;
@@ -292,12 +375,33 @@ ocrGuid_t finalPrintEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     u64 N = printParamvIn->N;
     bool verbose = printParamvIn->verbose;
     bool printResults = printParamvIn->printResults;
+    u64 serialBlockSize = printParamvIn->serialBlockSize;
     float *x_in = (float*)data;
     float *X_real = (float*)(data + N);
     float *X_imag = (float*)(data + 2*N);
 
     if(verbose) {
         ocrPrintf("Final print EDT\n");
+    }
+
+    {   /* The result scalar: the sum of |Re| + |Im| over the parallel output.
+         * It was always taken over this array; it merely used to be printed
+         * from the verification stage, which made a reference recomputation
+         * look like part of the program.  The combine phase's slaves have
+         * already summed their own shares, so this adds up their slots; a
+         * transform small enough to have had no combine phase has no slots,
+         * and is swept here. */
+        double fft_checksum = 0.0;
+        u64 slots = fftPartialSlots(N, serialBlockSize);
+        if(slots) {
+            const double *slot = (const double*)(data + 3*N);
+            for(i=0;i<slots;i++) fft_checksum += slot[i];
+        } else {
+            for(i=0;i<N;i++) {
+                fft_checksum += fabs((double)X_real[i]) + fabs((double)X_imag[i]);
+            }
+        }
+        ocrPrintf("FFT checksum = %f\n", fft_checksum);
     }
 
     if(printResults) {
@@ -331,8 +435,9 @@ bool parseOptions(u32 argc, char **argv, u64 *N, bool *verify, u64 *iterations,
   char c;
   char *buffer = NULL;
 
-  if (argc != 2) {
-    ocrPrintf("Need one argument 'power'\n");
+  if (argc < 2 || argc > 3) {
+    ocrPrintf("Usage: fft <power> [v]   ('v' re-runs the transform serially "
+              "and compares, which is a reference check, not the work)\n");
     return false;
   }
 
@@ -346,7 +451,13 @@ bool parseOptions(u32 argc, char **argv, u64 *N, bool *verify, u64 *iterations,
   ocrPrintf("Power %ld\n", power);
   while(power-- > 0) *N=(*N)*2;
   *verbose = true;
-  *verify = true;
+  /* The verification stage re-runs the whole transform serially in one task
+   * and compares it point by point.  That is a reference implementation, not
+   * part of the work being timed, and at any interesting size it is the
+   * largest single task in the program -- so it is off unless asked for.  The
+   * result scalar does not depend on it: the checksum is taken over the
+   * parallel output, and is printed below whether or not it runs. */
+  if(argc > 2 && argv[2][0] == 'v') *verify = true;
   return true;
 }
 
@@ -389,9 +500,11 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     float *x;
     ocrGuid_t dataGuid;
     // TODO: OCR cannot handle large datablocks
-    ocrDbCreate(&dataGuid, (void **) &x, sizeof(float) * N * 3, 0, NULL_HINT, NO_ALLOC);
+    u64 dataBytes = sizeof(float) * N * 3
+                  + sizeof(double) * fftPartialSlots(N, serialBlockSize);
+    ocrDbCreate(&dataGuid, (void **) &x, dataBytes, 0, NULL_HINT, NO_ALLOC);
     if(verbose) {
-        ocrPrintf("Datablock of size %lu (N=%lu) created\n",sizeof(float)*N*3,N);
+        ocrPrintf("Datablock of size %lu (N=%lu) created\n",dataBytes,N);
     }
 
     for(i=0;i<N;i++) {
@@ -430,6 +543,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     printParamv.N = N;
     printParamv.verbose = verbose;
     printParamv.printResults = printResults;
+    printParamv.serialBlockSize = serialBlockSize;
     printParamv.startTempGuid = startTempGuid;
     printParamv.endTempGuid = endTempGuid;
     printParamv.endSlaveTempGuid = endSlaveTempGuid;
