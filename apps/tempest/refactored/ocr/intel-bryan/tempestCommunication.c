@@ -10,20 +10,25 @@
  * Stencil1D code with labeled sticky events and parallel init.
  */
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 
 #include <ocr.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ocr-std.h>
 #include <extensions/ocr-labeling.h>
+#include <extensions/ocr-affinity.h>
 
 #ifndef TEST_PATCH
 #define TEST_PATCH 0
 #endif
 
+#ifndef DURATION
 #define DURATION 100
 
+#endif
 #define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
 #define N   0
 #define E   1
@@ -37,12 +42,14 @@
 typedef struct{
     u32 panelNum;
     u64 patchRange;
+    u64 duration;
     ocrGuid_t guidRanges[8];
 }panel_t;
 
 typedef struct{
     u64 patchNum;
     u64 k;
+    u64 duration;
     ocrGuid_t patchTPT;
     s64 n, e, s, w, ne, se, sw, nw;
     u64 timestep;
@@ -505,6 +512,96 @@ s64 findNeighborPatch( u64 patchNum, u64 k, u32 dir )
     return neighbor;
 }
 
+/* Static patch->rank partition.  Below six ranks a face never hosts more
+ * than one whole rank, so contiguous patch-number bands (face-aligned by
+ * construction) are already boundary-minimal.  From six ranks up the faces
+ * are laid out as one k x 6k strip and cut into a P x Q rank grid with
+ * P*Q = nranks, P chosen among the divisors to minimise total cut length
+ * ((P-1) horizontal cuts of 6k plus (Q-1) vertical cuts of k): a patch's
+ * home follows its 2-D block, so intra-face halo neighbours co-locate in
+ * both axes instead of only along rows. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+static u64 patchHomeRank( u64 patchNum, u64 k )
+{
+    u64 nranks;
+    ocrAffinityCount( AFFINITY_PD, &nranks );
+    if( nranks < 6 )
+        return ( patchNum * nranks ) / ( 6 * k * k );
+    u64 P = 1, best = (u64)-1;
+    for( u64 p = 1; p <= nranks; ++p ) {
+        if( nranks % p ) continue;
+        u64 q = nranks / p;
+        u64 cut = ( p - 1 ) * 6 * k + ( q - 1 ) * k;
+        if( cut < best ) { best = cut; P = p; }
+    }
+    u64 Q = nranks / P;
+    u64 face = patchNum / ( k * k );
+    u64 idx  = patchNum % ( k * k );
+    u64 row = idx / k;
+    u64 gcol = face * k + ( idx % k );
+    u64 br = ( row * P ) / k;
+    u64 bc = ( gcol * Q ) / ( 6 * k );
+    return br * Q + bc;
+}
+
+#endif // OCR_APP_OPTIMIZED_PLACEMENT
+
+static ocrHint_t * makePatchEdtHint( ocrHint_t * h, u64 patchNum, u64 k )
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount( AFFINITY_PD, &nranks );
+    if( nranks <= 1 ) return NULL_HINT; /* co-location needs another PD to avoid */
+    ocrGuid_t aff;
+    ocrAffinityGetAt( AFFINITY_PD, patchHomeRank( patchNum, k ), &aff );
+    ocrHintInit( h, OCR_HINT_EDT_T );
+    ocrSetHintValue( h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue( aff ) );
+    return h;
+#else
+    (void)h; (void)patchNum; (void)k;
+    return NULL_HINT;
+#endif
+}
+
+/* A block a patch will hold for the whole run belongs on that patch's home,
+ * not on whichever task happened to allocate it.  An unhinted create homes a
+ * block where its creator runs, which for the per-patch state is the panel's
+ * rank rather than the patch's own. */
+static ocrHint_t * makePatchDbHint( ocrHint_t * h, u64 patchNum, u64 k )
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount( AFFINITY_PD, &nranks );
+    if( nranks <= 1 ) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt( AFFINITY_PD, patchHomeRank( patchNum, k ), &aff );
+    ocrHintInit( h, OCR_HINT_DB_T );
+    ocrSetHintValue( h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue( aff ) );
+    return h;
+#else
+    (void)h; (void)patchNum; (void)k;
+    return NULL_HINT;
+#endif
+}
+
+/* An object created while already running on a patch's home rank stays there. */
+static ocrHint_t * makeLocalEdtHint( ocrHint_t * h )
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount( AFFINITY_PD, &nranks );
+    if( nranks <= 1 ) return NULL_HINT; /* co-location needs another PD to avoid */
+    ocrGuid_t aff;
+    ocrAffinityGetCurrent( &aff );
+    ocrHintInit( h, OCR_HINT_EDT_T );
+    ocrSetHintValue( h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue( aff ) );
+    return h;
+#else
+    (void)h;
+    return NULL_HINT;
+#endif
+}
+
 ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
     patch_t * patchPTR = depv[8].ptr;
@@ -524,16 +621,16 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         neighborGUIDs[i] = depv[i].guid;
     }
 
-    if( patchPTR->patchNum == TEST_PATCH ) printf("timestep: %u\n", patchPTR->timestep);
+    if( patchPTR->patchNum == TEST_PATCH ) printf("timestep: %llu\n", (unsigned long long)patchPTR->timestep);
 
-    if( patchPTR->timestep == DURATION - 1 ){
+    if( patchPTR->timestep == patchPTR->duration - 1 ){
 
 
         if( patchPTR->patchNum == TEST_PATCH ){
 
-            printf("%d\t%d\t%d\n", dirptr[NW], dirptr[N], dirptr[NE]);
-            printf("%d\t%d\t%d\n", dirptr[W], patchPTR->patchNum, dirptr[E]);
-            printf("%d\t%d\t%d\n", dirptr[SW], dirptr[S], dirptr[SE]);
+            printf("%lld\t%lld\t%lld\n", (long long)dirptr[NW], (long long)dirptr[N], (long long)dirptr[NE]);
+            printf("%lld\t%lld\t%lld\n", (long long)dirptr[W], (long long)patchPTR->patchNum, (long long)dirptr[E]);
+            printf("%lld\t%lld\t%lld\n", (long long)dirptr[SW], (long long)dirptr[S], (long long)dirptr[SE]);
 
             printf("\n*CROSS-CHECKING NEIGHBOR DATA EXCHANGE*\n\n");
 
@@ -542,17 +639,18 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                 else nPatches[i] = -1;
             }
 
-            printf("%d\t%d\t%d\n", nPatches[7], nPatches[0], nPatches[4]);
-            printf("%d\t%d\t%d\n", nPatches[3], patchPTR->patchNum, nPatches[1]);
-            printf("%d\t%d\t%d\n", nPatches[6], nPatches[2], nPatches[5]);
+            printf("%lld\t%lld\t%lld\n", (long long)nPatches[7], (long long)nPatches[0], (long long)nPatches[4]);
+            printf("%lld\t%lld\t%lld\n", (long long)nPatches[3], (long long)patchPTR->patchNum, (long long)nPatches[1]);
+            printf("%lld\t%lld\t%lld\n", (long long)nPatches[6], (long long)nPatches[2], (long long)nPatches[5]);
 
             //ocrShutdown();
         }
         return NULL_GUID;
     }
 
+    ocrHint_t patchEdtHint;
     ocrEdtCreate( &edtGUID, patchPTR->patchTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
-                                                NULL, EDT_PROP_NONE, NULL_HINT, NULL );
+                                                NULL, EDT_PROP_NONE, makeLocalEdtHint(&patchEdtHint), NULL );
 
     /* Wire the next generation's halo receives onto the persistent channels;
      * each dependence pops one generation from the FIFO. */
@@ -565,7 +663,13 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     }
 
     /* Forward each received block to the matching neighbor by satisfying its
-     * recv channel; one satisfy enqueues one generation. */
+     * recv channel; one satisfy enqueues one generation.  Reusing the block
+     * (rather than minting one per generation) means its home stays behind
+     * its moving holder — each cross-rank acquire pays a home->holder
+     * forward hop — but a fresh block per generation measures WORSE: every
+     * consumer fetch of a new block is a first contact (a size-learning CTS
+     * round precedes the payload) and each retired block costs a destroy
+     * fan-out, together outweighing the forwards the reuse saves. */
     for( i = 0; i < 8; i++ ){
         if( neighborPTRs[i] != NULL ){
             neighborPTRs[i]->patchNum = patchPTR->patchNum;
@@ -619,8 +723,9 @@ ocrGuid_t channelSetupEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
     }
 
     ocrGuid_t patchEdtGUID;
+    ocrHint_t patchEdtHint;
     ocrEdtCreate( &patchEdtGUID, patchPTR->patchTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
-                  NULL, EDT_PROP_NONE, NULL_HINT, NULL );
+                  NULL, EDT_PROP_NONE, makeLocalEdtHint(&patchEdtHint), NULL );
 
     ocrGuid_t dbGuid;
     u64 *dummy;
@@ -665,6 +770,7 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     u32 rel;
 
     patchPTR->k = panelPTR->patchRange;
+    patchPTR->duration = panelPTR->duration;
 
     patchPTR->patchNum = paramv[0];
 
@@ -697,8 +803,9 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     ocrGuid_t setupTPT, setupEdtGUID;
     ocrEdtTemplateCreate( &setupTPT, channelSetupEdt, 0, 9 );
+    ocrHint_t setupEdtHint;
     ocrEdtCreate( &setupEdtGUID, setupTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF,
-                  NULL, EDT_PROP_NONE, NULL_HINT, NULL );
+                  NULL, EDT_PROP_NONE, makeLocalEdtHint(&setupEdtHint), NULL );
 
     for( i = 0; i < 8; i++ ){
         if( dirptr[i] > -1 ){
@@ -774,10 +881,13 @@ ocrGuid_t panelInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                                         //on the current panel.
 
         patchNum = ((k * k) * panelNum) + i;
-        ocrDbCreate( &patchDb, (void **)&dummyPatch, sizeof(patch_t), 0, NULL_HINT, NO_ALLOC );
+        ocrHint_t patchDbHint;
+        ocrDbCreate( &patchDb, (void **)&dummyPatch, sizeof(patch_t), 0,
+                     makePatchDbHint( &patchDbHint, patchNum, k ), NO_ALLOC );
 
+        ocrHint_t patchInitHint;
         ocrEdtCreate( &patchInitGUID, patchInitTPT, EDT_PARAM_DEF, &patchNum,
-                EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL );
+                EDT_PARAM_DEF, NULL, EDT_PROP_NONE, makePatchEdtHint(&patchInitHint, patchNum, k), NULL );
 
         ocrAddDependence( panelGUID, patchInitGUID, 0, DB_MODE_RW );
         ocrDbRelease( patchDb );
@@ -829,9 +939,13 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         }
 
         panelPTR[i]->patchRange = paramv[0];
+        panelPTR[i]->duration = paramv[1];
 
+        /* run the panel's patch-creation loop on the rank owning the panel's
+         * first patch, so most patch creates are rank-local */
+        ocrHint_t panelInitHint;
         ocrEdtCreate( &panelInitGUID, panelInitTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                        EDT_PROP_NONE, NULL_HINT, NULL );
+                        EDT_PROP_NONE, makePatchEdtHint(&panelInitHint, (u64)i * k * k, k), NULL );
         ocrDbRelease( panelGUID[i] );
         ocrAddDependence( panelGUID[i], panelInitGUID, 0, DB_MODE_RW );
     }
@@ -870,19 +984,44 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     argc = ocrGetArgc( programArgv );
 
-    if( argc != 2 ){
-        ocrPrintf( "INCORRECT NUMBER OF ARGS. USING DEFAULT PARAMS. %s\n", ocrGetArgv( programArgv, 0 ) );
+    /* Both dials are arguments.  patchRange sets how many patches there are
+     * (6*k*k of them, each the same size), duration how many timesteps they
+     * take; the compile-time DURATION remains the default so a build that
+     * fixed it keeps its length. */
+    u64 duration = DURATION;
+    if( argc > 3 ){
+        ocrPrintf( "USAGE: %s [patchRange [duration]]  expected at most 2 arguments, got %u\n",
+                    ocrGetArgv( programArgv, 0 ), argc - 1 );
+        ocrShutdown();
+        return NULL_GUID;
+    }
+    if( argc == 1 ){
+        ocrPrintf( "NO PATCHRANGE ARG GIVEN. USING DEFAULT PARAMS (patchRange=2).\n" );
         patchRange = 2;
     }else{
-        patchRange = (u64)atoi(ocrGetArgv(programArgv, 1));
+        u64 * out[2] = { &patchRange, &duration };
+        const char * names[2] = { "patchRange", "duration" };
+        for( i = 1; i < argc; i++ ){
+            char * arg = ocrGetArgv( programArgv, i );
+            char * endptr;
+            long val = strtol( arg, &endptr, 10 );
+            if( *arg == '\0' || *endptr != '\0' || val <= 0 ){
+                ocrPrintf( "USAGE: %s [patchRange [duration]]  %s must be a positive integer, got '%s'\n",
+                            ocrGetArgv( programArgv, 0 ), names[i-1], arg );
+                ocrShutdown();
+                return NULL_GUID;
+            }
+            *out[i-1] = (u64)val;
+        }
     }
 
     u64 patchNums;
 
 
-    ocrEdtTemplateCreate( &realmainTPT, realmainEdt, 1, 6 );
+    ocrEdtTemplateCreate( &realmainTPT, realmainEdt, 2, 6 );
 
-    ocrEdtCreate( &realmainGUID, realmainTPT, EDT_PARAM_DEF, &patchRange, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH,
+    u64 realmainParams[2] = { patchRange, duration };
+    ocrEdtCreate( &realmainGUID, realmainTPT, EDT_PARAM_DEF, realmainParams, EDT_PARAM_DEF, NULL, EDT_PROP_FINISH,
                     NULL_HINT, &finishEVT );
 
     ocrEdtTemplateCreate( &wrapupTPT, wrapupEdt, 0, 1 );
