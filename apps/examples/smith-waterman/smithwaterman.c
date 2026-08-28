@@ -10,6 +10,48 @@
 #include <stdlib.h>
 #include "macros.h"
 
+/* Placement-optimization layer: contiguous row-band placement for the
+ * wavefront.  A tile's West neighbour shares its row and therefore its rank;
+ * North/NW share its band on every row except the nranks-1 band-boundary
+ * rows, so the heavy row-to-row payload stays rank-local while the
+ * anti-diagonal frontier still reaches every band once it is a band tall.
+ * A round-robin map makes EVERY neighbour remote instead. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#include <extensions/ocr-affinity.h>
+static ocrHint_t * swBandEdtHint(ocrHint_t *h, u64 row, u64 nrows) {
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    if (nranks <= 1 || nrows == 0) return NULL_HINT;
+    u64 band = (row * nranks) / nrows;
+    if (band >= nranks) band = nranks - 1;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, band, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+/* The blocks a tile produces are created by the tile itself and so are homed
+ * where it runs, which the placement above already decides.  The left column's
+ * seed blocks are the exception: they are built up front, outside any tile, and
+ * every band consumes the ones on its own rows.  Place each on the band that
+ * will read it. */
+static ocrHint_t * swBandDbHint(ocrHint_t *h, u64 row, u64 nrows) {
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    if (nranks <= 1 || nrows == 0) return NULL_HINT;
+    u64 band = (row * nranks) / nrows;
+    if (band >= nranks) band = nranks - 1;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, band, &aff);
+    ocrHintInit(h, OCR_HINT_DB_T);
+    ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+#else
+#define swBandEdtHint(h, row, nrows) NULL_HINT
+#define swBandDbHint(h, row, nrows) NULL_HINT
+#endif
+
 #define GAP_PENALTY -1
 #define TRANSITION_PENALTY -2
 #define TRANSVERSION_PENALTY -4
@@ -23,6 +65,13 @@ typedef struct{
     ocrGuid_t bottom_right_event_guid;
     ocrGuid_t right_column_event_guid;
     ocrGuid_t bottom_row_event_guid;
+    /* The three this tile CONSUMES, in dependence-slot order.  Each readiness
+     * event is named by exactly one dependence, so its single consumer is also
+     * its last user and can reclaim it along with the block it carried.
+     * Without this the grid is 3 events per tile alive for the whole run. */
+    ocrGuid_t in_right_column_event_guid;
+    ocrGuid_t in_bottom_row_event_guid;
+    ocrGuid_t in_bottom_right_event_guid;
     u32 score;
 }smithWatermanPRM_t;
 
@@ -259,6 +308,10 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     ocrDbDestroy(depv[0].guid);
     ocrDbDestroy(depv[1].guid);
     ocrDbDestroy(depv[2].guid);
+    /* and the events that carried them: this task is their only consumer */
+    ocrEventDestroy(smithWatermanParamvIn->in_right_column_event_guid);
+    ocrEventDestroy(smithWatermanParamvIn->in_bottom_row_event_guid);
+    ocrEventDestroy(smithWatermanParamvIn->in_bottom_right_event_guid);
     /* If this is the last tile (bottom right most tile), finish */
     if ( i == n_tiles_height && j == n_tiles_width ) {
         ocrPrintf("score: %d\n", curr_bottom_row[effective_tile_width-1]);
@@ -329,7 +382,8 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
         
         ocrGuid_t db_guid_i_0_rc;
         void* db_guid_i_0_rc_data;
-        ocrDbCreate( &db_guid_i_0_rc, &db_guid_i_0_rc_data, sizeof(s32)*tile_height, DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+        ocrHint_t rcHNT;
+        ocrDbCreate( &db_guid_i_0_rc, &db_guid_i_0_rc_data, sizeof(s32)*tile_height, DB_PROP_NONE, swBandDbHint(&rcHNT, i - 1, n_tiles_height), NO_ALLOC );
         allocated = (s32*)db_guid_i_0_rc_data;
         for ( j = 0; j < effective_height ; ++j ) {
             allocated[j] = GAP_PENALTY*((i-1)*tile_height+j+1);
@@ -339,7 +393,8 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
 
         ocrGuid_t db_guid_i_0_br;
         void* db_guid_i_0_br_data;
-        ocrDbCreate( &db_guid_i_0_br, &db_guid_i_0_br_data, sizeof(s32), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+        ocrHint_t brHNT;
+        ocrDbCreate( &db_guid_i_0_br, &db_guid_i_0_br_data, sizeof(s32), DB_PROP_NONE, swBandDbHint(&brHNT, i - 1, n_tiles_height), NO_ALLOC );
 
         allocated = (s32*)db_guid_i_0_br_data;
         /* Use actual position for edge tile */
@@ -507,13 +562,19 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
             smithWatermanParamv.bottom_right_event_guid = tile_matrix[i][j].bottom_right_event_guid;
             smithWatermanParamv.right_column_event_guid = tile_matrix[i][j].right_column_event_guid;
             smithWatermanParamv.bottom_row_event_guid   = tile_matrix[i][j].bottom_row_event_guid;
+            smithWatermanParamv.in_right_column_event_guid = tile_matrix[i][j-1].right_column_event_guid;
+            smithWatermanParamv.in_bottom_row_event_guid   = tile_matrix[i-1][j].bottom_row_event_guid;
+            smithWatermanParamv.in_bottom_right_event_guid = tile_matrix[i-1][j-1].bottom_right_event_guid;
             smithWatermanParamv.score = check_score;
             /* Create an event-driven tasks of smith_waterman tasks */
             ocrGuid_t task_guid;
+            ocrHint_t bandHNT;
             ocrEdtCreate(&task_guid, smith_waterman_task_template_guid,
                         EDT_PARAM_DEF, (u64 *)&smithWatermanParamv /*paramv*/,
                         EDT_PARAM_DEF, NULL /*depv*/,
-                        EDT_PROP_NONE, NULL_HINT /*hint*/, NULL /*outputEvent*/);
+                        EDT_PROP_NONE,
+                        swBandEdtHint(&bandHNT, i - 1, n_tiles_height),
+                        NULL /*outputEvent*/);
 
             /* add dependency to the EDT from the west tile's right column ready event */
             ocrAddDependence(tile_matrix[i][j-1].right_column_event_guid, task_guid, 0, DB_MODE_CONST);
