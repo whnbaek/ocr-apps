@@ -15,8 +15,12 @@ See README file for more information
 6/22/15 added channel events, deleted passing bufferOut (just create them)
 
 */
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
+#ifndef ENABLE_EXTENSION_AFFINITY
 #define ENABLE_EXTENSION_AFFINITY
+#endif
 
 //if BLOCK is defined, ranks are place in sequential blocks into policy domains
 //so that PD0 gets rank 0, 1, 2,...
@@ -89,6 +93,11 @@ void bomb(char * s) {
     ocrPrintf("BOMB %s \n", s);
     ocrShutdown();
     return;
+}
+
+ocrGuid_t p2pShutdownEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
+    ocrShutdown();
+    return NULL_GUID;
 }
 
 typedef struct {
@@ -202,7 +211,11 @@ printf("start time %f end time %f diff %f \n", *timerPTR, time, time-*timerPTR);
             double flops = 1.0e-06*2*((double) (m-1))*(n-1)/avgtime;
             if(gf>1) flops = -flops;
             ocrPrintf("Rate (MFlops/s): %f Avg time (s): %f\n", flops, avgtime);
-            ocrShutdown();
+            /* Shutdown is not called here: this terminal instance still owes
+             * the release of its four acquired dependences, and a mid-body
+             * shutdown would truncate that release work out of the measured
+             * run.  The creator of this instance wired a dedicated shutdown
+             * EDT to its output event, which fires after the releases. */
             }
         return NULL_GUID;
     }
@@ -218,11 +231,25 @@ printf("start time %f end time %f diff %f \n", *timerPTR, time, time-*timerPTR);
 //create clone
 
     if((myRank == 0 && phase == w-1 && timestep == 0) || (myRank == p-1 && phase == w-2 && timestep == t) || (myRank == p-1 && w == 1 && timestep == t-1)){
+        /* On rank p-1 this branch creates the TERMINAL instance (the one that
+         * prints the result).  Its output event fires only after that
+         * instance's dependence releases have completed, so the dedicated
+         * shutdown EDT wired here never truncates in-flight release work out
+         * of the measured run. */
+        ocrGuid_t termOET = NULL_GUID;
+        ocrGuid_t *termOETp = (myRank == p-1) ? &termOET : NULL;
 #ifdef AFFINITY
-        ocrEdtCreate(&p2pEDT, privatePTR->p2pTML, EDT_PARAM_DEF, NULL, 4, NULL, EDT_PROP_NONE, &(privatePTR->myHNT), NULL);
+        ocrEdtCreate(&p2pEDT, privatePTR->p2pTML, EDT_PARAM_DEF, NULL, 4, NULL, EDT_PROP_NONE, &(privatePTR->myHNT), termOETp);
 #else
-        ocrEdtCreate(&p2pEDT, privatePTR->p2pTML, EDT_PARAM_DEF, NULL, 4, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+        ocrEdtCreate(&p2pEDT, privatePTR->p2pTML, EDT_PARAM_DEF, NULL, 4, NULL, EDT_PROP_NONE, NULL_HINT, termOETp);
 #endif
+        if(myRank == p-1) {
+            ocrGuid_t sdTML, sdEDT;
+            ocrEdtTemplateCreate(&sdTML, p2pShutdownEdt, 0, 1);
+            ocrEdtCreate(&sdEDT, sdTML, 0, NULL, 1, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+            ocrAddDependence(termOET, sdEDT, 0, DB_MODE_NULL);
+            ocrEdtTemplateDestroy(sdTML);
+        }
         ocrAddDependence(privatePTR->timerDBK, p2pEDT, SLOT(p2p,timer), DB_MODE_RW);
     } else {
 #ifdef AFFINITY
@@ -373,6 +400,7 @@ launch initChannel
 #endif
 
 
+
 //initialize values
     for(i=0;i<privatePTR->k;i++) ARRAY(0,i) = myfirst+i; //my part of bottom row
 
@@ -495,7 +523,6 @@ launch initp2p
 
     u64 dummy;
 
-
     ocrDbCreate(&privateDBK, (void**) &dummy, sizeof(private_t), 0, NULL_HINT, NO_ALLOC);
 
 
@@ -570,8 +597,12 @@ realMain initializes the shared block and launches p initEdts
     ocrAffinityCount(AFFINITY_PD, &count);
     block = (sharedPTR->p + count - 1)/count;
 
+    // Release once, before the spawn loop: the pointer is dead afterward and
+    // a second release of the same acquisition is invalid.
+    u64 num_pairs = sharedPTR->p;
+    ocrDbRelease(sharedDBK);
 
-    for(i=0;i<sharedPTR->p;i++) {
+    for(i=0;i<num_pairs;i++) {
 //launch P p2p EDTs
 
 //set affinity Hint
@@ -591,7 +622,6 @@ realMain initializes the shared block and launches p initEdts
 #else
         ocrEdtCreate(&(initEDT), initTML, EDT_PARAM_DEF, &i, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
 #endif
-        ocrDbRelease(sharedDBK);
         ocrAddDependence(sharedDBK, initEDT, SLOT(init,shared), DB_MODE_RO);
     }
 
