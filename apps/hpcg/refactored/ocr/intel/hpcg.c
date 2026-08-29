@@ -78,7 +78,7 @@ Oct  2016: modified to support reduction library change (ALLREDUCE, REDUCE, BROA
 #define NPZ 5
 #define M 16   // size of local block
 #define HPCGMAXITER 50
-#define T 50  //number of time steps
+#define T 50  //default maxIter when the run gives no iteration argument
 #define DEBUG 0 //debug print level 0: none 1: some 2: LOTS
 //           sizes of the vectors
 #define Z 0 //4 levels of ht
@@ -162,7 +162,7 @@ typedef struct{
 void bomb(char * s) {
 ocrPrintf("ERROR %s TERMINATING\n", s);
 ocrShutdown();
-return;
+exit(1);
 }
 
 

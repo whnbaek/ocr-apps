@@ -522,13 +522,25 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
                 reductionSendDown(rpPTR, mydataPTR);
             else
                 reductionRecvDown(rpPTR, DEPV(reduction, reductionPrivate, guid));
+            /* Neither arm carries this block on: the root copies it onto each
+             * down-edge and a receiver waits on an edge that brings its own.
+             * It was minted by reductionLaunch for this call alone. */
+            ocrDbDestroy(DEPV(reduction, mydata, guid));
             return NULL_GUID;
 
         case REDUCE:
             if(!ocrGuidIsNull(rpPTR->recvUpEVT[0]))
                 reductionRecvUp(rpPTR, DEPV(reduction, reductionPrivate, guid), DEPV(reduction, mydata, guid));
-            else
+            else {
                 reductionSendUp(rpPTR, mydataPTR);
+                /* A leaf contributes by COPY: reductionSendUp mints its own
+                 * block for the up-edge.  This one was minted by
+                 * reductionLaunch for this task alone and is named by nothing
+                 * else, so it dies here.  With children it would instead be
+                 * carried forward by reductionRecvUp, which is why the two
+                 * arms differ. */
+                ocrDbDestroy(DEPV(reduction, mydata, guid));
+            }
             return NULL_GUID;
 
         case ALLREDUCE:
@@ -537,6 +549,10 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
             else {
                 reductionSendUp(rpPTR, mydataPTR);
                 reductionRecvDown(rpPTR, DEPV(reduction,reductionPrivate,guid));
+                /* Same as the REDUCE leaf above: the up-edge carries a copy and
+                 * the down-edge brings its own block, so this one is named by
+                 * nothing once both edges are wired. */
+                ocrDbDestroy(DEPV(reduction, mydata, guid));
             }
             return NULL_GUID;
         }
@@ -553,6 +569,11 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
         }
         if(myrank != 0) {
             reductionSendUp(rpPTR, mydataPTR);
+            /* Same argument one level up: the children's blocks were freed
+             * above, the partial has been copied onto the up-edge, and only
+             * the ROOT hands its accumulator to the caller through returnEVT.
+             * A non-root accumulator is reachable from nowhere after this. */
+            ocrDbDestroy(DEPV(reduction, mydata, guid));
             if(rpPTR->type == ALLREDUCE)
                 reductionRecvDown(rpPTR, DEPV(reduction, reductionPrivate, guid));
             return NULL_GUID;
