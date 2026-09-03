@@ -634,8 +634,10 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
             printf("\n*CROSS-CHECKING NEIGHBOR DATA EXCHANGE*\n\n");
 
+            /* An absent neighbour is the NULL pointer, whatever block the
+             * generation-0 seed left in its dependence slot. */
             for( i = 0; i < 8; i++ ){
-                if(!ocrGuidIsNull(neighborGUIDs[i])) nPatches[i] = neighborPTRs[i]->patchNum;
+                if( neighborPTRs[i] != NULL ) nPatches[i] = neighborPTRs[i]->patchNum;
                 else nPatches[i] = -1;
             }
 
@@ -889,7 +891,7 @@ ocrGuid_t panelInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         ocrEdtCreate( &patchInitGUID, patchInitTPT, EDT_PARAM_DEF, &patchNum,
                 EDT_PARAM_DEF, NULL, EDT_PROP_NONE, makePatchEdtHint(&patchInitHint, patchNum, k), NULL );
 
-        ocrAddDependence( panelGUID, patchInitGUID, 0, DB_MODE_RW );
+        ocrAddDependence( panelGUID, patchInitGUID, 0, DB_MODE_CONST );
         ocrDbRelease( patchDb );
         ocrAddDependence( patchDb, patchInitGUID, 1, DB_MODE_RW );
 
@@ -947,7 +949,7 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         ocrEdtCreate( &panelInitGUID, panelInitTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
                         EDT_PROP_NONE, makePatchEdtHint(&panelInitHint, (u64)i * k * k, k), NULL );
         ocrDbRelease( panelGUID[i] );
-        ocrAddDependence( panelGUID[i], panelInitGUID, 0, DB_MODE_RW );
+        ocrAddDependence( panelGUID[i], panelInitGUID, 0, DB_MODE_CONST );
     }
     return NULL_GUID;
 }

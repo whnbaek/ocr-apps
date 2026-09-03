@@ -1413,7 +1413,7 @@ _OCR_TASK_FNC_( initEdt )
         ocrGuidFromIndex( &(stickyEVT_new), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID, nbrUb*nbrRank + nbrImage );
         ocrEventCreate( &stickyEVT_new, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
-        ocrAddDependence( stickyEVT_new, channelSetupEDT, 1+nbr, DB_MODE_RW ); //TODO should be RO
+        ocrAddDependence( stickyEVT_new, channelSetupEDT, 1+nbr, DB_MODE_CONST );
     }
 
     ocrDbRelease(DBK_rankH);
