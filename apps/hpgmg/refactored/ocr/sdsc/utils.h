@@ -3,13 +3,12 @@
 
 #include "hpgmg.h"
 
-// Fine boxes per coarse box.  Sizes the caller-supplied arrays that
-// get_fine_boxes()/get_fine_box_ids() fill, so both check against it.
+// Fine boxes per coarse box.  Sizes the caller-supplied array that
+// get_fine_boxes() fills, and the geometry check refuses a coarsening step
+// that would exceed it.
 #define MAX_FINE_BOXES 125
 
 double hpgmg_time();
-void shift_vector(level_type * level, int id_c, int id_a, double shift_a);
-double dot(level_type * level, int id_a, int id_b);
 void get_neighbors(int b, int dim_i, int dim_j, int dim_k, int* nbrs);
 void get_neighbor_guids(int b, level_type *level, ocrGuid_t* nbrs);
 ocrGuid_t get_coarse_box(level_type *fine, level_type *coarse, int fine_box_id);
@@ -26,9 +25,7 @@ void residual_coarse(level_type * level, box_type *box, double *res_id, double *
 double norm_coarse(level_type * level, double *component_id);
 void update_boundary_all (level_type *l, box_type *b, int b_off, box_type *nb, int nb_off, int face_only);
 
-void get_fine_box_ids(level_type *fine, level_type *coarse, int coarse_box_id, int *fine_box_ids);
 void get_neighbors_all(int b, int dim_i, int dim_j, int dim_k, int *nbrs);
-double mean(level_type * level, int id_a);
 void mul_vectors(level_type * level, double *id_c, double scale, double *id_a, double *id_b);
 void get_neighbor_guids_all(int b, level_type *level, ocrGuid_t* nbr_guids);
 void scale_vector(level_type * level, double *id_c, double scale_a, double *id_a);

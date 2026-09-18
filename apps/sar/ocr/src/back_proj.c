@@ -506,8 +506,8 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
 #endif
 
 #ifdef RAG_NEW_BLK_SIZE
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = RAG_NEW_BLK_SIZE;
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = RAG_NEW_BLK_SIZE;
+    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = image_params->blk_tile;
+    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = image_params->blk_tile;
 #else
     int BACK_PROJ_ASYNC_BLOCK_SIZE_M = blk_size(m2-m1,32);
     int BACK_PROJ_ASYNC_BLOCK_SIZE_N = blk_size(n2-n1,32);
@@ -584,8 +584,8 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
 #endif
 
 #ifdef RAG_NEW_BLK_SIZE
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = RAG_NEW_BLK_SIZE;
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = RAG_NEW_BLK_SIZE;
+    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = image_params->blk_tile;
+    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = image_params->blk_tile;
 #else
     int BACK_PROJ_ASYNC_BLOCK_SIZE_M = blk_size(m2-m1,32);
     int BACK_PROJ_ASYNC_BLOCK_SIZE_N = blk_size(n2-n1,32);

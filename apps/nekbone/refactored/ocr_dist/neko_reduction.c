@@ -21,12 +21,8 @@ Err_t copy_Reduct_private(reductionPrivate_t * in_from, reductionPrivate_t * o_t
 }
 
 
-/* The restructured tier's numbering.  Kept in this source rather than in the
- * shared one: the two tiers are different programs from here down, and the
- * build picks whole files rather than switching inside them.
- *
- * nekbone_placeGrid is the placement layer's own box decomposition, reused so
- * that the numbering and the placement cannot disagree about which ranks
+/* The box decomposition the placement map computes, reused here so that the
+ * reduction's numbering and the placement cannot disagree about which ranks
  * share a place.
  */
 int nekbone_placeGrid(unsigned int in_places, Triplet in_lattice, Triplet * o_grid);

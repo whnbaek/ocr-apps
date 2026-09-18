@@ -10,26 +10,40 @@
 #include "rag_ocr.h"
 #include "common.h"
 
-void img_stripes_layout(struct img_stripes_s *st, int ns, int nr, int iy, int ix, int align) {
-	if(ns < 1) ns = 1;
-	if(ns > IMG_MAX_STRIPES) ns = IMG_MAX_STRIPES;
-	/* Boundaries on multiples of `align` so a producer tile never straddles
+void img_stripes_layout(struct img_stripes_s *st, int ns, int nr, int iy, int ix,
+                        int align, int min_rows) {
+	if(nr < 1) nr = 1;
+	if(ns < nr) ns = nr;
+	if(align < 1) align = 1;
+	if(min_rows < align) min_rows = align;
+	/* Boundaries on multiples of `align` so a producer band never straddles
 	   two stripes; the remainder is spread one unit at a time rather than
 	   piled onto the last stripe. */
 	const int units = (iy + align - 1) / align;
-	if(ns > units) ns = units;
-	/* A stripe must stay taller than any consumer's footprint, or a task would
-	   reach across more than two of them and the covering set stops being
-	   bounded.  Below this the image is simply not worth striping. */
-	if(ns > iy / IMG_MIN_STRIPE) ns = iy / IMG_MIN_STRIPE;
-	if(ns < 1) ns = 1;
-	/* Keep the count a whole multiple of the rank count: a remainder leaves
-	   some ranks owning more stripes than others, and the extra one's halo is
-	   a neighbour nobody on that rank shares. */
-	if(nr > 0 && ns > nr) ns -= ns % nr;
-	if(ns < 1) ns = 1;
+	/* The bound on the stripe count is the one that keeps the SHORTEST stripe
+	   above the footprint, not the one the average height satisfies: the units
+	   are spread as evenly as whole units allow, so the shortest stripe is
+	   floor(units/ns) of them and a count derived from iy/min_rows admits
+	   layouts whose short stripes are well below min_rows. */
+	const int min_units = (min_rows + align - 1) / align;
+	int max_ns = units / min_units;
+	if(max_ns > IMG_MAX_STRIPES) max_ns = IMG_MAX_STRIPES;
+	/* Every rank owns a stripe or the phases placed by stripe would run on a
+	   subset of the machine without saying so. */
+	if(max_ns < nr) {
+		ocrPrintf("%d image rows aligned to %d cannot be cut into %d stripes of at"
+		          " least %d rows each (at most %d such stripes fit); raise the"
+		          " image, lower the block sizes, or lower the rank count.\n",
+		          iy, align, nr, min_rows, max_ns);RAG_FLUSH;
+		xe_exit(1);
+	}
+	if(ns > max_ns) ns = max_ns;
+	/* A whole multiple of the rank count: a remainder leaves some ranks owning
+	   more stripes than others, and the extra one's halo is a neighbour nobody
+	   on that rank shares. */
+	ns -= ns % nr;
 	st->ns = ns;
-	st->nr = nr < 1 ? 1 : nr;
+	st->nr = nr;
 	st->iy = iy;
 	st->ix = ix;
 	int acc = 0;
@@ -38,57 +52,101 @@ void img_stripes_layout(struct img_stripes_s *st, int ns, int nr, int iy, int ix
 		acc += units / ns + (s < units % ns ? 1 : 0);
 	}
 	st->y0[ns] = iy;
+	/* The realized heights, not the bound that chose the count: the last stripe
+	   is clipped when the image is not a whole number of units. */
+	for(int s = 0; s < ns; s++) {
+		if(st->y0[s+1] - st->y0[s] < min_rows) {
+			ocrPrintf("stripe %d of %d is %d rows, below the %d a consumer's"
+			          " footprint needs; lower the rank count or the block sizes.\n",
+			          s, ns, st->y0[s+1] - st->y0[s], min_rows);RAG_FLUSH;
+			xe_exit(1);
+		}
+	}
 	for(int s = 0; s < ns; s++) st->g[s] = NULL_GUID;
 }
 
-ocrHint_t *img_stripe_hint(ocrHint_t *h, const struct img_stripes_s *st, int s) {
+ocrHint_t *rank_edt_hint(ocrHint_t *h, u64 r) {
 #ifdef ENABLE_EXTENSION_AFFINITY
 	u64 n = 0;
 	if(ocrAffinityCount(AFFINITY_PD, &n) != 0 || n == 0) return NULL_HINT;
 	ocrGuid_t aff = NULL_GUID;
-	if(ocrAffinityGetAt(AFFINITY_PD, ((u64)s * st->nr / st->ns) % n, &aff) != 0) return NULL_HINT;
+	if(ocrAffinityGetAt(AFFINITY_PD, r % n, &aff) != 0) return NULL_HINT;
 	ocrHintInit(h, OCR_HINT_EDT_T);
 	ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
 	return h;
 #else
-	(void)h; (void)st; (void)s;
+	(void)h; (void)r;
 	return NULL_HINT;
 #endif
 }
 
-static ocrHint_t *img_stripe_db_hint(ocrHint_t *h, const struct img_stripes_s *st, int s) {
+ocrHint_t *rank_db_hint(ocrHint_t *h, u64 r) {
 #ifdef ENABLE_EXTENSION_AFFINITY
 	u64 n = 0;
 	if(ocrAffinityCount(AFFINITY_PD, &n) != 0 || n == 0) return NULL_HINT;
 	ocrGuid_t aff = NULL_GUID;
-	if(ocrAffinityGetAt(AFFINITY_PD, ((u64)s * st->nr / st->ns) % n, &aff) != 0) return NULL_HINT;
+	if(ocrAffinityGetAt(AFFINITY_PD, r % n, &aff) != 0) return NULL_HINT;
 	ocrHintInit(h, OCR_HINT_DB_T);
 	ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
 	return h;
 #else
-	(void)h; (void)st; (void)s;
+	(void)h; (void)r;
 	return NULL_HINT;
 #endif
 }
 
-void img_stripes_scatter(struct img_stripes_s *st, struct complexData **image) {
-	for(int s = 0; s < st->ns; s++) {
-		const int rows = st->y0[s+1] - st->y0[s];
-		if(rows <= 0) { st->g[s] = NULL_GUID; continue; }
-		ocrHint_t dbh;
-		ocrGuid_t dbg; struct complexData *p = NULL;
-		u8 rv = ocrDbCreate(&dbg, (void **)&p,
-		                    (size_t)rows * (size_t)st->ix * sizeof(struct complexData),
-		                    0, img_stripe_db_hint(&dbh, st, s), NO_ALLOC);
-		if(rv != 0) { ocrPrintf("Error creating image stripe %d\n", s);RAG_FLUSH;xe_exit(1); }
-		for(int r = 0; r < rows; r++)
-			memcpy(&p[(size_t)r * st->ix], &image[st->y0[s] + r][0],
-			       (size_t)st->ix * sizeof(struct complexData));
-		/* Release before the consumers' dependences are wired: a reader
-		   cannot acquire a block its producer still holds. */
-		ocrDbRelease(dbg);
-		st->g[s] = dbg;
+ocrHint_t *img_stripe_hint(ocrHint_t *h, const struct img_stripes_s *st, int s) {
+	return rank_edt_hint(h, img_stripe_rank(st, s));
+}
+
+ocrHint_t *img_stripe_db_hint(ocrHint_t *h, const struct img_stripes_s *st, int s) {
+	return rank_db_hint(h, img_stripe_rank(st, s));
+}
+
+ocrGuid_t img_stripe_gather_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
+	stGatherPRM_t *p = (stGatherPRM_t *)paramv;
+	assert(paramc==PRMNUM(stGather));
+	(void)depc;
+	const size_t cols = (size_t)p->ix;
+	const int y0 = (int)p->y0, y1 = (int)p->y1;
+	ocrHint_t dbh;
+	ocrGuid_t dbg; struct complexData *dst = NULL;
+	int retval = ocrDbCreate(&dbg, (void **)&dst,
+	                         (size_t)(y1 - y0) * cols * sizeof(struct complexData),
+	                         0, rank_db_hint(&dbh, p->rank), NO_ALLOC);
+	if(retval != 0) { ocrPrintf("Error creating an image stripe\n");RAG_FLUSH;xe_exit(1); }
+	for(u64 k = 0; k < p->nb; k++) {
+		const struct complexData *src = (const struct complexData *)depv[k].ptr;
+		if(src == NULL) continue;
+		const int b0 = (int)((p->j0 + k) * p->bh);
+		int b1 = b0 + (int)p->bh;
+		if(b1 > (int)p->iy) b1 = (int)p->iy;
+		const int lo = b0 > y0 ? b0 : y0;
+		const int hi = b1 < y1 ? b1 : y1;
+		for(int r = lo; r < hi; r++)
+			memcpy(&dst[(size_t)(r - y0) * cols],
+			       &src[(size_t)(r - b0) * cols],
+			       cols * sizeof(struct complexData));
 	}
+	/* Release before handing the block on: a reader cannot acquire a block its
+	   producer still holds. */
+	ocrDbRelease(dbg);
+	ocrGuid_t res_dbg; struct img_stripe_res_s *res = NULL;
+	retval = ocrDbCreate(&res_dbg, (void **)&res, sizeof(*res), 0, NULL_HINT, NO_ALLOC);
+	if(retval != 0) { ocrPrintf("Error creating a stripe result\n");RAG_FLUSH;xe_exit(1); }
+	res->g = dbg;
+	ocrDbRelease(res_dbg);
+	return res_dbg;
+}
+
+ocrGuid_t img_stripes_collect_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
+	(void)paramc; (void)paramv;
+	RAG_REF_MACRO_BSM( struct img_stripes_s *,st,NULL,NULL,st_dbg,0);
+	for(u32 s = 1; s < depc; s++) {
+		const struct img_stripe_res_s *res = (const struct img_stripe_res_s *)depv[s].ptr;
+		st->g[s-1] = res ? res->g : NULL_GUID;
+	}
+	return NULL_GUID;
 }
 
 void img_stripes_read(const struct img_stripes_s *st, ocrEdtDep_t *depv, int slot0,

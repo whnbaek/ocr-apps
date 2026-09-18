@@ -1,0 +1,64 @@
+miniAMR, block-structured adaptive mesh refinement, distributed decomposition.
+
+Same physics and the same problem instance as the sibling port in ../intel: the
+7- or 27-point stencil over num_vars variables, the six-face halo with quarter
+faces at a refinement boundary, the object sweep that drives refinement, the
+8-way split and octet join, and the same three printed checksums -- the
+`Weighted Mesh Checksum` this port prints is the other one's, digit for digit,
+at the same arguments.  What differs is who builds the work:
+
+  - a stage of a block is ONE task.  It takes in the strips its neighbours
+    wrote at the previous stage, reflects the faces that are the edge of the
+    mesh, runs the stencil over every variable, takes its checksum point where
+    the stage is one, and writes the strips the neighbours read next.  The
+    published port instead re-creates the block as a fresh EDT at every point
+    where it must wait, and serialises the three halo axes because each is such
+    a point;
+
+  - a strip datablock always holds a whole face, which is also exactly four
+    quarter faces, so it is created once for a block's lifetime and never
+    resized however the mesh around it moves.  Each face keeps two generations:
+    a stage reads the one the previous stage wrote and writes the other, so no
+    strip has a reader and a writer in the same stage;
+
+  - nothing is labeled.  A block finds the strip that feeds each face through
+    the epoch's directory, so no halo channel is homed at an index unrelated to
+    either endpoint;
+
+  - every phase's fan-out is a spawn tree and every phase's fan-in a join tree,
+    both indexed by rank, so a phase is emitted by as many tasks as the machine
+    has room for and no task ever holds a dependence per block.  That is what
+    removes the published port's cap on the block grid;
+
+  - the checksum reduces over the block forest: an interior node adds its eight
+    children in prong order, the base blocks are concatenated in mesh order,
+    and one final task adds them left to right.  That is the published grouping,
+    so the reduction is bitwise reproducible and independent of the node count;
+
+  - the mesh of each epoch is a directory one task derives from the previous
+    epoch and the object trajectory.  The published refinement decision reads a
+    block's level and its integer centre and never a cell value, so the intent
+    cascade, the level-difference agreement, the sibling unanimity and the
+    coarsening wave are pure topology and need no distributed protocol.  What
+    stays distributed is the part that moves data: one task per block of the new
+    mesh, upsampling from its ancestor, summing its eight children, or keeping
+    what it had, and then packing its strips;
+
+  - blocks are mapped onto a three-dimensional rank grid by position, through a
+    map that is level-consistent, so a block, its parent and its children share
+    a rank and a refinement moves no payload across the fabric.
+
+  --width  blocks emitted by one spawn-tree leaf (default 8); a leaf never
+           crosses a rank, so a phase's issue frontier is the sum over ranks of
+           ceil(that rank's blocks / width).
+
+Two flags of the published command line are accepted and refused rather than
+silently ignored: --code other than 0 (only minimal sends is implemented, as in
+the published port) and a non-zero --plot_freq (this program writes no plot
+files).  Bitwise identity with the published port is claimed for the 7-point
+stencil; the 27-point form reads shell cells that no exchange ever writes, and
+the published port warns that its answers diverge under refinement for that
+reason.
+
+Build with the parent project; sources: amr_dist.c command.c fan.c mesh.c
+physics.c.

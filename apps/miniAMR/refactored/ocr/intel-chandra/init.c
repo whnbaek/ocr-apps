@@ -32,6 +32,19 @@
 //#include "comm.h"
 #include "proto.h"
 
+// Value of one mesh cell as a pure function of its global index, so that the
+// field a run starts from is a property of the mesh alone: independent of how
+// the mesh is partitioned, of how many processes run it, and of the order in
+// which the owning tasks execute.
+static double cellValueFromGlobalIndex( u64 key )
+{
+   key += 0x9E3779B97F4A7C15ull;
+   key = (key ^ (key >> 30)) * 0xBF58476D1CE4E5B9ull;
+   key = (key ^ (key >> 27)) * 0x94D049BB133111EBull;
+   key ^= (key >> 31);
+   return ((double)(key >> 11)) * (1.0/9007199254740992.0);
+}
+
 // Initialize the problem and setup initial blocks.
 void init(rankH_t* PTR_rankH, octTreeRedH_t* PTR_octTreeRedH)
 {
@@ -208,21 +221,28 @@ void init(rankH_t* PTR_rankH, octTreeRedH_t* PTR_octTreeRedH)
    PTR_rankH->zValue = mortonZvalue( PTR_rankH->iblock_g*size/2, PTR_rankH->jblock_g*size/2, PTR_rankH->kblock_g*size/2, PTR_rankH->ilevel); //Finest block size is "2" (not 1). Hence, the division by 2.
    DEBUG_PRINTF(( "ZZZ ilevel %d id_l %d (%d, %d, %d) id_g %d zValue %d anchor %d %d %d\n", PTR_rankH->ilevel, PTR_rankH->myRank, PTR_rankH->iblock_g, PTR_rankH->jblock_g, PTR_rankH->kblock_g, PTR_rankH->myRank_g, PTR_rankH->zValue,  PTR_rankH->iblock_g*size/2, PTR_rankH->jblock_g*size/2, PTR_rankH->kblock_g*size/2 ));
 
+   u64 cells_x = (u64) PTR_rankH->gx * (u64) x_block_size;
+   u64 cells_y = (u64) PTR_rankH->gy * (u64) y_block_size;
+   u64 cells_z = (u64) PTR_rankH->gz * (u64) z_block_size;
+
    for (var = 0; var < PTR_cmd->num_vars; var++)
       for (ib = 1; ib <= x_block_size; ib++)
          for (jb = 1; jb <= y_block_size; jb++)
             for (kb = 1; kb <= z_block_size; kb++) {
-               #ifdef VERIFICATION_RUN
-               IN(bp,var,ib,jb,kb) = pow(8.0,(PTR_cmd->num_refine))+var;
-               #else
-               IN(bp,var,ib,jb,kb) = ((double) rand())/((double) RAND_MAX);
-               #endif
+               u64 gi = (u64) PTR_rankH->iblock_g * (u64) x_block_size + (u64)(ib-1);
+               u64 gj = (u64) PTR_rankH->jblock_g * (u64) y_block_size + (u64)(jb-1);
+               u64 gk = (u64) PTR_rankH->kblock_g * (u64) z_block_size + (u64)(kb-1);
+               u64 key = ((((u64)ilevel*(u64)PTR_cmd->num_vars + (u64)var)*cells_x
+                           + gi)*cells_y + gj)*cells_z + gk;
+               IN(bp,var,ib,jb,kb) = cellValueFromGlobalIndex( key );
             }
 
     ocrDbRelease(bp->DBK_array);
     ocrDbRelease(bp->DBK_work);
 
     memset( PTR_rankH->grid_sum, 0, MAX_NUM_VARS*sizeof(double) );
+    PTR_rankH->checksum_checks = 0;
+    PTR_rankH->checksum_divergences = 0;
 
     int npx = PTR_cmd->npx;
     int npy = PTR_cmd->npy;
@@ -369,6 +389,13 @@ void initDBKs( rankH_t* PTR_rankH, octTreeRedH_t* PTR_octTreeRedH )
        f = 1;
 
     int size;
+
+    // Coarser- and finer-neighbour buffers, and the whole refinement-intent
+    // exchange, are reachable only through a level boundary: with a single
+    // level a face neighbour is always at the block's own level, so allocating
+    // them would reserve storage and route-table state no code path can name.
+    int refinable = (PTR_cmd->num_refine != 0);
+
     //boundary halos - size depends on the face
     for (i = 0; i < 6; i++) {
 
@@ -384,22 +411,27 @@ void initDBKs( rankH_t* PTR_rankH, octTreeRedH_t* PTR_octTreeRedH )
             ma_malloc_counter( PTR_timerH, PTR_dBufH1->haloCurrSendPTRs[i][phase], dbk_size, __FILE__, __LINE__ );
             ocrDbRelease( PTR_dBufH1->haloCurrSendDBKs[i][phase] );
 
-            size = return_buf_size( PTR_rankH, i/2, fcase+2, 1); //coarse neighbor
-            //face+[2,3,4,5] //
             PTR_dBufH1->haloCoarSendPTRs[i][phase] = NULL;
-            dbk_size = size*sizeof(double);
-            ocrDbCreate( &(PTR_dBufH1->haloCoarSendDBKs[i][phase]), (void**) &(PTR_dBufH1->haloCoarSendPTRs[i][phase]), size*sizeof(double), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
-            ma_malloc_counter( PTR_timerH, PTR_dBufH1->haloCoarSendPTRs[i][phase], dbk_size, __FILE__, __LINE__ );
-            ocrDbRelease( PTR_dBufH1->haloCoarSendDBKs[i][phase] );
+            PTR_dBufH1->haloCoarSendDBKs[i][phase] = NULL_GUID;
+            if( refinable ) {
+                size = return_buf_size( PTR_rankH, i/2, fcase+2, 1); //coarse neighbor
+                //face+[2,3,4,5] //
+                dbk_size = size*sizeof(double);
+                ocrDbCreate( &(PTR_dBufH1->haloCoarSendDBKs[i][phase]), (void**) &(PTR_dBufH1->haloCoarSendPTRs[i][phase]), size*sizeof(double), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
+                ma_malloc_counter( PTR_timerH, PTR_dBufH1->haloCoarSendPTRs[i][phase], dbk_size, __FILE__, __LINE__ );
+                ocrDbRelease( PTR_dBufH1->haloCoarSendDBKs[i][phase] );
+            }
 
             for( j = 0; j < 4; j++ ) {
-                size = return_buf_size( PTR_rankH, i/2, fcase+6+j, 1); //refined neighbor
-                dbk_size = size*sizeof(double);
                 PTR_dBufH1->haloRefnSendPTRs[i][j][phase] = NULL;
-                ocrDbCreate( &(PTR_dBufH1->haloRefnSendDBKs[i][j][phase]), (void**) &(PTR_dBufH1->haloRefnSendPTRs[i][j][phase]), size*sizeof(double), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
-                ma_malloc_counter( PTR_timerH, PTR_dBufH1->haloRefnSendPTRs[i][j][phase], dbk_size, __FILE__, __LINE__ );
-                ocrDbRelease( PTR_dBufH1->haloRefnSendDBKs[i][j][phase] );
-
+                PTR_dBufH1->haloRefnSendDBKs[i][j][phase] = NULL_GUID;
+                if( refinable ) {
+                    size = return_buf_size( PTR_rankH, i/2, fcase+6+j, 1); //refined neighbor
+                    dbk_size = size*sizeof(double);
+                    ocrDbCreate( &(PTR_dBufH1->haloRefnSendDBKs[i][j][phase]), (void**) &(PTR_dBufH1->haloRefnSendPTRs[i][j][phase]), size*sizeof(double), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
+                    ma_malloc_counter( PTR_timerH, PTR_dBufH1->haloRefnSendPTRs[i][j][phase], dbk_size, __FILE__, __LINE__ );
+                    ocrDbRelease( PTR_dBufH1->haloRefnSendDBKs[i][j][phase] );
+                }
             }
 
         }
@@ -409,16 +441,23 @@ void initDBKs( rankH_t* PTR_rankH, octTreeRedH_t* PTR_octTreeRedH )
     for (i = 0; i < 6; i++) {
         for( phase = 0; phase < 2; phase++ ) {
             PTR_dBufH1->refnCurrSendPTRs[i][phase] = NULL;
-            ocrDbCreate( &(PTR_dBufH1->refnCurrSendDBKs[i][phase]), (void**) &(PTR_dBufH1->refnCurrSendPTRs[i][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
-            ocrDbRelease( PTR_dBufH1->refnCurrSendDBKs[i][phase] );
-
+            PTR_dBufH1->refnCurrSendDBKs[i][phase] = NULL_GUID;
             PTR_dBufH1->refnCoarSendPTRs[i][phase] = NULL;
-            ocrDbCreate( &(PTR_dBufH1->refnCoarSendDBKs[i][phase]), (void**) &(PTR_dBufH1->refnCoarSendPTRs[i][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
-            ocrDbRelease( PTR_dBufH1->refnCoarSendDBKs[i][phase] );
+            PTR_dBufH1->refnCoarSendDBKs[i][phase] = NULL_GUID;
+            if( refinable ) {
+                ocrDbCreate( &(PTR_dBufH1->refnCurrSendDBKs[i][phase]), (void**) &(PTR_dBufH1->refnCurrSendPTRs[i][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
+                ocrDbRelease( PTR_dBufH1->refnCurrSendDBKs[i][phase] );
+
+                ocrDbCreate( &(PTR_dBufH1->refnCoarSendDBKs[i][phase]), (void**) &(PTR_dBufH1->refnCoarSendPTRs[i][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
+                ocrDbRelease( PTR_dBufH1->refnCoarSendDBKs[i][phase] );
+            }
             for( j = 0; j < 4; j++ ) {
                 PTR_dBufH1->refnRefnSendPTRs[i][j][phase] = NULL;
-                ocrDbCreate( &(PTR_dBufH1->refnRefnSendDBKs[i][j][phase]), (void**) &(PTR_dBufH1->refnRefnSendPTRs[i][j][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
-                ocrDbRelease( PTR_dBufH1->refnRefnSendDBKs[i][j][phase] );
+                PTR_dBufH1->refnRefnSendDBKs[i][j][phase] = NULL_GUID;
+                if( refinable ) {
+                    ocrDbCreate( &(PTR_dBufH1->refnRefnSendDBKs[i][j][phase]), (void**) &(PTR_dBufH1->refnRefnSendPTRs[i][j][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
+                    ocrDbRelease( PTR_dBufH1->refnRefnSendDBKs[i][j][phase] );
+                }
             }
 
         }
@@ -427,8 +466,11 @@ void initDBKs( rankH_t* PTR_rankH, octTreeRedH_t* PTR_octTreeRedH )
     for( i = 0; i < 8; i++ ) {
         for( phase = 0; phase < 2; phase++ ) {
             PTR_dBufH1->refnCurrSendSibsPTRs[i][phase] = NULL;
-            ocrDbCreate( &(PTR_dBufH1->refnCurrSendSibsDBKs[i][phase]), (void**) &(PTR_dBufH1->refnCurrSendSibsPTRs[i][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
-            ocrDbRelease( PTR_dBufH1->refnCurrSendSibsDBKs[i][phase] );
+            PTR_dBufH1->refnCurrSendSibsDBKs[i][phase] = NULL_GUID;
+            if( refinable ) {
+                ocrDbCreate( &(PTR_dBufH1->refnCurrSendSibsDBKs[i][phase]), (void**) &(PTR_dBufH1->refnCurrSendSibsPTRs[i][phase]), sizeof(int), 0, &PTR_rankH->myDbkAffinityHNT_lazyDB, NO_ALLOC );
+                ocrDbRelease( PTR_dBufH1->refnCurrSendSibsDBKs[i][phase] );
+            }
         }
     }
 }

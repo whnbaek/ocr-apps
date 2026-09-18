@@ -512,21 +512,22 @@ s64 findNeighborPatch( u64 patchNum, u64 k, u32 dir )
     return neighbor;
 }
 
-/* Static patch->rank partition.  Below six ranks a face never hosts more
- * than one whole rank, so contiguous patch-number bands (face-aligned by
- * construction) are already boundary-minimal.  From six ranks up the faces
- * are laid out as one k x 6k strip and cut into a P x Q rank grid with
- * P*Q = nranks, P chosen among the divisors to minimise total cut length
- * ((P-1) horizontal cuts of 6k plus (Q-1) vertical cuts of k): a patch's
- * home follows its 2-D block, so intra-face halo neighbours co-locate in
- * both axes instead of only along rows. */
+/* Static patch->rank partition.  The six faces are laid out as one k x 6k
+ * strip, cut into a P x Q rank grid with P*Q = nranks, P chosen among the
+ * divisors of nranks to minimise the cut ((P-1) horizontal cuts of 6k plus
+ * (Q-1) vertical cuts of k); a patch's home is its block, so intra-face halo
+ * neighbours co-locate in both axes.  Balance is exact when P divides k and
+ * Q divides 6k.  A block boundary is not in general a face boundary: face
+ * alignment is a property of the face count, not of the cut, and buying it
+ * would cost either balance or cut length.  The same rule covers every rank
+ * count: a patch number runs along the strip's row (idx = row*k + col), so
+ * splitting the number line instead would be a cut on the row axis, which is
+ * the more expensive axis wherever the rule picks a single row of blocks. */
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
 static u64 patchHomeRank( u64 patchNum, u64 k )
 {
     u64 nranks;
     ocrAffinityCount( AFFINITY_PD, &nranks );
-    if( nranks < 6 )
-        return ( patchNum * nranks ) / ( 6 * k * k );
     u64 P = 1, best = (u64)-1;
     for( u64 p = 1; p <= nranks; ++p ) {
         if( nranks % p ) continue;
@@ -620,8 +621,6 @@ ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         else neighborPTRs[i] = NULL;
         neighborGUIDs[i] = depv[i].guid;
     }
-
-    if( patchPTR->patchNum == TEST_PATCH ) printf("timestep: %llu\n", (unsigned long long)patchPTR->timestep);
 
     if( patchPTR->timestep == patchPTR->duration - 1 ){
 
@@ -1033,7 +1032,10 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     for( i = 0; i < 6; i++ ){
 
-        ocrDbCreate( &panelDb, (void **)&panel, sizeof(panel_t), 0, NULL_HINT, NO_ALLOC );
+        ocrHint_t panelDbHint;
+        ocrDbCreate( &panelDb, (void **)&panel, sizeof(panel_t), 0,
+                     makePatchDbHint( &panelDbHint, (u64)i * patchRange * patchRange, patchRange ),
+                     NO_ALLOC );
         ocrDbRelease( panelDb );
         ocrAddDependence( panelDb, realmainGUID, i, DB_MODE_RW );
 

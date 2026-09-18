@@ -87,9 +87,11 @@ Err_t nekbone_setupTailRecusion(NEKOglobals_t * in_NEKOglobals,
 #   ifdef NEKO_get_CGLOOP
         io_CGstats->at_TailRecusionStart = t;
 #   endif
-    TIMEPRINT2("NKTIME> rank=%u RankSetup="TIMEF"\n",
-               in_NEKOglobals->rankID,
-               t - in_NEKOglobals->startTimeMark);
+    if(in_NEKOglobals->rankID == 0){
+        TIMEPRINT2("NKTIME> rank=%u RankSetup="TIMEF"\n",
+                   in_NEKOglobals->rankID,
+                   t - in_NEKOglobals->startTimeMark);
+    }
     return err;
 }
 
@@ -214,7 +216,7 @@ Err_t nekbone_tailRecursionELSE(NEKOglobals_t * in_NEKOglobals, NEKO_CGscalars_t
                 ocrPrintf("INFO> CGloop_stop> rnormfinal^2 = %24.14E\n", in_CGscalars->rnorm);
             }
 #       endif
-        print_NEKO_CGtimings(io_CGtimes);
+        if(in_NEKOglobals->rankID == 0) print_NEKO_CGtimings(io_CGtimes);
         err = destroy_NEKO_CGtimings(io_CGtimes); IFEB;
         break;
     }
@@ -673,9 +675,11 @@ Err_t nekbone_BtForkTransition_Stop(NEKOglobals_t * in_NEKOglobals)
     while(!err){
         TimeMark_t t = nekbone_getTime();
 
-        TIMEPRINT2("NKTIME> rank=%u TotalRank="TIMEF"\n",
-                   in_NEKOglobals->rankID,
-                   t - in_NEKOglobals->startTimeMark);
+        if(in_NEKOglobals->rankID == 0){
+            TIMEPRINT2("NKTIME> rank=%u TotalRank="TIMEF"\n",
+                       in_NEKOglobals->rankID,
+                       t - in_NEKOglobals->startTimeMark);
+        }
         break;
     }
     return err;

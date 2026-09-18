@@ -23,6 +23,17 @@ Copywrite Intel Corporation 2015
 #include "priority.h"
 #endif
 
+/* The added placement layer, one switchable name per piece so a measurement
+ * can turn a piece off and attribute what it moved.  The only placement this
+ * program leaves undetermined is which policy domain each rank lands on --
+ * every datablock and every task of a rank already follows that one choice --
+ * so the layer has one piece. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#ifndef COMD_SURFACE_MINIMAL_PD_GRID
+#define COMD_SURFACE_MINIMAL_PD_GRID
+#endif
+#endif
+
 void initSpecies(SpeciesData* species, BasePotential* pot)
 {
    strcpy(species->name, pot->name);
@@ -31,20 +42,10 @@ void initSpecies(SpeciesData* species, BasePotential* pot)
 }
 
 /// Check that the user input meets certain criteria.
-void sanityChecks(u64 id, u64 nRanks, Command cmd, double cutoff, double latticeConst, char latticeType[8])
+void sanityChecks(u64 id, Command cmd, double cutoff, double latticeConst, char latticeType[8])
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
    int failCode = 0;
-
-   // Check that domain grid matches number of ranks. (fail code 1)
-   int nProcs = cmd.xproc * cmd.yproc * cmd.zproc;
-   if (nProcs != (int)nRanks)
-   {
-      failCode |= 1;
-      if (id==0)
-         ocrPrintf( "\nDomain grid %d x %d x %d does not match the %d ranks of the run. Fatal Error.\n",
-                 cmd.xproc, cmd.yproc, cmd.zproc, (int)nRanks);
-   }
 
    // Check whether simuation is too small (fail code 2)
    double minx = 2*cutoff*cmd.xproc;
@@ -110,7 +111,7 @@ void initSimulation(SimFlat* sim, rankH_t* PTR_rankH, u64 id)
       latticeConstant = sim->pot->lat;
 
    // ensure input parameters make sense.
-   sanityChecks(id, PTR_rankH->nRanks, cmd, sim->pot->cutoff, latticeConstant, sim->pot->latticeType);
+   sanityChecks(id, cmd, sim->pot->cutoff, latticeConstant, sim->pot->latticeType);
 
    sim->species = &sim->species_INST;
    initSpecies(sim->species, sim->pot);
@@ -1007,6 +1008,65 @@ ocrGuid_t wrapUpEdt( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[] )
     return NULL_GUID;
 }
 
+#ifdef COMD_SURFACE_MINIMAL_PD_GRID
+/// Halo faces that leave a policy domain per step under a given pairing of
+/// rank grid and policy-domain grid.  Face neighbours are taken modulo the
+/// rank grid, so each axis is a ring: an axis owned by a single domain has
+/// every one of its faces internal, and an axis split p ways puts p block
+/// boundaries on the ring, each crossed in both directions by the rank area
+/// perpendicular to that axis.
+static u64 crossingHaloFaces( const u64* rankGrid, const u64* pdGrid )
+{
+    u64 nRanks = rankGrid[0]*rankGrid[1]*rankGrid[2];
+    u64 faces = 0;
+    for( u32 a = 0; a < 3; ++a )
+        if( pdGrid[a] > 1 )
+            faces += 2*pdGrid[a]*(nRanks/rankGrid[a]);
+    return faces;
+}
+
+/// Replace the policy-domain grid with the one that crosses the fewest halo
+/// faces, among the factorisations that divide every axis of the rank grid
+/// exactly.  A near-cubic factorisation of the domain count minimises the
+/// surface of a domain measured in domains, which is the right objective only
+/// where the rank grid is itself near-cubic: on an elongated grid the split
+/// belongs on the long axis, because an axis left whole keeps its entire ring
+/// of faces inside the domain.  An uneven split is never taken -- the busiest
+/// domain sets the pace of every step, and no saved traffic buys that back --
+/// and a tie keeps the incoming grid, so the map moves only where the count
+/// strictly falls.
+static void chooseSurfaceMinimalPdGrid( u64 nPolicyDomains, const u64* rankGrid, u64* pdGrid )
+{
+    if( rankGrid[0]%pdGrid[0] || rankGrid[1]%pdGrid[1] || rankGrid[2]%pdGrid[2] )
+        return;
+
+    u64 best[3] = { pdGrid[0], pdGrid[1], pdGrid[2] };
+    u64 bestFaces = crossingHaloFaces( rankGrid, best );
+
+    for( u64 px = 1; px <= nPolicyDomains; ++px )
+    {
+        if( nPolicyDomains%px || rankGrid[0]%px ) continue;
+        u64 rest = nPolicyDomains/px;
+        for( u64 py = 1; py <= rest; ++py )
+        {
+            if( rest%py || rankGrid[1]%py ) continue;
+            u64 pz = rest/py;
+            if( rankGrid[2]%pz ) continue;
+
+            u64 cand[3] = { px, py, pz };
+            u64 faces = crossingHaloFaces( rankGrid, cand );
+            if( faces < bestFaces )
+            {
+                bestFaces = faces;
+                best[0] = px; best[1] = py; best[2] = pz;
+            }
+        }
+    }
+
+    pdGrid[0] = best[0]; pdGrid[1] = best[1]; pdGrid[2] = best[2];
+}
+#endif
+
 ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 {
     u32 _paramc, _depc, _idep;
@@ -1037,6 +1097,48 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     }
 
     u64 nRanks = (cmd.xproc)*(cmd.yproc)*(cmd.zproc);
+
+    //The fork block-partitions each axis of the rank grid over the corresponding
+    //axis of the policy-domain grid, so the per-domain rank load is decided
+    //entirely by that pair of grids: an axis carrying fewer ranks than there are
+    //policy domains along it leaves whole domains idle, and an axis that does not
+    //divide leaves them unequally loaded.
+    u64 nPolicyDomains = 1;
+#ifdef ENABLE_EXTENSION_AFFINITY
+    ocrAffinityCount( AFFINITY_PD, &nPolicyDomains );
+#endif
+    u64 rankGrid[3] = { cmd.xproc, cmd.yproc, cmd.zproc };
+    u64 pdGrid[3];
+    splitDimension_Cart3D( nPolicyDomains, &pdGrid[0], &pdGrid[1], &pdGrid[2] );
+#ifdef COMD_SURFACE_MINIMAL_PD_GRID
+    chooseSurfaceMinimalPdGrid( nPolicyDomains, rankGrid, pdGrid );
+#endif
+
+    u64 maxRanksPerPD = 1, minRanksPerPD = 1;
+    for( u32 a = 0; a < 3; ++a )
+    {
+        u64 lo = rankGrid[a], hi = 0;
+        for( u64 p = 0; p < pdGrid[a]; ++p )
+        {
+            u64 s, e;
+            partition_bounds( p, 0, rankGrid[a]-1, pdGrid[a], &s, &e );
+            u64 extent = e + 1 - s;
+            if( extent > hi ) hi = extent;
+            if( extent < lo ) lo = extent;
+        }
+        maxRanksPerPD *= hi;
+        minRanksPerPD *= lo;
+    }
+
+    if( minRanksPerPD == 0 )
+        ocrPrintf( "\nWarning: domain grid %d x %d x %d does not cover the %"PRIu64" x %"PRIu64" x %"PRIu64" grid of the run's %"PRIu64" policy domains: a policy domain owns no rank, while %"PRIu64" land on the busiest one.\n",
+                cmd.xproc, cmd.yproc, cmd.zproc,
+                pdGrid[0], pdGrid[1], pdGrid[2], nPolicyDomains,
+                maxRanksPerPD );
+    else if( maxRanksPerPD != minRanksPerPD )
+        ocrPrintf( "\nWarning: domain grid %d x %d x %d over %"PRIu64" policy domains is unbalanced: %"PRIu64" ranks on the busiest domain against %"PRIu64" on the lightest.\n",
+                cmd.xproc, cmd.yproc, cmd.zproc, nPolicyDomains,
+                maxRanksPerPD, minRanksPerPD );
 
     //Create OCR objects to pass down to the child EDTs
     //for collective operatations among the child EDTs
@@ -1069,18 +1171,16 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     //Release the changes so they are visible for any dependent EDTs below
     ocrDbRelease(DBK_globalParamH);
 
-    u64 edtGridDims[3] = { cmd.xproc, cmd.yproc, cmd.zproc };
-
     //All SPMD EDTs depend on the following dependencies
     ocrGuid_t spmdDepv[2] = {DBK_cmdLineArgs, DBK_globalParamH};
 
-    //2-D Cartesian grid of SPMD EDTs get mapped to a 2-D Cartesian grid of PDs
+    //3-D Cartesian grid of SPMD EDTs get mapped to a 3-D Cartesian grid of PDs
 #ifdef USE_STATIC_SCHEDULER
     ocrPrintf("Using STATIC scheduler\n");
-    forkSpmdEdts_staticScheduler_Cart3D( initEdt, edtGridDims, spmdDepv );
+    forkSpmdEdts_staticScheduler_Cart3D( initEdt, rankGrid, spmdDepv );
 #else
     ocrPrintf("NOT Using STATIC scheduler\n");
-    forkSpmdEdts_Cart3D( initEdt, edtGridDims, spmdDepv );
+    forkSpmdEdts_onPdGrid_Cart3D( initEdt, rankGrid, pdGrid, spmdDepv );
 #endif
 
     return NULL_GUID;

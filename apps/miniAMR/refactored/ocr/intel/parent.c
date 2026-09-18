@@ -131,6 +131,7 @@ ocrGuid_t parentInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
    meta->cen[1]                                       = blockMeta->cen[1];
    meta->cen[2]                                       = blockMeta->cen[2];
    meta->refinementLevel                              = blockMeta->refinementLevel;
+   meta->cloneWritesSlot                              = 0;
 
    // Prepare the cloning stack.
    Frame_Header_t * topOfStack  = (Frame_Header_t *) meta->cloningState.stack;
@@ -349,14 +350,23 @@ ocrGuid_t parentClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
    ADD_DEPENDENCE(         NULL_GUID,                          parentClone_Edt, parentClone_Deps_t, controlFromBlock_Dep,  DB_MODE_NULL,                 nanny, "controlFromBlock")
    ADD_DEPENDENCE(         myDeps->upboundRequest_Dep.guid,    parentClone_Edt, parentClone_Deps_t, upboundRequest_Dep,    DB_MODE_RW,                   nanny, "upboundRequest")
    if (meta->cloningState.cloningOpcode == SeasoningOneOrMoreDbCreates) {
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[0].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[0], DB_MODE_RO,                   nanny, "serviceRequest[0]")
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[1].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[1], DB_MODE_RO,                   nanny, "serviceRequest[1]")
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[2].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[2], DB_MODE_RO,                   nanny, "serviceRequest[2]")
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[3].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[3], DB_MODE_RO,                   nanny, "serviceRequest[3]")
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[4].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[4], DB_MODE_RO,                   nanny, "serviceRequest[4]")
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[5].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[5], DB_MODE_RO,                   nanny, "serviceRequest[5]")
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[6].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[6], DB_MODE_RO,                   nanny, "serviceRequest[6]")
-      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[7].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[7], DB_MODE_RO,                   nanny, "serviceRequest[7]")
+      // A slot the clone is going to fill in must be acquired for writing; one carrying a request the clone only reads must not be.  The two roles share this slot array, so the mode is per slot.
+      ocrDbAccessMode_t slotMode[8];
+      {
+         int islot;
+         for (islot = 0; islot < 8; islot++) {
+            slotMode[islot] = (meta->cloneWritesSlot & (1u << islot)) ? DB_MODE_RW : DB_MODE_RO;
+         }
+      }
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[0].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[0], slotMode[0],                  nanny, "serviceRequest[0]")
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[1].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[1], slotMode[1],                  nanny, "serviceRequest[1]")
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[2].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[2], slotMode[2],                  nanny, "serviceRequest[2]")
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[3].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[3], slotMode[3],                  nanny, "serviceRequest[3]")
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[4].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[4], slotMode[4],                  nanny, "serviceRequest[4]")
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[5].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[5], slotMode[5],                  nanny, "serviceRequest[5]")
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[6].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[6], slotMode[6],                  nanny, "serviceRequest[6]")
+      ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[7].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[7], slotMode[7],                  nanny, "serviceRequest[7]")
+      meta->cloneWritesSlot = 0;   // Consumed by the clone just wired; the next seasoning round declares its own roles.
    } else {
       EVT_DEPENDENCE(      myDeps->serviceRequest_Dep[0].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[0], DB_MODE_RO,                   nanny, "serviceRequest[0]")
       EVT_DEPENDENCE(      myDeps->serviceRequest_Dep[1].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[1], DB_MODE_RO,                   nanny, "serviceRequest[1]")
@@ -451,10 +461,16 @@ void parentClone_SoupToNuts(ParentMeta_t * meta, u32 depc, ocrEdtDep_t depv[]) {
 
 // Process the service requested from children.
 
-      opcode = ((DbCommHeader_t *) (myDeps->serviceRequest_Dep[0].ptr))->serviceOpcode;
+      DbCommHeader_t * prong0 = (DbCommHeader_t *) (myDeps->serviceRequest_Dep[0].ptr);
+      opcode = prong0->serviceOpcode;
       for (idep = 1; idep < 8; idep++) {
-         if (((DbCommHeader_t *) (myDeps->serviceRequest_Dep[idep].ptr))->serviceOpcode != opcode) {
-            *((int *) 123) = 456;   // Service opcodes from children don't match!
+         DbCommHeader_t * prong = (DbCommHeader_t *) (myDeps->serviceRequest_Dep[idep].ptr);
+         if (prong->serviceOpcode != opcode) {   // The children of one parent must request the same service in the same round.
+            printf ("Error!  Children of one parent requested different services in one round: prong 0 opcode %d at timestep %d, prong %d opcode %d at timestep %d "
+                    "(parent lvl=%d, xPos=%d, yPos=%d, zPos=%d, clone=%d)\n",
+                    (int) opcode, prong0->timeStep, idep, (int) prong->serviceOpcode, prong->timeStep,
+                    (int) meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, meta->cloningState.cloneNum); fflush(stdout);
+            *((int *) 123) = 456;
          }
       }
 
@@ -490,6 +506,8 @@ void parentClone_SoupToNuts(ParentMeta_t * meta, u32 depc, ocrEdtDep_t depv[]) {
             myDeps->upboundRequest_Dep.ptr  = NULL;
          }
 
+         meta->cloneWritesSlot = 0;   // A slot earns its bit below, when this EDT puts a datablock of its own making into it for the seasoning clone to fill in.
+
          for (idep = 0; idep < 8; idep++) {
 #ifdef NANNY_ON_STEROIDS
             char nanny[NANNYLEN];
@@ -507,6 +525,7 @@ void parentClone_SoupToNuts(ParentMeta_t * meta, u32 depc, ocrEdtDep_t depv[]) {
                replyToChild_Event[idep] = replyToRequest_Event;
                gasket__ocrDbDestroy(&myDeps->serviceRequest_Dep[idep].guid, ((void **) (&myDeps->serviceRequest_Dep[idep].ptr)), __FILE__, __func__, __LINE__, nanny, "serviceRequest[...]");
                gasket__ocrDbCreate(&myDeps->replyToChild_Dep[idep].guid, &myDeps->replyToChild_Dep[idep].ptr, sizeof_RefinementDisposition_t,   __FILE__, __func__, __LINE__, nanny, "replyToChild[...]");
+               meta->cloneWritesSlot |= (unsigned char) (1u << idep);   // The clone writes this reply before satisfying the child with it.
             } else {
 //051 *((int *) 123) = 456; // COVERAGE!
                gasket__ocrDbDestroy(&myDeps->serviceRequest_Dep[idep].guid, ((void **) (&myDeps->serviceRequest_Dep[idep].ptr)), __FILE__, __func__, __LINE__, nanny, "serviceRequest[...]");

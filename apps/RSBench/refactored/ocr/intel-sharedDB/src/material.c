@@ -1,12 +1,12 @@
 #include "rsbench.h"
 
 // Handles all material creation tasks - returns Material struct
-Materials get_materials(rankDataH_t* PTR_rankDataH, Inputs in)
+Materials get_materials(rankDataH_t* PTR_rankDataH, Inputs in, u64 dataSeed)
 {
     Materials M;
     M.num_nucs  = load_num_nucs( &PTR_rankDataH->DBK_num_nucs, in.n_nuclides);
     M.mats     = load_mats(PTR_rankDataH, M.num_nucs, in.n_nuclides);
-    M.concs = load_concs(PTR_rankDataH, M.num_nucs);
+    M.concs = load_concs(PTR_rankDataH, M.num_nucs, dataSeed);
 
     return M;
 }
@@ -144,8 +144,9 @@ void assign_concs_ptrs( int* num_nucs, double* concs_all, double** concs )
 }
 
 // Creates a randomized array of 'concentrations' of nuclides in each mat
-double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs )
+double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs, u64 dataSeed )
 {
+    u64 key = rs_stream( dataSeed, RS_STREAM_CONCS );
     double ** concs; // = (double **)malloc( 12 * sizeof( double *) );
     ocrDbCreate( &PTR_rankDataH->DBK_conc_ptrs, (void **) &concs, 12*sizeof(double *),
                     0, NULL_HINT, NO_ALLOC );
@@ -165,9 +166,10 @@ double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs )
 
     assign_concs_ptrs( num_nucs, concs_all, concs );
 
+    u64 k = 0;
     for( int i = 0; i < 12; i++ )
         for( int j = 0; j < num_nucs[i]; j++ )
-            concs[i][j] = (double) rand() / (double) RAND_MAX;
+            concs[i][j] = rs_draw_unit( key, k++ );
 
     // test
     /*

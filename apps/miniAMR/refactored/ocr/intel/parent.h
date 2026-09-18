@@ -136,6 +136,9 @@ typedef struct ParentMeta_t {
    int       numBaseResBlocks;                               // Number of blocks at "base resolution", i.e. totally unrefined.  It is npx*npy*npz, and is invariant.  Kept for convenience.
    int       cen[3];                                         // "cen"ter position, as figured in the reference version.
    char      refinementLevel;
+   unsigned char cloneWritesSlot;                            // One bit per serviceRequest_Dep / replyToChild_Dep slot, valid for the next seasoning clone only: set for a slot carrying a datablock this
+                                                             // EDT created for that clone to fill in, clear for one carrying a child's request, which the clone only reads.  A slot's acquire mode follows
+                                                             // its bit; a datablock the clone writes must not be acquired read-only, and one it only reads must not be taken exclusively.
 
 // CAREFUL:  See notes above!
 

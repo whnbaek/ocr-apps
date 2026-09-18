@@ -1,6 +1,7 @@
 #ifndef COMD_H
 #define COMD_H
 
+#include <string.h>
 #include <ocr.h>
 
 #include "timers.h"
@@ -67,6 +68,22 @@ static inline void zeroReal3(real3 a)
   a[0] = a[1] = a[2] = 0.0;
 }
 
+/* A task parameter word is untyped storage, so a real carried in one is moved
+ * by object representation rather than by conversion. */
+static inline u64 real_bits(real_t v)
+{
+  u64 u = 0;
+  memcpy(&u, &v, sizeof(v));
+  return u;
+}
+
+static inline real_t bits_real(u64 u)
+{
+  real_t v;
+  memcpy(&v, &u, sizeof(v));
+  return v;
+}
+
 typedef struct
 {
   real_t sigma;
@@ -114,12 +131,16 @@ typedef struct potential
 typedef struct
 {
   u32 grid[3];         //!< number of boxes in each dimension on processor
+  u32 unit[3];         //!< number of lattice unit cells in each dimension
   u32 boxes_num;       //!< total number of local boxes on processor
   real3 local_min;     //!< minimum local bounds on processor
   real3 local_max;     //!< maximum local bounds on processor
   real3 box_size;      //!< size of box in each dimension
   real3 inv_box_size;  //!< inverse size of box in each dimension
   real3 shift[27];     //!< shift for periodic boundaries
+  real_t lat;          //!< lattice constant the sites are placed on
+  real_t temperature;  //!< temperature the momenta are drawn for
+  real_t delta;        //!< magnitude of the displacement from the lattice site
   u32 atoms;           //!< total number of atoms on this processor
   u32 max_occupancy;   //!< max number of atoms in a cell
   ocrGuid_t list;      //!< guid of the list of guids of the boxes
@@ -135,6 +156,17 @@ typedef struct
   real_t a[MAXATOMS]; //!< accumulator and temporary value, used in EAM
   u32 atoms;          //!< total number of atoms in the box
 } box;
+
+/// What one box contributes to the whole-system quantities the generated state
+/// still needs: a count, an occupancy maximum, and the two momentum sums the
+/// centre-of-mass subtraction and the temperature rescale are derived from.
+typedef struct
+{
+  u32 atoms;
+  u32 max_occupancy;
+  real3 p;            //!< sum of the momenta
+  real_t p2;          //!< sum of |p|^2
+} init_stats;
 
 struct simulation
 {
@@ -154,7 +186,7 @@ struct simulation
   u32 atoms0;           //<! Initial global number of atoms
 };
 
-u8 init_simulation(command* c, simulation* s, timer* t, ocrGuid_t** list);
+u8 init_simulation(command* c, simulation* s, ocrGuid_t** list);
 void destroy_simulation(void* s, void* l);
 
 u8 init_eam(const char* d, char* n, const char* t, potential* p, real_t dt);
@@ -165,15 +197,13 @@ void print_status(simulation* s, double time);
 void print_simulation(simulation* s);
 void validate_result(simulation* sim);
 
-void redistribute_atoms(simulation* sim, box** bxs_ptr, u32 boxes_num);
-void kinetic_energy(simulation* sim, box** bxs_ptr, u32 boxes_num);
 void compute_force(simulation* s);
 
-void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num);
-void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num);
-void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num, real_t step);
+void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, const u32 grid[3]);
+void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, const u32 grid[3]);
+void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, const u32 grid[3], real_t step);
 
 void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont,
-              ocrGuid_t list, ocrGuid_t* list_ptr, u32 boxes_num, real_t dt);
+              ocrGuid_t list, ocrGuid_t* list_ptr, const u32 grid[3], real_t dt);
 
 #endif

@@ -9,7 +9,6 @@
 ocrGuid_t top_warm(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t top_loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t finalize(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t finalize_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 ocrGuid_t test0_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
@@ -36,11 +35,11 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   }
 
   if(target_boxes<1){
-    ocrPrintf("target_boxes_per_rank must be at least 1\n");
+    ocrPrintf("target_boxes must be at least 1\n");
     ocrShutdown(); return NULL_GUID;
   }
 
-  // calculate the problem size...
+  // calculate the problem size...  target_boxes caps the TOTAL box count
   int box_dim=1<<log2_box_dim;
   int boxes_in_i = 1000;
   int total_boxes = boxes_in_i*boxes_in_i*boxes_in_i;
@@ -48,12 +47,14 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     boxes_in_i--;
     total_boxes = boxes_in_i*boxes_in_i*boxes_in_i;
   }
+  hpgmg_check_geometry(box_dim, boxes_in_i);
 
   ocrGuid_t mg; mg_type* mg_ptr;
   ocrDbCreate(&mg, (void**)&mg_ptr, sizeof(mg_type), 0, NULL_HINT, NO_ALLOC);
 
-  // initialization
-  init_all(mg_ptr, box_dim, boxes_in_i, BC_DIRICHLET, 0);
+  // initialization: the hierarchy's layout here, its contents in per-box tasks
+  ocrGuid_t startEvt;
+  ocrGuid_t initDone = init_all(mg_ptr, box_dim, boxes_in_i, BC_DIRICHLET, &startEvt);
 
   VERBOSEP("Finished initialization\n");
 
@@ -63,11 +64,16 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   // start loop
   ocrGuid_t tmp,edt;
-  ocrEdtTemplateCreate(&tmp, top_warm, 0, 1);
+  ocrEdtTemplateCreate(&tmp, top_warm, 0, 2);
   ocrHint_t spineHint;
-  ocrEdtCreate(&edt, tmp, 0, NULL, 1, NULL, 0, mgHomeEdtHint(&spineHint), NULL);
+  ocrEdtCreate(&edt, tmp, 0, NULL, 2, NULL, 0, mgHomeEdtHint(&spineHint), NULL);
   ocrAddDependence(mg, edt, 0, DB_MODE_CONST);
+  ocrAddDependence(initDone, edt, 1, DB_MODE_NULL);
   ocrEdtTemplateDestroy(tmp);
+
+  /* The chain is fully wired only now, so releasing it earlier could let it
+   * complete before its consumer is registered. */
+  ocrEventSatisfy(startEvt, NULL_GUID);
 
   ocrDbDestroy(depv[0].guid);
 
@@ -122,32 +128,35 @@ ocrGuid_t finalize(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrHint_t spineHint;
   ocrEdtCreate(&tm, i_tm, 1, &num_levels, num_levels, NULL, 0, mgHomeEdtHint(&spineHint), &fin);
 
-   // Set up finalize_edt (depends on print_timing_edt's output event)
-  level_type *l = (level_type*)(depv[1].ptr);
-  ocrGuid_t tmp,edt;
-  int num_boxes = l->num_boxes;
-  u64 pv[3] = {l->u, l->u_true, l->vec_temp};
-  ocrEdtTemplateCreate(&tmp, finalize_edt, 3, num_boxes+3);
-  // The output event fires only after finalize_edt's dependence releases have
-  // completed, so the shutdown EDT below never truncates in-flight release
-  // work out of the measured run.
-  ocrGuid_t finalizeOut;
-  ocrEdtCreate(&edt, tmp, 3, pv, num_boxes+3, NULL, 0, mgHomeEdtHint(&spineHint), &finalizeOut);
+   // The error norm, reduced from the boxes that hold the solution: an O(n)
+   // sweep per box on the rank that owns it, then one max over the results.
+  ocrGuid_t evt;
+  ocrEventCreate(&evt, OCR_EVENT_ONCE_T, 1);
+  u64 pv = hpgmg_guid_bits(evt);
+
+  ocrGuid_t e, e_t, eOut;
+  ocrEdtTemplateCreate(&e_t, hpgmg_error_level_edt, 1, 2);
+  ocrEdtCreate(&e, e_t, 1, &pv, 2, NULL, EDT_PROP_FINISH, mgHomeEdtHint(&spineHint), &eOut);
+  ocrEdtTemplateDestroy(e_t);
+  ocrAddDependence(depv[1].guid, e, 0, DB_MODE_CONST);
+  ocrAddDependence(fin, e, 1, DB_MODE_NULL);
+
+  // The output event fires only after the reduction's dependence releases
+  // have completed, so the shutdown EDT below never truncates in-flight
+  // release work out of the measured run.
+  ocrGuid_t f, f_t, fOut;
+  ocrEdtTemplateCreate(&f_t, hpgmg_error_final_edt, 0, 3);
+  ocrEdtCreate(&f, f_t, 0, NULL, 3, NULL, 0, mgHomeEdtHint(&spineHint), &fOut);
+  ocrEdtTemplateDestroy(f_t);
+  ocrAddDependence(depv[1].guid, f, 0, DB_MODE_CONST);
+  ocrAddDependence(eOut, f, 1, DB_MODE_NULL);
+  ocrAddDependence(evt, f, 2, DB_MODE_CONST);
 
   ocrGuid_t sd_t, sd;
   ocrEdtTemplateCreate(&sd_t, shutdown_edt, 0, 1);
   ocrEdtCreate(&sd, sd_t, 0, NULL, 1, NULL, 0, mgHomeEdtHint(&spineHint), NULL);
-  ocrAddDependence(finalizeOut, sd, 0, DB_MODE_NULL);
+  ocrAddDependence(fOut, sd, 0, DB_MODE_NULL);
   ocrEdtTemplateDestroy(sd_t);
-
- ocrGuid_t* boxes = (ocrGuid_t*)(((char*)l)+l->boxes);
-  for (b = 0; b < num_boxes; b++) {
-    ocrAddDependence(boxes[b], edt, b+3, DB_MODE_RW);
-  }
-  ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
-  ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
-  ocrAddDependence(fin, edt, 2, DB_MODE_CONST);
-  ocrEdtTemplateDestroy(tmp);
 
    // Allow print_timing_edt to run now
   for (b = 0; b < num_levels; b++) {

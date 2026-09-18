@@ -27,108 +27,6 @@ int IterativeSolver_NumVectors(){
 //------------------------------------------------------------------------------------------------------------------------------
 
 
-void init_all(mg_type* mg_ptr, int box_dim, int boxes_in_i, int boundary_condition, int level) {
-
-#ifdef ENABLE_EXTENSION_AFFINITY
-  ocrPrintf("Using affinity API\n");
-#else
-  ocrPrintf("NOTE: Not using affinity API\n");
-#endif
-
-  level_type* fine_ptr = create_level(mg_ptr, box_dim, boxes_in_i, boundary_condition, 0);
-  fine_ptr->level = level;
-
-  int minCoarseDim = 1;
-#ifdef USE_HELMHOLTZ
-//  ocrPrintf("  Creating Helmholtz (a=2.0, b=1.0) test problem\n");
-  initialize_problem(fine_ptr, 2.0, 1.0);
-  rebuild_operator(fine_ptr,NULL, 2.0, 1.0);
-  mg_build(mg_ptr, fine_ptr, 2.0, 1.0, minCoarseDim);
-#else
-//  ocrPrintf("  Creating Poisson (a=0.0, b=1.0) test problem\n");
-  initialize_problem(fine_ptr, 0.0, 1.0);
-  rebuild_operator(fine_ptr,NULL, 0.0, 1.0);
-  mg_build(mg_ptr, fine_ptr, 0.0, 1.0, minCoarseDim);
-#endif
-
-  ocrDbDestroy(fine_ptr->tempGuid);
-}
-
-level_type* create_level(mg_type* mg, int box_dim, int boxes_in_i, int boundary_condition, int level) {
-
-  u32 totalBoxes = boxes_in_i*boxes_in_i*boxes_in_i;
-
-  // how to compute the size of this level? For now using some calculation
-  u32 levelSize = sizeof(level_type) + sizeof(ocrGuid_t)*totalBoxes + sizeof(ocrGuid_t)*totalBoxes*6 /* ToDo: Manu: not sure why this is needed */ + totalBoxes*sizeof(double); // need to add fine and coarse related guids
-
-
-  ocrPrintf("attempting to create a %d^3 level using a %d^3 grid of %d^3 boxes ...\n",box_dim*boxes_in_i,boxes_in_i,box_dim);
-
-  // create level and populate mg and level related info
-  ocrGuid_t levelGuid;
-  level_type *levelPtr;
-  ocrDbCreate(&levelGuid, (void**)&levelPtr, levelSize, 0,NULL_HINT,NO_ALLOC);
-  mg->levels[level] = levelGuid;
-
-#if DEBUG
-  ocrPrintf("level %u: guid %u, box_dim %u\n", level, mg->levels[level], box_dim);
-#endif
-
-  // not sure when to populate mg->max_levels, current_level, vcycle_level
-
-  levelPtr->alpha = -1;
-  levelPtr->boundary_condition = boundary_condition;
-  levelPtr->level = level;
-  levelPtr->alpha_is_zero = -1;
-  levelPtr->num_boxes = totalBoxes;
-  levelPtr->box_dim = box_dim;
-  levelPtr->boxes_in.i = levelPtr->boxes_in.j = levelPtr->boxes_in.k = boxes_in_i;
-  levelPtr->dim.i = levelPtr->dim.j = levelPtr->dim.k = boxes_in_i*box_dim;
-  levelPtr->boxes = sizeof(level_type);
-  levelPtr->time_operators[0] = levelPtr->time_operators[1] = levelPtr->time_operators[2] = 0.0;
-  levelPtr->time_operators[3] = levelPtr->time_operators[4] = 0.0;
-  levelPtr->time_temp[0] = levelPtr->time_temp[1] = levelPtr->time_temp[2] = 0.0;
-  levelPtr->time_temp[3] = levelPtr->time_temp[4] = 0.0;
-
-
-  levelPtr->b_norms = levelPtr->boxes + sizeof(ocrGuid_t)*totalBoxes;
-
-  // create a temporary structure to hold all the box pointers
-  ocrDbCreate(&levelPtr->tempGuid, (void**)&levelPtr->temp, sizeof(box_type *)*totalBoxes, 0,NULL_HINT,NO_ALLOC);
-
-  // create boxes
-  int i,j,k;
-  for(k=0;k<levelPtr->boxes_in.k;k++) {
-    for(j=0;j<levelPtr->boxes_in.j;j++) {
-      for(i=0;i<levelPtr->boxes_in.i;i++) {
-        int jStride = levelPtr->boxes_in.i;
-        int kStride = levelPtr->boxes_in.i*levelPtr->boxes_in.j;
-        int b=i + j*jStride + k*kStride;
-        box_type *box;
-        box = create_box(levelPtr,NUM_VECTORS, box_dim,NUM_GHOSTS,b); // Manu: check is NUM_GHOSTS is always 1 for all levels
-        levelPtr->temp[b] = box;
-        box->low.i = i*levelPtr->box_dim;
-        box->low.j = j*levelPtr->box_dim;
-        box->low.k = k*levelPtr->box_dim;
-        box->global_box_id = b;
-      }
-    }
-  }
-
-
-  // printing all boxguids
-#if DEBUG
-  ocrGuid_t *t =  (ocrGuid_t *)(((char*)levelPtr)+ levelPtr->boxes);
-  ocrPrintf("----------\n");
-  for (i=0;i<totalBoxes;i++)
-    ocrPrintf("%u\n", *(t+i));
-#endif
-
-  initialize_valid_region(levelPtr);
-
-  return levelPtr;
-}
-
 
 void hpgmg_valid_box(level_type *level, box_type *bx) {
   int i,j,k;
@@ -151,12 +49,6 @@ void hpgmg_valid_box(level_type *level, box_type *bx) {
       if(k + bx->low.k >= level->dim.k)valid[ijk] = 0.0;
     }
   }}}
-}
-
-void initialize_valid_region(level_type * level){
-  int box;
-  for(box=0;box<level->num_boxes;box++)
-    hpgmg_valid_box(level, level->temp[box]);
 }
 
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
@@ -185,84 +77,6 @@ int boxHomePD(int box_num, int S, s64 P) {
   return px + py * PX + pz * PX * PY;
 }
 #endif
-
-box_type* create_box(level_type* lPtr, int num_vecs, int box_dim, int num_ghosts,int box_num) {
-
-
-  ocrGuid_t boxGuid;
-  box_type *boxPtr;
-  u32 boxVolume, totalMemSize;
-
-  #ifndef BOX_SIMD_ALIGNMENT
-  #define BOX_SIMD_ALIGNMENT 1 // allignment requirement for j+/-1
-  #endif
-  int jStride = (box_dim+2*num_ghosts);while(jStride % BOX_SIMD_ALIGNMENT)jStride++; // pencil
-  #ifndef BOX_PLANE_PADDING
-  #define BOX_PLANE_PADDING  8 // scratch space to avoid unrolled loop cleanup
-  #endif
-  int kStride = jStride*(box_dim+2*num_ghosts); // plane
-  if(jStride<BOX_PLANE_PADDING)kStride += (BOX_PLANE_PADDING-jStride); // allow the ghost zone to be clobbered...
-  while(kStride % BOX_SIMD_ALIGNMENT)kStride++;
-
-  boxVolume = (box_dim+2*num_ghosts)*kStride;
-  totalMemSize = sizeof(box_type) + boxVolume*num_vecs*sizeof(double);
-
-  ocrGuid_t currentAffinity = NULL_GUID;
-  ocrHint_t myDbAffinityHNT;
-  ocrHintInit( &myDbAffinityHNT, OCR_HINT_DB_T );
-
-#ifdef ENABLE_EXTENSION_AFFINITY
-  s64 affinityCount;
-  ocrAffinityCount( AFFINITY_PD, &affinityCount );
-
-#ifdef OCR_APP_OPTIMIZED_PLACEMENT
-  ocrAffinityGetAt( AFFINITY_PD,
-                    boxHomePD(box_num, lPtr->boxes_in.i, affinityCount),
-                    &currentAffinity );
-#else
-  ocrAffinityGetAt( AFFINITY_PD, box_num%affinityCount, &currentAffinity );
-#endif
-#endif
-  ocrSetHintValue( &myDbAffinityHNT, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(currentAffinity) );
-  ocrDbCreate(&boxGuid, (void**)&boxPtr, totalMemSize, 0, &myDbAffinityHNT, NO_ALLOC);
-
-  bzero(boxPtr, totalMemSize);
-
-  lPtr->jStride = jStride; lPtr->kStride = kStride, lPtr->volume = boxVolume;
-
-
-  // assign offsets to level->alpha, beta_i.... no alignment at present
-  if (lPtr->alpha != sizeof(box_type)) {
-    lPtr->alpha = sizeof(box_type);
-    lPtr->beta_i = lPtr->alpha + boxVolume*sizeof(double);
-    lPtr->beta_j = lPtr->beta_i + boxVolume*sizeof(double);
-    lPtr->beta_k =  lPtr->beta_j + boxVolume*sizeof(double);
-    lPtr->Dinv =  lPtr->beta_k + boxVolume*sizeof(double);
-    lPtr->L1inv = lPtr->Dinv + boxVolume*sizeof(double);
-    lPtr->valid = lPtr->L1inv + boxVolume*sizeof(double);
-    lPtr->u_true =  lPtr->valid + boxVolume*sizeof(double);
-    lPtr->f = lPtr->u_true + boxVolume*sizeof(double);
-    lPtr->f_Av = lPtr->f + boxVolume*sizeof(double);
-    lPtr->u = lPtr->f_Av + boxVolume*sizeof(double);
-    lPtr->vec_temp = lPtr->u + boxVolume*sizeof(double);
-    box_type *const_box;
-    ocrDbCreate(&lPtr->constant_box_guid, (void**)&const_box, totalMemSize, 0, &myDbAffinityHNT, NO_ALLOC);
-    const_box->global_box_id = -1;
-
-    bzero((char*)boxPtr + lPtr->u, (lPtr->volume)*sizeof(double));
-
-#if DEBUG
-    ocrPrintf("constant_box_gui = %u\n", lPtr->constant_box_guid);
-#endif
-  }
-
-  ocrGuid_t *tBox;
-  tBox  = (ocrGuid_t *)(((char*)lPtr)+ lPtr->boxes)+box_num;
-  *tBox = boxGuid;
-
-  return boxPtr;
-
-}
 
 void hpgmg_fill_box(level_type *level, box_type *bx, double a, double b) {
 
@@ -321,31 +135,6 @@ void hpgmg_fill_box(level_type *level, box_type *bx, double a, double b) {
        }
      }
    }
-}
-
-void initialize_problem(level_type* level, double a, double b) {
-
-  double hLevel = 1.0/( (double)level->boxes_in.i*(double)level->box_dim );
-  level->h = hLevel;
-
-  int box;
-  for (box=0; box<level->num_boxes; box++)
-    hpgmg_fill_box(level, level->temp[box], a, b);
-
-  if(level->alpha_is_zero==-1)
-    level->alpha_is_zero = (dot(level,level->alpha,level->alpha) == 0.0);
-
-
-  if(level->boundary_condition == BC_PERIODIC) {
-    double average_value_of_f = mean(level,level->f);
-    if(average_value_of_f!=0.0) ocrPrintf("WARNING... Periodic boundary conditions, but f does not sum to zero... mean(f)=%f\n", average_value_of_f);
-    if((a==0.0) || (level->alpha_is_zero==1) ) {
-      double average_value_of_u = mean(level,level->u_true);
-      ocrPrintf(" average value of u = %20.12f... shifting u to ensure it sums to zero...\n",average_value_of_u);
-      shift_vector(level,level->u_true,level->u_true,-average_value_of_u);
-      shift_vector(level,level->f,level->f,-average_value_of_f);
-    }
-  }
 }
 
 void evaluateBeta(double x, double y, double z, double *B, double *Bx, double *By, double *Bz){
@@ -497,243 +286,626 @@ void hpgmg_coeff_restrict_box(level_type *level, box_type *cb,
   }
 }
 
-void rebuild_operator(level_type* level, level_type* fromLevel, double a, double b) {
 
-  ocrPrintf(" rebuilding operator for level...  h=%e  ",level->h);
-
-
-  // form restriction of alpha[], beta_*[] coefficients from fromLevel
-  if(fromLevel != NULL) {
-    int count = fromLevel->num_boxes/level->num_boxes;
-    int fine[MAX_FINE_BOXES];
-    int b,fb;
-    for (b = 0; b < level->num_boxes; b++) {
-      get_fine_box_ids(fromLevel, level, b, fine);
-      for (fb = 0; fb < count; fb++)
-        hpgmg_coeff_restrict_box(level, level->temp[b],
-                                 fromLevel, fromLevel->temp[fine[fb]], fb, count);
-    }
-  }
-
-  //  exchange alpha/beta/...  (must be done before calculating Dinv)
- int nbrs[26];
-  int box;
- /* ToDo: may not be required due to the way we restrict!
-  for (box = 0; box < level->num_boxes; box++) {
-    double *alpha, *beta_i, *beta_j, *beta_k;
-    get_neighbors(box, level->boxes_in.i, level->boxes_in.j, level->boxes_in.k, nbrs);
-    alpha = (double*)(((char*)level->temp[box])+ level->alpha) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    beta_i =  (double*)(((char*)level->temp[box])+ level->beta_i) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    beta_j =  (double*)(((char*)level->temp[box])+ level->beta_j) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    beta_k =  (double*)(((char*)level->temp[box])+ level->beta_k) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    int bi;
-    for (bi = 0; bi < 6; bi++) {
-//         ocrPrintf("box %d, Nbox %d\n", box, nbrs[bi]);
-      if (nbrs[bi] < 0 || nbrs[bi] >= level->num_boxes)
-        continue;
-      else {
-       populate_boundary(level,alpha,level->temp[nbrs[bi]],level->alpha,bi);
-	populate_boundary(level,beta_i,level->temp[nbrs[bi]],level->beta_i,bi);
-	populate_boundary(level,beta_j,level->temp[nbrs[bi]],level->beta_j,bi);
-	populate_boundary(level,beta_k,level->temp[nbrs[bi]],level->beta_k,bi);
-      }
-    }
-  }
-*/
-
-  double dominant_eigenvalue = -1e9;
-
-  for(box=0;box<level->num_boxes;box++) {
-    double box_eigenvalue = hpgmg_gershgorin_box(level, level->temp[box], a, b);
-    if(box_eigenvalue>dominant_eigenvalue){
-      dominant_eigenvalue = box_eigenvalue;
-    }
-  }
-
-
-  ocrPrintf("eigenvalue_max < %f\n",dominant_eigenvalue);
-  level->dominant_eigenvalue_of_DinvA = dominant_eigenvalue;
-
-/*
-  // exchange Dinv/L1inv/...
-  for (box = 0; box < level->num_boxes; box++) {
-    double *Dinv, *L1inv;
-    get_neighbors(box, level->boxes_in.i, level->boxes_in.j, level->boxes_in.k, nbrs);
-    Dinv = (double*)(((char*)level->temp[box])+ level->Dinv) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    L1inv =  (double*)(((char*)level->temp[box])+ level->L1inv) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    int bi;
-    for (bi = 0; bi < 6; bi++) {
-      if (nbrs[bi] < 0 || nbrs[bi] >= level->num_boxes)
-        continue;
-      else {
-        populate_boundary(level,Dinv,level->temp[nbrs[bi]],level->Dinv,bi);
-	populate_boundary(level,L1inv,level->temp[nbrs[bi]],level->L1inv,bi);
-      }
-    }
-  }
-*/
-  // exchange Dinv/L1inv/...
-  for (box = 0; box < level->num_boxes; box++) {
-    double *Dinv, *L1inv;
-    get_neighbors_all(box, level->boxes_in.i, level->boxes_in.j, level->boxes_in.k, nbrs);
-    Dinv = (double*)(((char*)level->temp[box])+ level->Dinv) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    L1inv =  (double*)(((char*)level->temp[box])+ level->L1inv) + NUM_GHOSTS * (1+level->jStride+level->kStride);
-    int bi;
-    for (bi = 0; bi < 26; bi++) {
-      if (nbrs[bi] == -1)
-        continue;
-      else {
-        update_boundary_all(level,level->temp[box],level->Dinv,level->temp[nbrs[bi]],level->Dinv,0);
-        update_boundary_all(level,level->temp[box],level->L1inv,level->temp[nbrs[bi]],level->L1inv,0);
-      }
-    }
-  }
-
-
-
+// The per-box term of the level-wide dot(alpha,alpha).  The whole dot is a
+// sum of squares, so it is zero exactly when every box's term is zero: the
+// level-wide test survives a max reduction, which is exact and independent
+// of the order the boxes are reduced in.
+double hpgmg_alpha_dot_box(level_type *level, box_type *bx) {
+  int i,j,k;
+  int jStride = level->jStride;
+  int kStride = level->kStride;
+  int     dim = level->box_dim;
+  double * __restrict__ a = (double*)(((char*)bx) + level->alpha)
+                          + NUM_GHOSTS*(1+jStride+kStride);
+  double s = 0.0;
+  for(k=0;k<dim;k++){
+  for(j=0;j<dim;j++){
+  for(i=0;i<dim;i++){
+    int ijk = i + j*jStride + k*kStride;
+    s += a[ijk]*a[ijk];
+  }}}
+  return s;
 }
 
+/* ------------------------------------------------------------------ */
+/* geometry                                                            */
+/* ------------------------------------------------------------------ */
 
-void mg_build(mg_type* all_grids, level_type* fine_grid, double a, double b, int minCoarseGridDim) {
-
+// Halve the box dimension down to the agglomeration threshold, then
+// agglomerate the box grid, then halve the last box down to one cell.
+int hpgmg_level_table(int box_dim0, int boxes_in_i0, int *box_dim, int *boxes_in_i) {
+  int minCoarseGridDim = 1;
   int maxLevels = MG_MAXLEVELS;
-  int      dim_i[MG_MAXLEVELS];
-  int boxes_in_i[MG_MAXLEVELS];
-  int    box_dim[MG_MAXLEVELS];
-  int box_ghosts[MG_MAXLEVELS];
+  int level = 1;
+  int coarse_dim = box_dim0 * boxes_in_i0;
+  int num_levels, doRestrict;
 
-  int level=1;
-  int coarse_dim = fine_grid->dim.i;
-
-  while( (coarse_dim>=2*minCoarseGridDim) && ((coarse_dim&0x1)==0) ) { // grid dimension is even and big enough...
+  while( (coarse_dim>=2*minCoarseGridDim) && ((coarse_dim&0x1)==0) ) {
     level++;
     coarse_dim = coarse_dim / 2;
   }
-
-  ocrPrintf("mg_build: maxLevels: %d, %d\n", level,coarse_dim);
   if(level<maxLevels)maxLevels=level;
 
-       dim_i[0] = fine_grid->dim.i;
-  boxes_in_i[0] = fine_grid->boxes_in.i;
-     box_dim[0] = fine_grid->box_dim;
-  box_ghosts[0] = NUM_GHOSTS; //fine_grid->box_ghosts;
+  box_dim[0] = box_dim0;
+  boxes_in_i[0] = boxes_in_i0;
+  num_levels = 1;
+  doRestrict = (maxLevels<2) ? 0 : 1;
 
-  // build the list of levels...
-  all_grids->num_levels=1;
-
-  // build a table to guide the construction of the v-cycle...
-  int doRestrict=1;if(maxLevels<2)doRestrict=0; // i.e. can't restrict if there is only one level !!!
-  #ifdef USE_UCYCLES
   while(doRestrict){
-    level = all_grids->num_levels;
-    doRestrict=0;
-    if( (box_dim[level-1] % 2 == 0) ){
-           dim_i[level] =      dim_i[level-1]/2;
-         box_dim[level] =    box_dim[level-1]/2;
-      boxes_in_i[level] = boxes_in_i[level-1];
-      box_ghosts[level] = box_ghosts[level-1];
-             doRestrict = 1;
+    int lv = num_levels;
+    int fine_box_dim    = box_dim[lv-1];
+    int fine_boxes_in_i = boxes_in_i[lv-1];
+    int fine_dim_i      = fine_box_dim * fine_boxes_in_i;
+    doRestrict = 0;
+    if( (fine_box_dim % 2 == 0) && (fine_box_dim > MG_AGGLOMERATION_START) ){
+      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
+    }else
+    if( (fine_boxes_in_i % 2 == 0) ){                    // 8:1 box agglomeration
+      box_dim[lv] = fine_box_dim; boxes_in_i[lv] = fine_boxes_in_i/2; doRestrict = 1;
+    }else
+    if( (coarse_dim != 1) && (fine_dim_i == 2*coarse_dim) ){   // agglomerate everything
+      box_dim[lv] = fine_dim_i/2; boxes_in_i[lv] = 1; doRestrict = 1;
+    }else
+    if( (coarse_dim != 1) && (fine_dim_i == 4*coarse_dim) ){
+      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
+    }else
+    if( (coarse_dim != 1) && (fine_dim_i == 8*coarse_dim) ){
+      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
+    }else
+    if( (fine_box_dim % 2 == 0) ){
+      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
     }
-    if(box_dim[level] < box_ghosts[level])doRestrict=0;
-    if(doRestrict)all_grids->num_levels++;
+    if(doRestrict && box_dim[lv] < NUM_GHOSTS)doRestrict = 0;
+    if(doRestrict && lv+1 >= MG_MAXLEVELS)doRestrict = 0;
+    if(doRestrict)num_levels++;
   }
-  #else // TRUE V-Cycle...
-  while(doRestrict){
-    level = all_grids->num_levels;
-    doRestrict=0;
-    int fine_box_dim    =    box_dim[level-1];
-    int fine_dim_i      =      dim_i[level-1];
-    int fine_boxes_in_i = boxes_in_i[level-1];
-    int stencil_radius  = box_ghosts[level-1]; // FIX tune the number of ghost zones...
-#if DEBUG
-    ocrPrintf("fine_dim: %u, fine_dim_i: %u, fine_boxes_in_i: %u, stencil_radius: %u\n", fine_box_dim, fine_dim_i, fine_boxes_in_i, stencil_radius);
+  return num_levels;
+}
+
+// The box memory geometry, one place for every decomposition.
+u32 hpgmg_box_geometry(int box_dim, int *jStrideOut, int *kStrideOut) {
+  int jStride = (box_dim+2*NUM_GHOSTS);
+  int kStride;
+  while(jStride % BOX_SIMD_ALIGNMENT)jStride++;      // pencil
+  kStride = jStride*(box_dim+2*NUM_GHOSTS);          // plane
+  if(jStride<BOX_PLANE_PADDING)kStride += (BOX_PLANE_PADDING-jStride);
+  while(kStride % BOX_SIMD_ALIGNMENT)kStride++;
+  if(jStrideOut)*jStrideOut = jStride;
+  if(kStrideOut)*kStrideOut = kStride;
+  return (u32)((box_dim+2*NUM_GHOSTS)*kStride);
+}
+
+// The per-rank memory a run is allowed to occupy.  A geometry above it cannot
+// run, so it is refused while the arguments are still the only thing that
+// exists rather than at the first allocation that fails.
+#define HPGMG_MAX_RANK_BYTES (190.0*1000.0*1000.0*1000.0)
+
+// The constraints a chosen box grid must satisfy, checked before any datablock
+// exists: the transfer operators carry a fixed-size fine-box list, the bottom
+// solver runs on the coarsest level as a single box, every datablock size must
+// be representable, and the hierarchy must fit the memory each rank has.
+void hpgmg_check_geometry(int box_dim, int boxes_in_i) {
+  int bd[MG_MAXLEVELS], bi[MG_MAXLEVELS];
+  int L = 0, l, bad = 0;
+  double bytes = 0.0, perRank;
+  u64 ranks = 1;
+
+#ifdef ENABLE_EXTENSION_AFFINITY
+  ocrAffinityCount(AFFINITY_PD, &ranks);
 #endif
-    if( (fine_box_dim % 2 == 0) && (fine_box_dim > MG_AGGLOMERATION_START) ){ // Boxes are too big to agglomerate
-           dim_i[level] = fine_dim_i/2;
-         box_dim[level] = fine_box_dim/2;
-      boxes_in_i[level] = fine_boxes_in_i;
-      box_ghosts[level] = stencil_radius;
-             doRestrict = 1;
-    }else
-    if( (fine_boxes_in_i % 2 == 0) ){ // 8:1 box agglomeration
-           dim_i[level] = fine_dim_i/2;
-         box_dim[level] = fine_box_dim;
-      boxes_in_i[level] = fine_boxes_in_i/2;
-      box_ghosts[level] = stencil_radius;
-             doRestrict = 1;
-    }else
-    if( (coarse_dim != 1) && (fine_dim_i == 2*coarse_dim) ){ // agglomerate everything
-           dim_i[level] = fine_dim_i/2;
-         box_dim[level] = fine_dim_i/2;
-      boxes_in_i[level] = 1;
-      box_ghosts[level] = stencil_radius;
-             doRestrict = 1;
-    }else
-    if( (coarse_dim != 1) && (fine_dim_i == 4*coarse_dim) ){ // restrict box dimension, and run on fewer ranks
-           dim_i[level] = fine_dim_i/2;
-         box_dim[level] = fine_box_dim/2;
-      boxes_in_i[level] = fine_boxes_in_i;
-      box_ghosts[level] = stencil_radius;
-             doRestrict = 1;
-    }else
-    if( (coarse_dim != 1) && (fine_dim_i == 8*coarse_dim) ){ // restrict box dimension, and run on fewer ranks
-           dim_i[level] = fine_dim_i/2;
-         box_dim[level] = fine_box_dim/2;
-      boxes_in_i[level] = fine_boxes_in_i;
-      box_ghosts[level] = stencil_radius;
-             doRestrict = 1;
-    }else
-    if( (fine_box_dim % 2 == 0) ){ // restrict box dimension, and run on the same number of ranks
-           dim_i[level] = fine_dim_i/2;
-         box_dim[level] = fine_box_dim/2;
-      boxes_in_i[level] = fine_boxes_in_i;
-      box_ghosts[level] = stencil_radius;
-             doRestrict = 1;
+  if(ranks < 1) ranks = 1;
+
+  if(boxes_in_i < 1){
+    ocrPrintf("target_boxes must select at least one box per dimension\n");
+    bad = 1;
+  } else {
+    L = hpgmg_level_table(box_dim, boxes_in_i, bd, bi);
+    for(l=1;l<L;l++){
+      int r = bi[l-1]/bi[l];
+      r = r*r*r;
+      if(r > MAX_FINE_BOXES){
+        ocrPrintf("box grid %d^3 of %d^3 cells: level %d -> %d agglomerates %d fine "
+                  "boxes per coarse box, more than the %d the transfer operators "
+                  "carry; choose a target_boxes whose box grid coarsens in smaller "
+                  "steps\n", boxes_in_i, box_dim, l-1, l, r, MAX_FINE_BOXES);
+        bad = 1;
+      }
     }
-    if(box_dim[level] < stencil_radius)doRestrict=0;
-    if(doRestrict)all_grids->num_levels++;
-  }
-  #endif
-
-  all_grids->max_levels = all_grids->num_levels;
-  // now build all the coarsened levels...
-  double h = fine_grid->h;
-  level_type **all_levels;
-  ocrGuid_t all_levels_guid;
-  ocrDbCreate(&all_levels_guid, (void**)&all_levels, sizeof(level_type *)*all_grids->num_levels, 0,NULL_HINT,NO_ALLOC);
-  all_levels[0] = fine_grid;
-
-  for(level=1;level<all_grids->num_levels;level++){
-    level_type *level_ptr;
-    level_ptr = create_level(all_grids,box_dim[level],boxes_in_i[level],fine_grid->boundary_condition,level);
-    level_ptr->h = 2.0*h;
-    h = level_ptr->h;
-    all_levels[level] = level_ptr;
-  }
-
-/* // ToDo: Manu: may not be required
-  // bottom solver gets extra grids...
-  level = all_grids->num_levels-1;
-  int box;
-  int numAdditionalVectors = IterativeSolver_NumVectors();
-  all_grids->levels[level]->box_vectors += numAdditionalVectors;
-  if(numAdditionalVectors){
-    for(box=0;box<all_grids->levels[level]->num_my_boxes;box++){
-      add_vectors_to_box(all_grids->levels[level]->my_boxes+box,numAdditionalVectors);
-      all_grids->levels[level]->memory_allocated += numAdditionalVectors*all_grids->levels[level]->my_boxes[box].volume*sizeof(double);
+    if(bi[L-1] != 1){
+      ocrPrintf("box grid %d^3 of %d^3 cells: the hierarchy bottoms out on a %d^3 box "
+                "grid, but the bottom solver runs on a single box; choose a "
+                "target_boxes whose box grid reduces to one box\n",
+                boxes_in_i, box_dim, bi[L-1]);
+      bad = 1;
+    }
+    for(l=0;l<L;l++){
+      double n = (double)bi[l]*bi[l]*bi[l];
+      double boxBytes = (double)sizeof(box_type)
+                      + (double)hpgmg_box_geometry(bd[l], NULL, NULL)
+                        *NUM_VECTORS*sizeof(double);
+      // A level datablock carries its box guid table, the reserved slab-guid
+      // tail and one norm per box; both it and a box datablock are sized in a
+      // 32-bit count, so a level whose table or whose box overflows that count
+      // is unbuildable whatever the memory.
+      double lvlBytes = (double)sizeof(level_type)
+                      + n*(7.0*(double)sizeof(ocrGuid_t) + (double)sizeof(double));
+      if(lvlBytes > 4294967295.0 || boxBytes > 4294967295.0){
+        ocrPrintf("box grid %d^3 of %d^3 cells: level %d needs a %.0f B level "
+                  "datablock and %.0f B box datablocks, and a datablock size is "
+                  "a 32-bit count; choose a smaller target_boxes or "
+                  "log2_box_dim\n", boxes_in_i, box_dim, l, lvlBytes, boxBytes);
+        bad = 1;
+        break;
+      }
+      bytes += n*boxBytes + lvlBytes;
     }
   }
-*/
 
-
-  // rebuild various coefficients for the operator... must occur after build_restriction !!!
-  for(level=1;level<all_grids->num_levels;level++){
-    rebuild_operator(all_levels[level],all_levels[level-1],a,b);
+  if(!bad){
+    perRank = bytes/(double)ranks;
+    ocrPrintf("%d levels, %d^3 cells, %.2f GiB of datablocks over %lu rank(s), "
+              "%.2f GiB per rank\n",
+              L, box_dim*boxes_in_i, bytes/(1024.0*1024.0*1024.0),
+              (unsigned long)ranks, perRank/(1024.0*1024.0*1024.0));
+    if(perRank > HPGMG_MAX_RANK_BYTES){
+      ocrPrintf("box grid %d^3 of %d^3 cells: %.2f GiB per rank exceeds the "
+                "%.2f GiB a rank may occupy; choose a smaller target_boxes or "
+                "log2_box_dim, or run on more ranks\n",
+                boxes_in_i, box_dim, perRank/(1024.0*1024.0*1024.0),
+                HPGMG_MAX_RANK_BYTES/(1024.0*1024.0*1024.0));
+      bad = 1;
+    }
   }
 
-
-  // used for quick test for poisson
-  for(level=0;level<all_grids->num_levels;level++){
-    all_levels[level]->alpha_is_zero = (dot(all_levels[level],all_levels[level]->alpha, all_levels[level]->alpha) == 0.0);
+  if(bad){
+#if TG_ARCH
+    ABORT(0);
+#else
+    ocrAbort(0);
+#endif
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* per-box initialization tasks                                        */
+/* ------------------------------------------------------------------ */
+
+// deps: level - box(RW); pars: fine flag
+// Everything the box needs before the operator build: zero the vector
+// region, mark the valid cells and, on the fine level, evaluate the analytic
+// problem.  The evaluation is a pure function of the cell's coordinates, so
+// it is deterministic and independent of how the boxes are distributed.
+ocrGuid_t hpgmg_prep_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  box_type *bx = (box_type*) depv[1].ptr;
+  bzero((char*)bx + sizeof(box_type), l->volume*NUM_VECTORS*sizeof(double));
+  hpgmg_valid_box(l, bx);
+  if(paramv[0])
+    hpgmg_fill_box(l, bx, HPGMG_A, HPGMG_B);
+  return NULL_GUID;
+}
+
+// deps: coarse level - coarse box(RW) - fine level - fine boxes; pars: count
+ocrGuid_t hpgmg_coeff_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *cl = (level_type*) depv[0].ptr;
+  level_type *f = (level_type*) depv[2].ptr;
+  box_type *cb = (box_type*) depv[1].ptr;
+  int count = (int) paramv[0];
+  int o;
+  for(o = 3; o < (int) depc; ++o)
+    hpgmg_coeff_restrict_box(cl, cb, f, (box_type*) depv[o].ptr, o-3, count);
+  return NULL_GUID;
+}
+
+// deps: level - box(RW); returns {Gershgorin bound, dot(alpha,alpha) term}
+ocrGuid_t hpgmg_gersh_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  box_type *bx = (box_type*) depv[1].ptr;
+  ocrGuid_t g; double *d;
+  ocrDbCreate(&g, (void**)&d, 2*sizeof(double), 0, NULL_HINT, NO_ALLOC);
+  d[0] = hpgmg_gershgorin_box(l, bx, HPGMG_A, HPGMG_B);
+  d[1] = hpgmg_alpha_dot_box(l, bx);
+  return g;
+}
+
+// deps: level - box(RW) - the 26 neighbours
+// Fills this box's ghost layers of the smoother's diagonals.  Only the box's
+// own ghosts are written and only the neighbours' interiors are read, so the
+// boxes of a level may run in any order.
+ocrGuid_t hpgmg_diag_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  box_type *b = (box_type*) depv[1].ptr;
+  int i;
+  for(i = 0; i < 26; i++){
+    box_type *nb = (box_type*) depv[i+2].ptr;
+    if(nb->global_box_id == -1)
+      continue;
+    update_boundary_all(l, b, l->Dinv, nb, l->Dinv, 0);
+    update_boundary_all(l, b, l->L1inv, nb, l->L1inv, 0);
+  }
+  return NULL_GUID;
+}
+
+// deps: level - box(RW); returns {max |u - u_true|, max |scaled residual|}
+// The verification pass: an O(n) sweep of the box the task owns, over values
+// the solve already produced.  Both extrema are maxima, so reducing them over
+// the boxes is exact and independent of the reduction order and of how the
+// boxes are distributed.
+ocrGuid_t hpgmg_error_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  box_type *bx = (box_type*) depv[1].ptr;
+  int jS = l->jStride, kS = l->kStride, dim = l->box_dim;
+  double *u  = (double*)((char*)bx + l->u) + NUM_GHOSTS*(1+jS+kS);
+  double *ut = (double*)((char*)bx + l->u_true) + NUM_GHOSTS*(1+jS+kS);
+  double *vt = (double*)((char*)bx + l->vec_temp) + NUM_GHOSTS*(1+jS+kS);
+  double e = 0.0, r = 0.0, a;
+  int i,j,k;
+  for(k = 0; k < dim; k++){
+  for(j = 0; j < dim; j++){
+  for(i = 0; i < dim; i++){
+    int ijk = i + j*jS + k*kS;
+    a = fabs(vt[ijk]);            // the scaled residual the solve ended on
+    if(a > r) r = a;
+    vt[ijk] = u[ijk] - ut[ijk];
+    a = fabs(vt[ijk]);
+    if(a > e) e = a;
+  }}}
+  ocrGuid_t g; double *d;
+  ocrDbCreate(&g, (void**)&d, 2*sizeof(double), 0, NULL_HINT, NO_ALLOC);
+  d[0] = e; d[1] = r;
+  return g;
+}
+
+// deps: level - gate; pars: the event the reduced pair is handed to
+ocrGuid_t hpgmg_error_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  ocrGuid_t *boxes = (ocrGuid_t*)(((char*)l) + l->boxes);
+  int n = l->num_boxes, b;
+  ocrGuid_t m, m_t, c, c_t, fin;
+  ocrHint_t hh;
+
+  ocrEdtTemplateCreate(&m_t, hpgmg_max_merge_edt, 1, n);
+  ocrEdtCreate(&m, m_t, 1, paramv, n, NULL, 0, mgHomeEdtHint(&hh), NULL);
+  ocrEdtTemplateDestroy(m_t);
+
+  ocrEdtTemplateCreate(&c_t, hpgmg_error_edt, 0, 2);
+  for(b = 0; b < n; ++b){
+    ocrEdtCreate(&c, c_t, 0, NULL, 2, NULL, 0, mgBoxEdtHint(&hh, boxes[b]), &fin);
+    ocrAddDependence(fin, m, b, DB_MODE_CONST);
+    ocrAddDependence(depv[0].guid, c, 0, DB_MODE_CONST);
+    ocrAddDependence(boxes[b], c, 1, DB_MODE_RW);
+  }
+  ocrEdtTemplateDestroy(c_t);
+  return NULL_GUID;
+}
+
+// deps: level - gate - the reduced pairs
+ocrGuid_t hpgmg_error_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  double e = 0.0, r = 0.0;
+  u32 i;
+  for(i = 2; i < depc; i++){
+    double *v = (double*) depv[i].ptr;
+    if(v[0] > e) e = v[0];
+    if(v[1] > r) r = v[1];
+    ocrDbDestroy(depv[i].guid);
+  }
+  ocrPrintf("h = %f  ||error|| = %22.15f\n\n", l->h, e);
+  ocrPrintf("final residual norm = %22.20f\n", r);
+  ocrPrintf("Time = %22f\n", l->time_operators[4]/TIMED);
+  return NULL_GUID;
+}
+
+// deps: partial results; pars: the event the merged pair is handed to
+ocrGuid_t hpgmg_max_merge_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  double m0 = -1e9, m1 = -1e9;
+  u32 i;
+  for(i = 0; i < depc; i++){
+    double *v = (double*) depv[i].ptr;
+    if(v[0] > m0) m0 = v[0];
+    if(v[1] > m1) m1 = v[1];
+    ocrDbDestroy(depv[i].guid);
+  }
+  ocrGuid_t g; double *d;
+  ocrDbCreate(&g, (void**)&d, 2*sizeof(double), 0, NULL_HINT, NO_ALLOC);
+  d[0] = m0; d[1] = m1;
+  ocrDbRelease(g);
+  ocrEventSatisfy(hpgmg_guid_from(paramv[0]), g);
+  return NULL_GUID;
+}
+
+// deps: level(RW) - gate - the merged pairs
+ocrGuid_t hpgmg_eigen_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  double m0 = -1e9, m1 = -1e9;
+  u32 i;
+  for(i = 2; i < depc; i++){
+    double *v = (double*) depv[i].ptr;
+    if(v[0] > m0) m0 = v[0];
+    if(v[1] > m1) m1 = v[1];
+    ocrDbDestroy(depv[i].guid);
+  }
+  l->dominant_eigenvalue_of_DinvA = m0;
+  l->alpha_is_zero = (m1 == 0.0);
+  ocrPrintf(" rebuilding operator for level...  h=%e  eigenvalue_max < %f\n", l->h, m0);
+  return NULL_GUID;
+}
+
+/* ------------------------------------------------------------------ */
+/* the initialization phases                                           */
+/* ------------------------------------------------------------------ */
+
+static ocrGuid_t init_prep_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+static ocrGuid_t init_coeff_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+static ocrGuid_t init_gersh_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+static ocrGuid_t init_diag_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+
+// deps: level - gate; pars: fine flag
+static ocrGuid_t init_prep_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  ocrGuid_t *boxes = (ocrGuid_t*)(((char*)l) + l->boxes);
+  ocrGuid_t t, c;
+  ocrHint_t hh;
+  int b;
+  ocrEdtTemplateCreate(&t, hpgmg_prep_edt, 1, 2);
+  for(b = 0; b < l->num_boxes; ++b){
+    ocrEdtCreate(&c, t, 1, paramv, 2, NULL, 0, mgBoxEdtHint(&hh, boxes[b]), NULL);
+    ocrAddDependence(depv[0].guid, c, 0, DB_MODE_CONST);
+    ocrAddDependence(boxes[b], c, 1, DB_MODE_RW);
+  }
+  ocrEdtTemplateDestroy(t);
+  return NULL_GUID;
+}
+
+// deps: coarse level - fine level - gate
+static ocrGuid_t init_coeff_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *cl = (level_type*) depv[0].ptr;
+  level_type *f = (level_type*) depv[1].ptr;
+  ocrGuid_t *boxesC = (ocrGuid_t*)(((char*)cl) + cl->boxes);
+  ocrGuid_t fine[MAX_FINE_BOXES];
+  int count = f->num_boxes / cl->num_boxes;
+  u64 cnt = (u64) count;
+  ocrGuid_t t, c;
+  ocrHint_t hh;
+  int b, fc;
+  ocrEdtTemplateCreate(&t, hpgmg_coeff_edt, 1, 3+count);
+  for(b = 0; b < cl->num_boxes; ++b){
+    get_fine_boxes(f, cl, b, fine);
+    ocrEdtCreate(&c, t, 1, &cnt, 3+count, NULL, 0, mgBoxEdtHint(&hh, boxesC[b]), NULL);
+    ocrAddDependence(depv[0].guid, c, 0, DB_MODE_CONST);
+    ocrAddDependence(boxesC[b], c, 1, DB_MODE_RW);
+    ocrAddDependence(depv[1].guid, c, 2, DB_MODE_CONST);
+    for(fc = 0; fc < count; ++fc)
+      ocrAddDependence(fine[fc], c, 3+fc, DB_MODE_CONST);
+  }
+  ocrEdtTemplateDestroy(t);
+  return NULL_GUID;
+}
+
+// deps: level - gate; pars: the event the level's reduced pair is handed to
+static ocrGuid_t init_gersh_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  ocrGuid_t *boxes = (ocrGuid_t*)(((char*)l) + l->boxes);
+  int n = l->num_boxes, b;
+  ocrGuid_t m, m_t, c, c_t, fin;
+  ocrHint_t hh;
+
+  ocrEdtTemplateCreate(&m_t, hpgmg_max_merge_edt, 1, n);
+  ocrEdtCreate(&m, m_t, 1, paramv, n, NULL, 0, mgHomeEdtHint(&hh), NULL);
+  ocrEdtTemplateDestroy(m_t);
+
+  ocrEdtTemplateCreate(&c_t, hpgmg_gersh_edt, 0, 2);
+  for(b = 0; b < n; ++b){
+    ocrEdtCreate(&c, c_t, 0, NULL, 2, NULL, 0, mgBoxEdtHint(&hh, boxes[b]), &fin);
+    ocrAddDependence(fin, m, b, DB_MODE_CONST);
+    ocrAddDependence(depv[0].guid, c, 0, DB_MODE_CONST);
+    ocrAddDependence(boxes[b], c, 1, DB_MODE_RW);
+  }
+  ocrEdtTemplateDestroy(c_t);
+  return NULL_GUID;
+}
+
+// deps: level - gate
+static ocrGuid_t init_diag_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+  level_type *l = (level_type*) depv[0].ptr;
+  ocrGuid_t *boxes = (ocrGuid_t*)(((char*)l) + l->boxes);
+  ocrGuid_t neighbors[26];
+  ocrGuid_t t, c;
+  ocrHint_t hh;
+  int b, i;
+  ocrEdtTemplateCreate(&t, hpgmg_diag_edt, 0, 28);
+  for(b = 0; b < l->num_boxes; ++b){
+    get_neighbor_guids_all(b, l, neighbors);
+    ocrEdtCreate(&c, t, 0, NULL, 28, NULL, 0, mgBoxEdtHint(&hh, boxes[b]), NULL);
+    ocrAddDependence(depv[0].guid, c, 0, DB_MODE_CONST);
+    ocrAddDependence(boxes[b], c, 1, DB_MODE_RW);
+    for(i = 0; i < 26; i++)
+      ocrAddDependence(neighbors[i], c, 2+i, DB_MODE_CONST);
+  }
+  ocrEdtTemplateDestroy(t);
+  return NULL_GUID;
+}
+
+// One phase of the chain: a FINISH task per level whose fan-out is the
+// level's boxes, so the phase completes only when every box has been
+// produced.  lvlB is the partner level of a two-level phase.
+static ocrGuid_t init_phase(ocrEdt_t body, u64 *pv, u32 pc, u32 nlvl,
+                            ocrGuid_t lvlA, ocrGuid_t lvlB, ocrGuid_t gate) {
+  ocrGuid_t t, e, fin;
+  ocrHint_t hh;
+  u32 depc = nlvl + 1;
+  ocrEdtTemplateCreate(&t, body, pc, depc);
+  ocrEdtCreate(&e, t, pc, pv, depc, NULL, EDT_PROP_FINISH, mgHomeEdtHint(&hh), &fin);
+  ocrAddDependence(lvlA, e, 0, DB_MODE_CONST);
+  if(nlvl > 1)
+    ocrAddDependence(lvlB, e, 1, DB_MODE_CONST);
+  ocrAddDependence(gate, e, nlvl, DB_MODE_NULL);
+  ocrEdtTemplateDestroy(t);
+  return fin;
+}
+
+/* ------------------------------------------------------------------ */
+/* hierarchy layout                                                    */
+/* ------------------------------------------------------------------ */
+
+// Field-complete level datablock and its box datablocks, headers only: the
+// per-box tasks produce the contents.
+static void init_create_level(mg_type *mg, int box_dim, int boxes_in_i,
+                              int bc, int level, double h) {
+  u32 totalBoxes = (u32)boxes_in_i*boxes_in_i*boxes_in_i;
+  u32 levelSize = sizeof(level_type) + sizeof(ocrGuid_t)*totalBoxes
+                + sizeof(ocrGuid_t)*totalBoxes*6 + totalBoxes*sizeof(double);
+  int jStride, kStride;
+  u32 boxVolume = hpgmg_box_geometry(box_dim, &jStride, &kStride);
+  u32 totalMemSize = sizeof(box_type) + boxVolume*NUM_VECTORS*sizeof(double);
+  ocrGuid_t levelGuid, *boxes;
+  level_type *lp;
+  int b;
+
+  ocrPrintf("attempting to create a %d^3 level using a %d^3 grid of %d^3 boxes ...\n",
+            box_dim*boxes_in_i, boxes_in_i, box_dim);
+
+  ocrDbCreate(&levelGuid, (void**)&lp, levelSize, 0, NULL_HINT, NO_ALLOC);
+  mg->levels[level] = levelGuid;
+
+  lp->h = h;
+  lp->boundary_condition = bc;
+  lp->level = level;
+  lp->alpha_is_zero = -1;
+  lp->dominant_eigenvalue_of_DinvA = -1e9;
+  lp->num_boxes = totalBoxes;
+  lp->box_dim = box_dim;
+  lp->boxes_in.i = lp->boxes_in.j = lp->boxes_in.k = boxes_in_i;
+  lp->dim.i = lp->dim.j = lp->dim.k = boxes_in_i*box_dim;
+  lp->boxes = sizeof(level_type);
+  lp->b_norms = lp->boxes + sizeof(ocrGuid_t)*totalBoxes;
+  lp->jStride = jStride;
+  lp->kStride = kStride;
+  lp->volume = boxVolume;
+  memset(lp->time_operators, 0, sizeof(lp->time_operators));
+  memset(lp->time_temp, 0, sizeof(lp->time_temp));
+
+  lp->alpha = sizeof(box_type);
+  lp->beta_i = lp->alpha + boxVolume*sizeof(double);
+  lp->beta_j = lp->beta_i + boxVolume*sizeof(double);
+  lp->beta_k = lp->beta_j + boxVolume*sizeof(double);
+  lp->Dinv = lp->beta_k + boxVolume*sizeof(double);
+  lp->L1inv = lp->Dinv + boxVolume*sizeof(double);
+  lp->valid = lp->L1inv + boxVolume*sizeof(double);
+  lp->u_true = lp->valid + boxVolume*sizeof(double);
+  lp->f = lp->u_true + boxVolume*sizeof(double);
+  lp->f_Av = lp->f + boxVolume*sizeof(double);
+  lp->u = lp->f_Av + boxVolume*sizeof(double);
+  lp->vec_temp = lp->u + boxVolume*sizeof(double);
+
+  boxes = (ocrGuid_t*)(((char*)lp) + lp->boxes);
+
+  for(b = 0; b < (int)totalBoxes; b++){
+    ocrGuid_t boxGuid, currentAffinity = NULL_GUID;
+    ocrHint_t myDbAffinityHNT;
+    box_type *boxPtr;
+    ocrHintInit(&myDbAffinityHNT, OCR_HINT_DB_T);
+#ifdef ENABLE_EXTENSION_AFFINITY
+    {
+      s64 affinityCount;
+      ocrAffinityCount(AFFINITY_PD, &affinityCount);
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+      ocrAffinityGetAt(AFFINITY_PD, boxHomePD(b, boxes_in_i, affinityCount),
+                       &currentAffinity);
+#else
+      ocrAffinityGetAt(AFFINITY_PD, b%affinityCount, &currentAffinity);
+#endif
+    }
+#endif
+    ocrSetHintValue(&myDbAffinityHNT, OCR_HINT_DB_AFFINITY,
+                    ocrAffinityToHintValue(currentAffinity));
+    ocrDbCreate(&boxGuid, (void**)&boxPtr, totalMemSize, 0, &myDbAffinityHNT, NO_ALLOC);
+    boxPtr->low.i = (b % boxes_in_i) * box_dim;
+    boxPtr->low.j = ((b / boxes_in_i) % boxes_in_i) * box_dim;
+    boxPtr->low.k = (b / (boxes_in_i*boxes_in_i)) * box_dim;
+    boxPtr->global_box_id = b;
+    /* Only released writes are guaranteed visible to a consumer, and the
+     * per-box tasks below consume this header. */
+    ocrDbRelease(boxGuid);
+    boxes[b] = boxGuid;
+
+    if(b == 0){
+      box_type *const_box;
+      ocrDbCreate(&lp->constant_box_guid, (void**)&const_box, totalMemSize, 0,
+                  &myDbAffinityHNT, NO_ALLOC);
+      const_box->global_box_id = -1;
+      ocrDbRelease(lp->constant_box_guid);
+    }
+  }
+
+  ocrDbRelease(levelGuid);
+}
+
+// Lays the hierarchy out and wires the initialization chain.  Nothing but
+// the level and box headers is produced here: the zeroing, the analytic
+// evaluation, the coefficient restriction, the Gershgorin sweep and the
+// diagonal ghost exchange all run as tasks placed with the box they own.
+ocrGuid_t init_all(mg_type* mg_ptr, int box_dim, int boxes_in_i,
+                   int boundary_condition, ocrGuid_t *startEvt) {
+  int bd[MG_MAXLEVELS], bi[MG_MAXLEVELS];
+  int L, l;
+  double h;
+  ocrGuid_t chain;
+
+#ifdef ENABLE_EXTENSION_AFFINITY
+  ocrPrintf("Using affinity API\n");
+#else
+  ocrPrintf("NOTE: Not using affinity API\n");
+#endif
+
+  L = hpgmg_level_table(box_dim, boxes_in_i, bd, bi);
+  ocrPrintf("level hierarchy: %d levels\n", L);
+  mg_ptr->num_levels = L;
+  mg_ptr->max_levels = L;
+
+  h = 1.0/((double)boxes_in_i*(double)box_dim);
+  for(l = 0; l < L; l++){
+    init_create_level(mg_ptr, bd[l], bi[l], boundary_condition, l, h);
+    h *= 2.0;
+  }
+
+  ocrEventCreate(startEvt, OCR_EVENT_ONCE_T, 1);
+  chain = *startEvt;
+
+  // zero / valid / analytic evaluation, one task per box
+  for(l = 0; l < L; l++){
+    u64 fine = (l == 0);
+    chain = init_phase(init_prep_level_edt, &fine, 1, 1,
+                       mg_ptr->levels[l], NULL_GUID, chain);
+  }
+
+  // the operator build, level by level down the hierarchy
+  for(l = 0; l < L; l++){
+    ocrGuid_t evt, f, f_t, fOut;
+    ocrHint_t hh;
+    u64 pv;
+
+    if(l > 0)
+      chain = init_phase(init_coeff_level_edt, NULL, 0, 2,
+                         mg_ptr->levels[l], mg_ptr->levels[l-1], chain);
+
+    ocrEventCreate(&evt, OCR_EVENT_ONCE_T, 1);
+    pv = hpgmg_guid_bits(evt);
+    chain = init_phase(init_gersh_level_edt, &pv, 1, 1,
+                       mg_ptr->levels[l], NULL_GUID, chain);
+
+    ocrEdtTemplateCreate(&f_t, hpgmg_eigen_final_edt, 0, 3);
+    ocrEdtCreate(&f, f_t, 0, NULL, 3, NULL, 0, mgHomeEdtHint(&hh), &fOut);
+    ocrEdtTemplateDestroy(f_t);
+    ocrAddDependence(mg_ptr->levels[l], f, 0, DB_MODE_RW);
+    ocrAddDependence(chain, f, 1, DB_MODE_NULL);
+    ocrAddDependence(evt, f, 2, DB_MODE_CONST);
+    chain = fOut;
+
+    chain = init_phase(init_diag_level_edt, NULL, 0, 1,
+                       mg_ptr->levels[l], NULL_GUID, chain);
+  }
+
+  return chain;
 }

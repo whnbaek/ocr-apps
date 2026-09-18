@@ -20,11 +20,12 @@
  * is the load balance across lookups), the two links it spawns pin to the
  * rank it landed on.  And every dataset object is created inside one init
  * task and therefore homed on a single rank, which then serves the whole
- * machine's reads: the per-nuclide pole/window/K0RS blocks spread
- * round-robin by nuclide (one nuclide's three blocks co-located), the
- * material tables spread by material, and the handle singletons every
- * lookup acquires each land on a different rank — one datablock's serving
- * cannot be split, but the set's aggregate load can. */
+ * machine's reads: the per-nuclide pole/window/K0RS blocks spread by
+ * descending expected read rate (one nuclide's three blocks co-located), so
+ * that the few nuclides most materials contain never share a rank, and the
+ * material tables and the handle singletons occupy index bands of their own
+ * — one datablock's serving cannot be split, but the set's aggregate load
+ * can. */
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
 #include <extensions/ocr-affinity.h>
 static inline ocrHint_t * mcChainEdtHint(ocrHint_t *h) {
@@ -47,10 +48,43 @@ static inline ocrHint_t * mcSpreadDbHint(ocrHint_t *h, u64 i) {
     ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
     return h;
 }
+/* A task that fills a datablock is placed on that block's home, so the write
+ * of a block that is read-only for the rest of the run happens where the run
+ * will read it. */
+static inline ocrHint_t * mcSpreadEdtHint(ocrHint_t *h, u64 i) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, i % pdCount, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
 #else
 #define mcChainEdtHint(h) NULL_HINT
 #define mcSpreadDbHint(h,i) NULL_HINT
+#define mcSpreadEdtHint(h,i) NULL_HINT
 #endif
+
+/* A task that has to name an object created by another task can only be told
+ * about it through the parameter block, which is an array of u64. */
+_Static_assert( sizeof(ocrGuid_t) == sizeof(u64),
+                "guid must fit a parameter word" );
+
+static inline u64 guidToParam(ocrGuid_t g)
+{
+    u64 v;
+    memcpy(&v, &g, sizeof(v));
+    return v;
+}
+
+static inline ocrGuid_t guidFromParam(u64 v)
+{
+    ocrGuid_t g;
+    memcpy(&g, &v, sizeof(v));
+    return g;
+}
 
 // typedefs
 typedef enum __hm{SMALL, LARGE, XL, XXL} HM_size;
@@ -122,21 +156,29 @@ void fancy_int( int a );
 Inputs read_CLI( int argc, char * argv[] );
 void print_CLI_error(void);
 void print_input_summary(Inputs input);
-void print_results(Inputs input, double runtime);
+void print_results(Inputs input, double runtime, unsigned long long cksum);
+
+/* The data set generator.  It is shared verbatim with the other
+ * decompositions of this benchmark, which is what makes their checksums
+ * comparable: they describe one instance. */
+#include "../../rs_generate.h"
 
 // init.c
 void generate_n_poles( Inputs input, int *R );
 void generate_n_windows( Inputs input, int *R );
-void generate_poles( Inputs input, int * n_poles, ocrGuid_t* PTR_pole_DBguids_nuclide );
-void generate_window_params( Inputs input, int * n_windows, int * n_poles, ocrGuid_t* PTR_window_DBguids_nuclide );
-void generate_pseudo_K0RS( Inputs input, ocrGuid_t* PTR_pseudoK0RS_DBguids_nuclide );
+unsigned long long generate_poles_i( Inputs input, int i, int n_poles, Pole *R );
+void generate_window_params_i( int i, int n_windows, int n_poles, Window *R );
+void generate_pseudo_K0RS_i( Inputs input, int i, double *R );
 
 // material.c
-void load_num_nucs(Inputs input, int* num_nucs);
-void load_mats( Inputs input, int * num_nucs, ocrGuid_t* PTR_nuclideIDs_DBguids_mat);
-void load_concs( int * num_nucs, ocrGuid_t* PTR_nuclideConcs_DBguids_mat );
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+u64 mcNuclideSpreadIndex( Inputs input, int nuclide );
+#endif
+void load_num_nucs( Inputs input, int* num_nucs );
+int  load_num_nucs_i( Inputs input, int i );
+void load_mat_i( int i, int num_nucs, int *ids );
+void load_concs_i( int i, int num_nucs, double *concs );
 int pick_mat( unsigned long * seed );
-void get_materials(Inputs input, int* PTR_mat_num_nucs, ocrGuid_t* PTR_nuclideIDs_DBguids_mat, ocrGuid_t* PTR_nuclideConcs_DBguids_mat);
 
 // utils.c
 double rn(unsigned long * seed);

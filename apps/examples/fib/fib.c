@@ -17,20 +17,29 @@
  * helpers below fill *h and return it; otherwise they return NULL_HINT and
  * the application keeps its as-born placement. */
 
-/* Top recursion levels whose EDTs are round-robin distributed across policy
- * domains keyed on a deterministic path id; below this the whole subtree pins
- * to the creating rank and runs wire-free.  The depth is an argument, not a
- * constant: it trades scatter against the migrations a subtree would have
- * amortised locally, so it is calibrated by measurement.  This is only the
- * default when the argument is absent. */
+/* Top recursion levels whose EDTs are distributed across policy domains;
+ * below this the whole subtree pins to the rank it landed on and runs
+ * wire-free.  The depth trades scatter against the migrations a subtree would
+ * have amortised locally, so it is an argument, not a constant.  This is only
+ * the default when the argument is absent. */
 #ifndef FIB_RR_LEVELS
-#define FIB_RR_LEVELS 11
+#define FIB_RR_LEVELS 14
 #endif
+
+/* The result travels in a 32-bit block and is summed as u32, so beyond this
+ * input both the tree's answer and the reference wrap and the comparison
+ * stops being a check of anything. */
+#define FIB_MAX_N 47
+
+/* Below this the root is already a leaf: the run creates no child, computes
+ * nothing and would still report a checked answer. */
+#define FIB_MIN_N 2
 
 typedef struct {
     ocrGuid_t completeGuid;
     u64 level;
-    u64 pathId;
+    u64 lo;
+    u64 total;
     u64 rrLevels;
 } fibPRM_t;
 
@@ -42,16 +51,57 @@ typedef struct {
     u64 correctAns;
 }absFinalPRM_t;
 
-/* Finalizer-style bit mix: the path id is the branch sequence read as a
- * binary number, so its low bits are the most recent branches and a raw
- * modulus aliases with the tree's own shape -- sibling subtrees of very
- * different size land on the same rank.  Mixing first breaks the alias. */
-static inline u64 fibMixKey(u64 x) {
-    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return x;
+/* A decimal argument, whole-string.  strtoull alone accepts a sign and stops
+ * at the first junk character, so a typo would become a silently different
+ * run instead of a refusal. */
+static u64 fibArgNumber(const char * arg, const char * what) {
+    char * end;
+    u64 v;
+    if (arg[0] == '-' || arg[0] == '+') {
+        ocrPrintf("fib: %s '%s' must be a plain non-negative decimal\n", what, arg);
+        ocrAbort(1);
+    }
+    v = strtoull(arg, &end, 10);
+    if (end == arg || *end != '\0') {
+        ocrPrintf("fib: %s '%s' is not a number\n", what, arg);
+        ocrAbort(1);
+    }
+    return v;
 }
+
+/* F(v) with F(0) = 0, F(1) = 1.  The recursion tree for input v has F(v+1)
+ * leaves, so the same iteration answers both "what does the tree compute" and
+ * "how much work is under this node". */
+static u64 fibNumber(u64 v) {
+    u64 a = 0, b = 1, i;
+    for (i = 0; i < v; ++i) {
+        u64 t = a + b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
+/* Order the leaves of the whole tree left to right and give each rank an equal
+ * contiguous share of that order; a subtree is placed where its own leaf
+ * interval starts.  The interval is exact -- a node of value v owns F(v+1)
+ * leaves and its two children split them F(v) / F(v-1) -- so a rank's share of
+ * the leaves, and therefore of the work, deviates from an equal share by at
+ * most one straddling subtree. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+static ocrGuid_t fibChildAffinity(u64 childLevel, u64 lo, u64 total,
+                                  u64 rrLevels) {
+    ocrGuid_t aff;
+    if (childLevel <= rrLevels) {
+        u64 nranks;
+        ocrAffinityCount(AFFINITY_PD, &nranks);
+        ocrAffinityGetAt(AFFINITY_PD, (lo * nranks) / total, &aff);
+    } else {
+        ocrAffinityGetCurrent(&aff);
+    }
+    return aff;
+}
+#endif
 
 /* Pin the sum EDT to the creating rank. */
 static ocrHint_t * fibLocalEdtHint(ocrHint_t * h) {
@@ -67,23 +117,18 @@ static ocrHint_t * fibLocalEdtHint(ocrHint_t * h) {
 #endif
 }
 
-/* Top-level children scatter round-robin on their path id; deeper children
- * stay on the creating rank so the subtree beneath them is wire-free. */
-static ocrHint_t * fibChildEdtHint(ocrHint_t * h, u64 childLevel, u64 childPath,
-                                   u64 rrLevels) {
+/* Top-level children go to the rank that owns their leaf interval; deeper
+ * children stay on the creating rank so the subtree beneath them is
+ * wire-free. */
+static ocrHint_t * fibChildEdtHint(ocrHint_t * h, u64 childLevel, u64 lo,
+                                   u64 total, u64 rrLevels) {
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
-    u64 nranks;
-    ocrAffinityCount(AFFINITY_PD, &nranks);
-    ocrGuid_t aff;
-    if (childLevel <= rrLevels)
-        ocrAffinityGetAt(AFFINITY_PD, fibMixKey(childPath) % nranks, &aff);
-    else
-        ocrAffinityGetCurrent(&aff);
+    ocrGuid_t aff = fibChildAffinity(childLevel, lo, total, rrLevels);
     ocrHintInit(h, OCR_HINT_EDT_T);
     ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
     return h;
 #else
-    (void)h; (void)childLevel; (void)childPath; (void)rrLevels;
+    (void)h; (void)childLevel; (void)lo; (void)total; (void)rrLevels;
     return NULL_HINT;
 #endif
 }
@@ -123,7 +168,8 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     fibPRM_t *fibParamvIn = (fibPRM_t *)paramv;
     inDep = fibParamvIn->completeGuid;
     u64 level = fibParamvIn->level;
-    u64 pathId = fibParamvIn->pathId;
+    u64 lo = fibParamvIn->lo;
+    u64 total = fibParamvIn->total;
     u64 rrLevels = fibParamvIn->rrLevels;
 
     u32 n = *(u32*)(depv[0].ptr);
@@ -138,6 +184,16 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         return NULL_GUID;
     }
     //ocrPrintf("In fibEdt(%d) -- spawning children\n", n);
+
+    /* [lo, lo + F(n+1)) is this node's leaf interval; the n-1 child takes its
+     * first F(n) leaves and the n-2 child the rest.  Only the scatter prefix
+     * consults the interval, so it is derived only while it can still be
+     * read. */
+    u64 childLevel = level + 1;
+    u64 lo0 = lo;
+    u64 lo1 = lo;
+    if (childLevel <= rrLevels)
+        lo1 = lo + fibNumber(n);
 
     completePRM_t completeParamv;
     /* create the completion EDT and pass it the in/out argument as a dependency */
@@ -171,16 +227,16 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     fibPRM_t fibParamv0;
     {
         fibParamv0.completeGuid = fibDone[0];
-        fibParamv0.level = level + 1;
-        fibParamv0.pathId = pathId * 2 + 0;
+        fibParamv0.level = childLevel;
+        fibParamv0.lo = lo0;
+        fibParamv0.total = total;
         fibParamv0.rrLevels = rrLevels;
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
         ocrHint_t fib0Hint;
         ocrEdtCreate(&fib0, templateGuid, PRMNUM(fib), (u64 *)&fibParamv0, 1, NULL, EDT_PROP_NONE,
-                     fibChildEdtHint(&fib0Hint, fibParamv0.level, fibParamv0.pathId,
-                                     rrLevels), NULL);
+                     fibChildEdtHint(&fib0Hint, childLevel, lo0, total, rrLevels), NULL);
         ocrEdtTemplateDestroy(templateGuid);
         /* The child only reads its argument; wire it RO, after the release
          * above published the value. */
@@ -196,16 +252,16 @@ ocrGuid_t fibEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     fibPRM_t fibParamv1;
     {
         fibParamv1.completeGuid = fibDone[1];
-        fibParamv1.level = level + 1;
-        fibParamv1.pathId = pathId * 2 + 1;
+        fibParamv1.level = childLevel;
+        fibParamv1.lo = lo1;
+        fibParamv1.total = total;
         fibParamv1.rrLevels = rrLevels;
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
         ocrHint_t fib1Hint;
         ocrEdtCreate(&fib1, templateGuid, PRMNUM(fib), (u64 *)&fibParamv1, 1, NULL, EDT_PROP_NONE,
-                     fibChildEdtHint(&fib1Hint, fibParamv1.level, fibParamv1.pathId,
-                                     rrLevels), NULL);
+                     fibChildEdtHint(&fib1Hint, childLevel, lo1, total, rrLevels), NULL);
         ocrEdtTemplateDestroy(templateGuid);
         /* The child only reads its argument; wire it RO, after the release
          * above published the value. */
@@ -230,39 +286,73 @@ ocrGuid_t absFinal(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
 }
 
-u64 fib(u32 n)
-{
-    if(n<=0) return 0;
-    if(n<=2) return 1;
-    else return fib(n-1) + fib(n-2);
-}
-
 /* just define the main EDT function */
 ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrPrintf("Starting mainEdt\n");
+    u64 num;
     u32 input;
     u64 rrLevels = FIB_RR_LEVELS;
     u32 argc = ocrGetArgc(depv[0].ptr);
     if(argc < 2 || argc > 3) {
-        ocrPrintf("Usage: fib <num> [scatter-levels], defaulting to 10\n");
-        input = 10;
-    } else {
-        input = atoi(ocrGetArgv(depv[0].ptr, 1));
-        if(argc == 3)
-            rrLevels = strtoull(ocrGetArgv(depv[0].ptr, 2), NULL, 10);
+        ocrPrintf("Usage: fib <num> [scatter-levels]\n");
+        ocrAbort(1);
     }
 
-    ocrGuid_t fibC, totallyDoneEvent, absFinalEdt, templateGuid;
+    num = fibArgNumber(ocrGetArgv(depv[0].ptr, 1), "num");
+    if(argc == 3)
+        rrLevels = fibArgNumber(ocrGetArgv(depv[0].ptr, 2), "scatter-levels");
+
+    if(num < FIB_MIN_N || num > FIB_MAX_N) {
+        ocrPrintf("fib: num %lu is outside [%d, %d]; below that the root is a "
+                  "leaf, above it the 32-bit result wraps and the check is "
+                  "vacuous\n", (unsigned long)num, FIB_MIN_N, FIB_MAX_N);
+        ocrAbort(1);
+    }
+    input = (u32)num;
+
+    /* Leaves of the whole tree; also the denominator every placement decision
+     * divides by, so it travels with each task. */
+    u64 total = fibNumber((u64)input + 1);
+
+    /* The scatter frontier must be finer than a rank's share of the leaves,
+     * or a rank receives no subtree at all and idles.  The heaviest subtree
+     * at depth d is the one reached by taking the n-1 branch every time. */
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    if(rrLevels < 1 || rrLevels > num) {
+        ocrPrintf("fib: scatter-levels %lu is outside [1, %lu]; depth 0 pins "
+                  "the whole recursion to one rank and no level below the "
+                  "input exists to scatter\n",
+                  (unsigned long)rrLevels, (unsigned long)num);
+        ocrAbort(1);
+    }
+    {
+        u64 deepest = (u64)input - rrLevels;
+        u64 heaviest = fibNumber(deepest + 1);
+        if(heaviest * nranks > total) {
+            ocrPrintf("fib: scatter-levels %lu leaves subtrees of %lu leaves "
+                      "against %lu per rank over %lu ranks; deepen it\n",
+                      (unsigned long)rrLevels, (unsigned long)heaviest,
+                      (unsigned long)(total / nranks), (unsigned long)nranks);
+            ocrAbort(1);
+        }
+    }
+
+    ocrGuid_t fibC, totallyDoneEvent, absFinalEdt;
 
     absFinalPRM_t absFinalParamv;
-    absFinalParamv.correctAns = fib(input);
+    absFinalParamv.correctAns = fibNumber((u64)input);
 
     {
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, absFinal, PRMNUM(absFinal), 1);
         ocrPrintf("Created template and got GUID "GUIDF"\n", GUIDA(templateGuid));
+        /* The checker consumes the root's result, so it belongs on the rank
+         * that owns the root's leaf interval -- the rank the root itself
+         * runs on. */
+        ocrHint_t absHint;
         ocrEdtCreate(&absFinalEdt, templateGuid, PRMNUM(absFinal), (u64 *)&absFinalParamv, 1, NULL, EDT_PROP_NONE,
-                     NULL_HINT, NULL);
+                     fibChildEdtHint(&absHint, 0, 0, total, rrLevels), NULL);
         ocrPrintf("Created ABS EDT and got  GUID "GUIDF"\n", GUIDA(absFinalEdt));
         ocrEdtTemplateDestroy(templateGuid);
     }
@@ -289,13 +379,15 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     {
         fibParamv.completeGuid = totallyDoneEvent;
         fibParamv.level = 0;
-        fibParamv.pathId = 0;
+        fibParamv.lo = 0;
+        fibParamv.total = total;
         fibParamv.rrLevels = rrLevels;
 
         ocrGuid_t templateGuid;
         ocrEdtTemplateCreate(&templateGuid, fibEdt, PRMNUM(fib), 1);
+        ocrHint_t rootHint;
         ocrEdtCreate(&fibC, templateGuid, PRMNUM(fib), (u64 *)&fibParamv, 1, NULL, EDT_PROP_NONE,
-                     NULL_HINT, NULL);
+                     fibChildEdtHint(&rootHint, 0, 0, total, rrLevels), NULL);
         ocrEdtTemplateDestroy(templateGuid);
         /* The child only reads its argument; wire it RO, after the release
          * above published the value. */

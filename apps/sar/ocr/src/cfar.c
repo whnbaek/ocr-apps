@@ -13,19 +13,21 @@ ocrGuid_t post_CFAR_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdt
 ocrPrintf("//// enter post_CFAR_edt\n");RAG_FLUSH;
 #endif
 	assert(paramc==PRMNUM(postCFAR));
+       const int write_detects = postCFARParamvIn->write_detects;
 #ifdef TG_ARCH
        void *pOutFile = postCFARParamvIn->pOutFile;
 #else
        /* The paramv carries the detects path by value; open it on the node
-        * this task executes on (a FILE* would be process-local). */
-       FILE *pOutFile = fopen(postCFARParamvIn->out_detects, "wb");
-       if( pOutFile == NULL ) {
-              ocrPrintf("Error opening %s\n", postCFARParamvIn->out_detects);RAG_FLUSH;
-              xe_exit(1);
+        * this task executes on (a FILE* would be process-local).  The bulk
+        * output is opt-in: the count below is the program's result. */
+       FILE *pOutFile = NULL;
+       if( write_detects ) {
+              pOutFile = fopen(postCFARParamvIn->out_detects, "wb");
+              if( pOutFile == NULL ) {
+                     ocrPrintf("Error opening %s\n", postCFARParamvIn->out_detects);RAG_FLUSH;
+                     xe_exit(1);
+              }
        }
-#endif
-#ifdef TRACE_LVL_2
-ocrPrintf("//// pOutFile = %lx\n",pOutFile);RAG_FLUSH;
 #endif
 	assert(depc==3);
 RAG_REF_MACRO_BSM( struct detects *,Y,NULL,NULL,Y_dbg,0);
@@ -51,17 +53,19 @@ ocrPrintf("//// Output to file %d detects\n",Nd);RAG_FLUSH;
 #endif
 	/* Deterministic correctness scalar for a given input dataset. */
 	ocrPrintf("SAR detects: %d\n", Nd);RAG_FLUSH;
-	for(int m=0; m<Nd; m++) {
+	if( write_detects ) {
+		for(int m=0; m<Nd; m++) {
 #ifndef TG_ARCH
-		fprintf(pOutFile,"(x=%7.2f m, y=%7.2f m, p=%4.2f)\n", Y[m].x, Y[m].y, Y[m].p); // RAG -- Chaged to match latest code from Dan Campell
+			fprintf(pOutFile,"(x=%7.2f m, y=%7.2f m, p=%4.2f)\n", Y[m].x, Y[m].y, Y[m].p); // RAG -- Chaged to match latest code from Dan Campell
 #else
-		ocrPrintf("(x=0x%x m, y=0x%x m, p=0x%x)\n",
-			 *(uint32_t *)&Y[m].x, *(uint32_t *)&Y[m].y, *(uint32_t *)&Y[m].p);
+			ocrPrintf("(x=0x%x m, y=0x%x m, p=0x%x)\n",
+				 *(uint32_t *)&Y[m].x, *(uint32_t *)&Y[m].y, *(uint32_t *)&Y[m].p);
 #endif
-	} // for m
+		} // for m
 #ifndef TG_ARCH
-	fclose(pOutFile);
+		fclose(pOutFile);
 #endif
+	}
 
 	bsm_free(p_Nd,Nd_dbg);
 #ifdef TRACE_LVL_2
@@ -268,8 +272,8 @@ ocrPrintf("//// Mwins == %d and Nwins == %d, Ncfar == %d, Ncor == %d\n",Mwins,Nw
 	int *Nd_ptr = bsm_malloc(&Nd_dbg,sizeof(int));
 	*Nd_ptr = 0;
 #ifdef RAG_NEW_BLK_SIZE
-	int CFAR_ASYNC_BLOCK_SIZE_M = RAG_NEW_BLK_SIZE;
-	int CFAR_ASYNC_BLOCK_SIZE_N = RAG_NEW_BLK_SIZE;
+	int CFAR_ASYNC_BLOCK_SIZE_M = image_params->blk_tile;
+	int CFAR_ASYNC_BLOCK_SIZE_N = image_params->blk_tile;
 #else
 	int CFAR_ASYNC_BLOCK_SIZE_M = blk_size(Mwins,32);
 	int CFAR_ASYNC_BLOCK_SIZE_N = blk_size(Nwins,32);

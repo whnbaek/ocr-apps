@@ -10,9 +10,9 @@
  *     tile's rightmost column, the north tile's bottom row, the northwest
  *     corner cell), so those strips are what travels: each leaf emits an
  *     rc/br/corner block and hands each to its single consumer through a
- *     labeled COUNTED event (declared consumer count 1 — reclaimed as soon
- *     as that consumer has registered).  Full score tiles are never
- *     materialized: the leaf computes with two rolling rows.
+ *     labeled STICKY event that both parties create and the consumer
+ *     destroys.  Full score tiles are never materialized: the leaf
+ *     computes with two rolling rows.
  *   - Leaves are created by a free-running per-row spawner chain and become
  *     runnable exactly when their three input strips exist — anti-diagonal
  *     wavefront parallelism of width up to N/base, not the source
@@ -44,24 +44,24 @@
 
 typedef struct {
     u64 N, base, bi, bj;
-    ocrGuid_t s_labels, t_labels, rc_labels, br_labels, co_labels;
+    ocrGuid_t s_labels, t_labels, rc_labels, br_labels, co_labels, leaf_tml;
 } wf_params_t;
-
-#ifndef LCS_ROW_BANDS_PER_RANK
-#define LCS_ROW_BANDS_PER_RANK 1
-#endif
 
 /* Row-band placement, shared with the tiled original: block-row bi's work
  * and data live on band((bi-1)) of the rank grid, so a leaf's west strip is
  * always band-local and its north strip crosses ranks only at band
- * boundaries. */
+ * boundaries.  Callers pass the grid side while only rows 0..rows-2 carry
+ * tiles, so the partition is taken over those: every rank gets floor or ceil
+ * of that count and none is left without work. */
 static u64 bandOf(u64 row, u64 rows)
 {
     u64 nranks;
     ocrAffinityCount(AFFINITY_PD, &nranks);
-    u64 band_total = nranks * (u64)LCS_ROW_BANDS_PER_RANK;
-    u64 hgt = (rows + band_total - 1) / band_total;
-    return (row / hgt) % nranks;
+    u64 used = (rows > 1) ? rows - 1 : 1;
+    if (row >= used)
+        row = used - 1;
+    u64 band = (row * nranks) / used;
+    return (band < nranks) ? band : nranks - 1;
 }
 
 /* Labeled-range index re-encoding: the runtimes home a labeled range's
@@ -95,16 +95,35 @@ static u64 tileIdx(u64 bi, u64 bj, u64 L)
     return bandIdx(bi * (L + 1) + bj, bi - 1, L + 1);
 }
 
-static ocrGuid_t stripEvt(ocrGuid_t range, u64 bi, u64 bj, u64 L)
+/* The name of the event that carries the strip emitted by tile (bi, bj). */
+static ocrGuid_t stripName(ocrGuid_t range, u64 bi, u64 bj, u64 L)
 {
     ocrGuid_t g;
     ocrGuidFromIndex(&g, range, tileIdx(bi, bj, L));
     return g;
 }
 
-/* Emit one strip: its payload block, and the labeled COUNTED(1) event its
- * single consumer waits on.  Created at satisfy time — a consumer that
- * registered first parked on the absent label and is fired by the install. */
+/* The event itself.  A reserved name is not an object: a dependence may
+ * only be added to, and a strip only handed to, an event that exists.  So
+ * producer and consumer both create it under fail-if-exists — whichever
+ * comes first installs it and the other joins the installed one — and the
+ * consumer, the only party that knows the strip has been delivered,
+ * destroys it. */
+static ocrGuid_t stripEvt(ocrGuid_t range, u64 bi, u64 bj, u64 L)
+{
+    ocrGuid_t g = stripName(range, bi, bj, L);
+    u8 rc = ocrEventCreate(&g, OCR_EVENT_STICKY_T,
+                           GUID_PROP_IS_LABELED | GUID_PROP_CHECK
+                               | EVT_PROP_TAKES_ARG);
+    if (rc != 0 && rc != OCR_EGUIDEXISTS) {
+        ocrPrintf("strip event (%lu,%lu) could not be created: %u\n",
+                  (unsigned long)bi, (unsigned long)bj, (unsigned)rc);
+        ocrAbort(rc);
+    }
+    return g;
+}
+
+/* Emit one strip: its payload block, handed through the strip's event. */
 static void emitStrip(ocrGuid_t range, u64 bi, u64 bj, u64 L,
                       const int *src, u64 nelem)
 {
@@ -116,12 +135,38 @@ static void emitStrip(ocrGuid_t range, u64 bi, u64 bj, u64 L,
         p[k] = src[k];
     ocrDbRelease(db);
 
-    ocrGuid_t evt = stripEvt(range, bi, bj, L);
-    ocrEventParams_t params;
-    params.EVENT_COUNTED.nbDeps = 1;
-    ocrEventCreateParams(&evt, OCR_EVENT_COUNTED_T,
-                         GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG, &params);
-    ocrEventSatisfy(evt, db);
+    ocrEventSatisfy(stripEvt(range, bi, bj, L), db);
+}
+
+/* One leaf of the wavefront, wired to the three strips it consumes.  Every
+ * leaf is created by its north neighbour (row 1 by the seeding task), so the
+ * creation plane is as wide as the wavefront and never runs more than one
+ * row ahead of it. */
+static void createLeaf(const wf_params_t *p, u64 bi, u64 bj)
+{
+    u64 L = p->N / p->base;
+    wf_params_t lp = *p;
+    lp.bi = bi;
+    lp.bj = bj;
+
+    ocrHint_t h;
+    ocrGuid_t leaf;
+    ocrEdtCreate(&leaf, p->leaf_tml, EDT_PARAM_DEF, (u64 *)&lp, EDT_PARAM_DEF,
+                 NULL, EDT_PROP_NONE, bandEdtHint(&h, bi - 1, L + 1), NULL);
+
+    ocrGuid_t sTile, tTile;
+    ocrGuidFromIndex(&sTile, p->s_labels, bandIdx(bi - 1, bi - 1, L + 1));
+    ocrGuidFromIndex(&tTile, p->t_labels, bj - 1);
+    ocrAddDependence(sTile, leaf, 0, DB_MODE_RO);
+    ocrAddDependence(tTile, leaf, 1, DB_MODE_RO);
+    ocrAddDependence(bj > 1 ? stripEvt(p->rc_labels, bi, bj - 1, L) : NULL_GUID,
+                     leaf, 2, DB_MODE_RO);
+    ocrAddDependence(bi > 1 ? stripEvt(p->br_labels, bi - 1, bj, L) : NULL_GUID,
+                     leaf, 3, DB_MODE_RO);
+    ocrAddDependence((bi > 1 && bj > 1)
+                         ? stripEvt(p->co_labels, bi - 1, bj - 1, L)
+                         : NULL_GUID,
+                     leaf, 4, DB_MODE_RO);
 }
 
 /* depv: 0 = S tile, 1 = T tile, 2 = west rc strip (NULL on column 1),
@@ -163,6 +208,12 @@ static ocrGuid_t leafEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     else
         corner = (int)((bi - 1) * n);
 
+    /* The last tile is the program's result: its cells are digested the same
+     * way the tiled original digests the equivalent block, so the two rows
+     * print the same checksum for the same arguments. */
+    int last = (bi == L && bj == L);
+    u64 h = 1469598103934665603ULL;
+
     for (u64 r = 0; r < n; r++) {
         int lval = left_strip ? left_strip[r] : (int)((bi - 1) * n + 1 + r);
         int lprev;
@@ -188,6 +239,12 @@ static ocrGuid_t leafEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
             int match = upleft + (S[r] != T[c]);
             cur[c] = MIN(match, MAX(leftv, aval) + GAP_PENALTY);
         }
+        if (last) {
+            for (u64 c = 0; c < n; c++) {
+                h ^= (u64)(u32)cur[c];
+                h *= 1099511628211ULL;
+            }
+        }
         rc[r] = cur[n - 1];
         int *tmp = prev;
         prev = cur;
@@ -199,80 +256,71 @@ static ocrGuid_t leafEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
         emitStrip(p->rc_labels, bi, bj, L, rc, n);
     if (bi < L)
         emitStrip(p->br_labels, bi, bj, L, prev, n);
-    if ((bi < L && bj < L) || (bi == L && bj == L)) {
+    if (last) {
+        int fin[2];
+        fin[0] = prev[n - 1];
+        fin[1] = (int)(h & 0x7fffffffULL);
+        emitStrip(p->co_labels, bi, bj, L, fin, 2);
+    }
+    else if (bi < L && bj < L) {
         int c0 = prev[n - 1];
         emitStrip(p->co_labels, bi, bj, L, &c0, 1);
     }
 
+    if (bi < L)
+        createLeaf(p, bi + 1, bj);
+
     free(scratch);
 
-    /* Each consumed strip had exactly this leaf as its consumer. */
-    if (depv[2].ptr != NULL)
+    /* Each consumed strip, and the event that carried it, had exactly this
+     * leaf as its consumer. */
+    if (depv[2].ptr != NULL) {
         ocrDbDestroy(depv[2].guid);
-    if (depv[3].ptr != NULL)
+        ocrEventDestroy(stripName(p->rc_labels, bi, bj - 1, L));
+    }
+    if (depv[3].ptr != NULL) {
         ocrDbDestroy(depv[3].guid);
-    if (depv[4].ptr != NULL)
+        ocrEventDestroy(stripName(p->br_labels, bi - 1, bj, L));
+    }
+    if (depv[4].ptr != NULL) {
         ocrDbDestroy(depv[4].guid);
+        ocrEventDestroy(stripName(p->co_labels, bi - 1, bj - 1, L));
+    }
 
     return NULL_GUID;
 }
 
-/* Creates row bi's leaves band-locally, then the next row's spawner.  The
- * chain free-runs ahead of the data: a leaf parks on its input events, so
- * creation order never constrains the wavefront. */
-static ocrGuid_t rowSpawnerEdt(u32 paramc, u64 *paramv, u32 depc,
-                               ocrEdtDep_t depv[])
+/* Seeds the wavefront's first row once the strings exist.  Every later row
+ * is created by the row above it, so this is the only bulk creation task and
+ * the creation plane is L-wide from row 2 on. */
+static ocrGuid_t rowSeedEdt(u32 paramc, u64 *paramv, u32 depc,
+                            ocrEdtDep_t depv[])
 {
     (void)paramc;
     (void)depc;
     (void)depv;
     wf_params_t *p = (wf_params_t *)paramv;
     u64 L = p->N / p->base;
-    u64 bi = p->bi;
 
-    ocrGuid_t leafTml;
-    ocrEdtTemplateCreate(&leafTml, leafEdt, sizeof(wf_params_t) / sizeof(u64),
-                         5);
+    for (u64 bj = 1; bj <= L; bj++)
+        createLeaf(p, 1, bj);
 
-    wf_params_t lp = *p;
-    for (u64 bj = 1; bj <= L; bj++) {
-        lp.bj = bj;
-        ocrHint_t h;
-        ocrGuid_t leaf;
-        ocrEdtCreate(&leaf, leafTml, EDT_PARAM_DEF, (u64 *)&lp, EDT_PARAM_DEF,
-                     NULL, EDT_PROP_NONE, bandEdtHint(&h, bi - 1, L + 1),
-                     NULL);
-        ocrGuid_t sTile, tTile;
-        ocrGuidFromIndex(&sTile, p->s_labels, bandIdx(bi - 1, bi - 1, L + 1));
-        ocrGuidFromIndex(&tTile, p->t_labels, bj - 1);
-        ocrAddDependence(sTile, leaf, 0, DB_MODE_RO);
-        ocrAddDependence(tTile, leaf, 1, DB_MODE_RO);
-        ocrAddDependence(bj > 1 ? stripEvt(p->rc_labels, bi, bj - 1, L)
-                                : NULL_GUID,
-                         leaf, 2, DB_MODE_RO);
-        ocrAddDependence(bi > 1 ? stripEvt(p->br_labels, bi - 1, bj, L)
-                                : NULL_GUID,
-                         leaf, 3, DB_MODE_RO);
-        ocrAddDependence((bi > 1 && bj > 1)
-                             ? stripEvt(p->co_labels, bi - 1, bj - 1, L)
-                             : NULL_GUID,
-                         leaf, 4, DB_MODE_RO);
-    }
-    ocrEdtTemplateDestroy(leafTml);
-
-    if (bi < L) {
-        wf_params_t np = *p;
-        np.bi = bi + 1;
-        ocrGuid_t tml, next;
-        ocrEdtTemplateCreate(&tml, rowSpawnerEdt,
-                             sizeof(wf_params_t) / sizeof(u64), 1);
-        ocrHint_t h;
-        ocrEdtCreate(&next, tml, EDT_PARAM_DEF, (u64 *)&np, EDT_PARAM_DEF,
-                     NULL, EDT_PROP_NONE, bandEdtHint(&h, bi, L + 1), NULL);
-        ocrAddDependence(NULL_GUID, next, 0, DB_MODE_NULL);
-        ocrEdtTemplateDestroy(tml);
-    }
     return NULL_GUID;
+}
+
+/* Character of the input strings: a pure function of (tile index, position)
+ * built from a self-contained mixer, so the instance is a property of the
+ * program alone -- no shared generator state, no library generator whose
+ * sequence is defined by the host's C library, and the same characters at
+ * every node count and in every tier. */
+static int lcsChar(u64 tile, u64 pos)
+{
+    u64 z = tile * 0x9E3779B97F4A7C15ULL + pos * 0xBF58476D1CE4E5B9ULL
+          + 0x165667B19E3779F9ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    z ^= z >> 31;
+    return (int)(z % 4) + 'A';
 }
 
 /* Same per-tile deterministic fill as the tiled original, so both programs
@@ -285,18 +333,19 @@ static ocrGuid_t randInitEdt(u32 paramc, u64 *paramv, u32 depc,
     int *Ti = (int *)depv[0].ptr;
     int len = (int)paramv[0];
     int base = (int)paramv[1];
-    unsigned int seed = (unsigned int)paramv[2] * 2654435761u + 12345u;
+    u64 tile = (u64)paramv[2];
     if (len == base + 1) {
         Ti[0] = 32;
         Ti++;
         len--;
     }
     for (int l = 0; l < len; l++)
-        Ti[l] = rand_r(&seed) % 4 + 'A';
+        Ti[l] = lcsChar(tile, (u64)l);
     return NULL_GUID;
 }
 
-/* depv[0] = the final corner strip (one cell). */
+/* depv[0] = the final strip: the answer cell and the result digest.
+ * paramv[1] = the event that carried it, consumed here. */
 static ocrGuid_t wrapupEdt(u32 paramc, u64 *paramv, u32 depc,
                            ocrEdtDep_t depv[])
 {
@@ -307,7 +356,9 @@ static ocrGuid_t wrapupEdt(u32 paramc, u64 *paramv, u32 depc,
     long end = cilk_getticks();
     ocrPrintf("runtime: %f\n", cilk_ticks_to_seconds(end - (long)paramv[0]));
     ocrPrintf("LCS length: %d\n", corner[0]);
+    ocrPrintf("LCS checksum: %lu\n", (unsigned long)(u32)corner[1]);
     ocrDbDestroy(depv[0].guid);
+    ocrEventDestroy((ocrGuid_t){ .guid = paramv[1] });
     return NULL_GUID;
 }
 
@@ -333,14 +384,19 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     u64 argc = ocrGetArgc(cmd);
 
     u64 N = 1024, base = 256;
-    if (argc > 1)
-        N = (u64)atol(ocrGetArgv(cmd, 1));
-    if (argc > 2)
-        base = (u64)atol(ocrGetArgv(cmd, 2));
-    if (base > N)
+    if (argc != 3) {
+        ocrPrintf("USAGE: please run the program as follows:\n"
+                  "executable input_string_length basecase\n");
+        ocrShutdown();
+        return NULL_GUID;
+    }
+    N = (u64)atol(ocrGetArgv(cmd, 1));
+    base = (u64)atol(ocrGetArgv(cmd, 2));
+    if (N > 0 && base > N)
         base = N;
-    if (N % base != 0) {
-        ocrPrintf("N (%lu) must be a multiple of base (%lu)\n", N, base);
+    if (N == 0 || base == 0 || N % base != 0) {
+        ocrPrintf("input_string_length (%lu) must be a multiple of basecase (%lu)\n",
+                  N, base);
         ocrShutdown();
         return NULL_GUID;
     }
@@ -356,6 +412,10 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     p.base = base;
     p.bi = 1;
     p.bj = 0;
+    /* One template for every leaf: leaves outlive their creator, so it is
+     * created once here and never destroyed. */
+    ocrEdtTemplateCreate(&p.leaf_tml, leafEdt,
+                         sizeof(wf_params_t) / sizeof(u64), 5);
     ocrGuidRangeCreate(&p.s_labels, L * nranks_mult, GUID_USER_DB);
     ocrGuidRangeCreate(&p.t_labels, L, GUID_USER_DB);
     u64 evt_range = (L + 1) * (L + 1) * nranks_mult;
@@ -369,8 +429,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
      * column's readers span every band). */
     /* The wavefront must not start before the strings exist: a leaf's RO
      * read of a tile still being written is unordered.  Each init task gets
-     * an app-supplied COUNTED(1) completion event, and the first row
-     * spawner waits on all 2L of them. */
+     * an app-supplied COUNTED(1) completion event, and the row that seeds
+     * the wavefront waits on all 2L of them. */
     ocrGuid_t *initDone =
         (ocrGuid_t *)malloc(sizeof(ocrGuid_t) * 2 * L);
     ocrGuid_t randTml;
@@ -408,12 +468,13 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     long start = cilk_getticks();
 
     ocrGuid_t wrapTml, wrap, wrapOut;
-    ocrEdtTemplateCreate(&wrapTml, wrapupEdt, 1, 1);
-    u64 wp[1] = {(u64)start};
+    ocrGuid_t finEvt = stripEvt(p.co_labels, L, L, L);
+    ocrEdtTemplateCreate(&wrapTml, wrapupEdt, 2, 1);
+    u64 wp[2] = {(u64)start, (u64)finEvt.guid};
     ocrEdtCreate(&wrap, wrapTml, EDT_PARAM_DEF, wp, EDT_PARAM_DEF, NULL,
                  EDT_PROP_NONE, NULL_HINT, &wrapOut);
     ocrEdtTemplateDestroy(wrapTml);
-    ocrAddDependence(stripEvt(p.co_labels, L, L, L), wrap, 0, DB_MODE_RO);
+    ocrAddDependence(finEvt, wrap, 0, DB_MODE_RO);
 
     ocrGuid_t shutTml, shut;
     ocrEdtTemplateCreate(&shutTml, shutdownEdt, 0, 1);
@@ -423,7 +484,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence(wrapOut, shut, 0, DB_MODE_NULL);
 
     ocrGuid_t spTml, sp0;
-    ocrEdtTemplateCreate(&spTml, rowSpawnerEdt,
+    ocrEdtTemplateCreate(&spTml, rowSeedEdt,
                          sizeof(wf_params_t) / sizeof(u64), (u32)(2 * L));
     ocrHint_t h;
     ocrEdtCreate(&sp0, spTml, EDT_PARAM_DEF, (u64 *)&p, EDT_PARAM_DEF, NULL,

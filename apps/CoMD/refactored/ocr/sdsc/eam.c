@@ -429,7 +429,8 @@ ocrGuid_t eam_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   simulation* sim = (simulation*)depv[0].ptr;
   ocrGuid_t res; real_t* res_ptr;
-  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
+  ocrHint_t homeHNT;
+  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, comdHomeDbHint(&homeHNT), NO_ALLOC);
   *res_ptr = eam_force_box_same((box*)depv[1].ptr, sim->pot.cutoff, &sim->pot.eam.phi, (real_t*)depv[depc-2].ptr, &sim->pot.eam.rho, (real_t*)depv[depc-1].ptr);
 
   u32 dep=1;
@@ -515,7 +516,8 @@ ocrGuid_t rho_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   simulation* sim = (simulation*)depv[0].ptr;
   box* a = (box*)depv[1].ptr;
   ocrGuid_t res; real_t* res_ptr;
-  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
+  ocrHint_t homeHNT;
+  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, comdHomeDbHint(&homeHNT), NO_ALLOC);
   *res_ptr = 0;
   for(u32 aa = 0; aa < a->atoms; ++aa) {
     real_t fembed;
@@ -665,7 +667,8 @@ static inline void spawn_pair_rho(ocrGuid_t sim, ocrGuid_t values, ocrGuid_t tmp
 {
   u64 bb = b;
   ocrGuid_t edt;
-  ocrEdtCreate(&edt, tmp, 1, &bb, 29, NULL, 0, NULL_HINT, NULL);
+  ocrHint_t blockHNT;
+  ocrEdtCreate(&edt, tmp, 1, &bb, 29, NULL, 0, comdBlockEdtHint(&blockHNT, b, grid), NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
   ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
 
@@ -774,8 +777,9 @@ static ocrGuid_t eam_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
   }
 
   ocrGuid_t tmp, red;
+  ocrHint_t homeHNT;
   ocrEdtTemplateCreate(&tmp, rho_red_edt, 0, sim->bxs.boxes_num+2);
-  ocrEdtCreate(&red, tmp, 0, NULL, sim->bxs.boxes_num+2, NULL, 0, NULL_HINT, NULL);
+  ocrEdtCreate(&red, tmp, 0, NULL, sim->bxs.boxes_num+2, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
   ocrAddDependence(depv[0].guid, red, 0, DB_MODE_RW);
   ocrAddDependence(sim->bxs.list, red, sim->bxs.boxes_num+1, DB_MODE_RW);
   ocrEdtTemplateDestroy(tmp);
@@ -785,7 +789,8 @@ static ocrGuid_t eam_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
   ocrEdtTemplateCreate(&tmp, rho_edt, 2, 3);
   for(u32 b = 0; b < sim->bxs.boxes_num; ++b) {
     u64 paramv[2]; paramv[0]=red.guid; paramv[1]=b+1;
-    ocrEdtCreate(&edt, tmp, 2, paramv, 3, NULL, 0, NULL_HINT, NULL);
+    ocrHint_t blockHNT;
+    ocrEdtCreate(&edt, tmp, 2, paramv, 3, NULL, 0, comdBlockEdtHint(&blockHNT, b, sim->bxs.grid), NULL);
     ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
     ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
     ocrAddDependence(sim->pot.eam.f.values, edt, 2, DB_MODE_RW);
@@ -799,7 +804,8 @@ static inline void spawn_pair(ocrGuid_t sim, eam_potential* eam, ocrGuid_t tmp, 
 {
   u64 paramv[2]; paramv[0]=red.guid; paramv[1]=b;
   ocrGuid_t edt;
-  ocrEdtCreate(&edt, tmp, 2, paramv, 30, NULL, 0, NULL_HINT, NULL);
+  ocrHint_t blockHNT;
+  ocrEdtCreate(&edt, tmp, 2, paramv, 30, NULL, 0, comdBlockEdtHint(&blockHNT, b, grid), NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_RW);
   ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
 
@@ -883,8 +889,9 @@ void fork_eam_force(ocrGuid_t sim, simulation* sim_ptr, ocrGuid_t cont, ocrGuid_
   u32 pairs = sim_ptr->bxs.boxes_num;
 
   ocrGuid_t tmp,red,fin;
+  ocrHint_t homeHNT;
   ocrEdtTemplateCreate(&tmp, eam_red_edt, 0, pairs+2);
-  ocrEdtCreate(&red, tmp, 0, NULL, pairs+2, NULL, EDT_PROP_FINISH, NULL_HINT, &fin);
+  ocrEdtCreate(&red, tmp, 0, NULL, pairs+2, NULL, EDT_PROP_FINISH, comdHomeEdtHint(&homeHNT), &fin);
   ocrAddDependence(fin, cont, CONT_DEPC, DB_MODE_CONST);
   ocrAddDependence(sim, red, 0, DB_MODE_RW);
   ocrAddDependence(sim_ptr->bxs.list, red, pairs+1, DB_MODE_RW);

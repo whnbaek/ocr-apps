@@ -10,7 +10,7 @@
  * Based on stream_org.c (static allocation with 3 persistent DBs per thread).
  *
  * NOTE: the times[] array is per-process; printTimes() reports only the
- * threads that ran on the reporting node.
+ * sweeps whose start and end both ran on the reporting process.
  */
 
 #ifndef _GNU_SOURCE
@@ -93,11 +93,14 @@ u64 nTimes          = NTIMES;
 u64 perThreadSize   = PER_THREAD_SIZE;
 
 /* Per-process timing array — allocated only on the rank that runs mainEdt.
- * Remote ranks leave it NULL; their samples are not reported (printTimes
- * reports rank 0 only), so every write is guarded by a non-NULL check. */
+ * Remote ranks leave it NULL; the reporting process says so and reports no
+ * bandwidth, so every write is guarded by a non-NULL check. */
 double *times;             /* [numThreads][nTimes] flattened; index via TIMES() */
 
-/* Row-major access to the runtime-sized timing matrix. */
+/* Row-major access to the runtime-sized timing matrix.  A cell holds the
+ * negated start stamp until the task that ends the sweep turns it into a
+ * positive duration, so a cell whose start and end did not both run in this
+ * process stays non-positive and is distinguishable from a complete one. */
 #define TIMES(t, k) times[(u64)(t) * nTimes + (u64)(k)]
 
 /* Cross-rank GUIDs and sizes travel through paramv (deep-copied at EDT
@@ -105,13 +108,23 @@ double *times;             /* [numThreads][nTimes] flattened; index via TIMES() 
  * rank that ran mainEdt would see them initialized.
  *
  * paramv layouts:
- *   mainLet (paramc=9): [0] tid, [1] evt_finalize_my,
- *     [2..6] tmp_copy/scale/add/triad/loop, [7] perThreadSize, [8] nTimes
- *   loop (paramc=10): [0] iter, [1] tid, [2] evt_finalize_my,
- *     [3..7] templates, [8] perThreadSize, [9] nTimes
- *   kernels (paramc=3): [0] iter, [1] tid, [2] perThreadSize */
-#define MAINLET_PARAMC 9
-#define LOOP_PARAMC    10
+ *   mainLet (paramc=10): [0] tid, [1] evt_finalize_my,
+ *     [2..6] tmp_copy/scale/add/triad/loop, [7] perThreadSize, [8] nTimes,
+ *     [9] tmp_check
+ *   loop (paramc=11): [0] iter, [1] tid, [2] evt_finalize_my,
+ *     [3..7] templates, [8] perThreadSize, [9] nTimes, [10] tmp_check
+ *   kernels (paramc=3): [0] iter, [1] tid, [2] perThreadSize
+ *   check (paramc=3): [0] tid, [1] perThreadSize, [2] nTimes
+ *   finalize (paramc=2): [0] numThreads, [1] perThreadSize */
+#define MAINLET_PARAMC 10
+#define LOOP_PARAMC    11
+
+/* What one chain reports to the join: a count of its own verified elements
+ * and one sampled element, so the join carries counts and not arrays. */
+typedef struct {
+    u64    matched;
+    double first;
+} streamCheck_t;
 
 /* --- Helper: build EDT affinity hint for a given thread id --- */
 static void getAffinityHints(u64 tid, ocrHint_t *edtHint, ocrHint_t *dbHint)
@@ -190,51 +203,75 @@ ocrGuid_t triad(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
     for(i = 0; i<pts; i++) a[i] = b[i] + scalar*c[i];
 
-    if(times) TIMES(paramv[1], paramv[0]) = mysecond() - TIMES(paramv[1], paramv[0]);
+    if(times) {
+        double start = TIMES(paramv[1], paramv[0]);
+        if(start < 0.0) TIMES(paramv[1], paramv[0]) = mysecond() + start;
+    }
     return depv[0].guid;
 }
 
 /* ================================================================ */
+
+/* Verification runs where the data is: each chain checks its own slice
+ * against the closed form of the kernel recurrence and returns the count it
+ * verified, so no task ever holds more than one slice and the join carries
+ * one record per chain instead of the whole result. */
+ocrGuid_t check(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
+{
+  double *a  = (double *)depv[0].ptr;
+  u64 tid    = paramv[0];
+  u64 pts    = paramv[1];
+  u64 ntimes = paramv[2];
+  u64 i, k, matched = 0;
+  double epsilon = (sizeof(STREAM_TYPE) == 4) ? 1.e-6 : 1.e-13;
+  STREAM_TYPE aj = 2.0;  /* initial value from mainLet */
+  streamCheck_t *r;
+  ocrGuid_t db_r;
+  ocrHint_t dbHint;
+
+  for (k = 0; k < ntimes; k++) {
+      STREAM_TYPE bj = scalar * aj;      /* scale */
+      STREAM_TYPE cj = aj + bj;          /* add   */
+      aj = bj + scalar * cj;             /* triad: a = b(scale) + scalar*c(add) */
+  }
+
+  for (i = 0; i < pts; i++) {
+      double relErr = (aj != 0.0) ? fabs((a[i] - aj) / aj) : fabs(a[i]);
+      if (relErr <= epsilon) matched++;
+  }
+
+  getAffinityHints(tid, NULL, &dbHint);
+  ocrDbCreate(&db_r, (void **)&r, sizeof(streamCheck_t),
+                           FLAGS, &dbHint, NO_ALLOC);
+  r->matched = matched;
+  r->first   = a[0];
+
+  return db_r;
+}
 
 ocrGuid_t finalize(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 {
   /* Runtime sizes travel through paramv; file-scope globals are per-process
    * under fork-launched multinode runtimes and unset on ranks other than the
    * one that ran mainEdt. */
-  u64 nTimes        = paramv[0];
-  u64 numThreads    = paramv[1];
-  u64 perThreadSize = paramv[2];
+  u64 numThreads    = paramv[0];
+  u64 perThreadSize = paramv[1];
 
-  /* Validate a[] — same approach as checkSTREAMresults() in reference STREAM.
-   * a's final value encodes all four kernels over all iterations. */
-  STREAM_TYPE aj = 2.0;  /* initial value from mainLet */
-  int k;
-  for (k = 0; k < nTimes; k++) {
-      STREAM_TYPE cj = aj;               /* copy  */
-      STREAM_TYPE bj = scalar * aj;      /* scale */
-      cj = aj + bj;                      /* add   */
-      aj = bj + scalar * cj;             /* triad: a = b(scale) + scalar*c(add) */
-  }
+  u64 total = perThreadSize * numThreads;
+  u64 matched = 0;
+  u64 t;
 
-  double epsilon = (sizeof(STREAM_TYPE) == 4) ? 1.e-6 : 1.e-13;
-  u64 errCount = 0;
-  u32 t, i;
-  for (t = 0; t < numThreads; t++) {
-      double *a = (double *)depv[t].ptr;
-      for (i = 0; i < perThreadSize; i++) {
-          double relErr = (aj != 0.0) ? fabs((a[i] - aj) / aj) : fabs(a[i]);
-          if (relErr > epsilon) errCount++;
-      }
-  }
+  for (t = 0; t < numThreads; t++)
+      matched += ((streamCheck_t *)depv[t].ptr)->matched;
 
-  PRINTF("STREAM checksum: a[0] = %.12f\n", ((double *)depv[0].ptr)[0]);
-
-  if (errCount == 0)
-      PRINTF("Solution Validates: all %d elements match expected value\n",
-             (int)(perThreadSize * numThreads));
+  if (matched == total)
+      PRINTF("Solution Validates: all %llu elements match expected value\n",
+             (unsigned long long)matched);
   else
-      PRINTF("Solution FAILED Validation: %llu errors in a[]\n",
-             (unsigned long long)errCount);
+      PRINTF("Solution FAILED Validation: %llu of %llu elements in a[] differ\n",
+             (unsigned long long)(total - matched), (unsigned long long)total);
+
+  PRINTF("STREAM_RESULT a[0] = %.15e\n", ((streamCheck_t *)depv[0].ptr)->first);
 
   printTimes();
   ocrShutdown();
@@ -262,6 +299,7 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t tmp_add_g   = (ocrGuid_t){.guid = (intptr_t)paramv[5]};
   ocrGuid_t tmp_triad_g = (ocrGuid_t){.guid = (intptr_t)paramv[6]};
   ocrGuid_t tmp_loop_g  = (ocrGuid_t){.guid = (intptr_t)paramv[7]};
+  ocrGuid_t tmp_check_g = (ocrGuid_t){.guid = (intptr_t)paramv[10]};
   u64 pts    = paramv[8];
   u64 ntimes = paramv[9];
 
@@ -269,7 +307,7 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrHint_t edtHint;
   getAffinityHints(tid, &edtHint, NULL);
 
-  if(times) TIMES(tid, iter) = mysecond();
+  if(times) TIMES(tid, iter) = -mysecond();
   ocrGuid_t copy_output, scale_output, add_output, triad_output;
   ocrGuid_t edt_copy, edt_scale, edt_add, edt_triad;
 
@@ -298,7 +336,7 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     /* Forward all paramv slots to the next iteration. */
     u64 next_param[LOOP_PARAMC] = {
       iter, tid, paramv[2], paramv[3], paramv[4],
-      paramv[5], paramv[6], paramv[7], pts, ntimes
+      paramv[5], paramv[6], paramv[7], pts, ntimes, paramv[10]
     };
     ocrGuid_t edt_loop;
     ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, next_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, NULL);
@@ -307,7 +345,14 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence(scale_output, edt_loop, 1, DB_MODE_RW);
     ocrAddDependence(add_output, edt_loop, 2, DB_MODE_RW);
   } else {
-    ocrAddDependence(triad_output, evt_finalize_my, 0, DB_DEFAULT_MODE);
+    /* Last sweep: this chain verifies its own slice and hands the join a
+     * record instead of the array. */
+    u64 check_param[3] = { tid, pts, ntimes };
+    ocrGuid_t edt_check, check_output;
+    ocrEdtCreate(&edt_check, tmp_check_g, EDT_PARAM_DEF, check_param, EDT_PARAM_DEF, NULL, PROPERTIES, &edtHint, &check_output);
+
+    ocrAddDependence(check_output, evt_finalize_my, 0, DB_DEFAULT_MODE);
+    ocrAddDependence(triad_output, edt_check, 0, DB_MODE_RO);
   }
 
   /* Chain-starting addDeps last: these make edt_scale/edt_copy runnable. */
@@ -371,7 +416,8 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       paramv[4] /*tmp_add*/,
       paramv[5] /*tmp_triad*/,
       paramv[6] /*tmp_loop*/,
-      pts, ntimes
+      pts, ntimes,
+      paramv[9] /*tmp_check*/
     };
     ocrEdtCreate(&edt_loop, tmp_loop_g, EDT_PARAM_DEF, param, EDT_PARAM_DEF, NULL,
                  EDT_PROP_FINISH, &edtHint, &output_evt);
@@ -410,7 +456,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     preamble();
 
     ocrGuid_t tmp_mainLet, tmp_loop, tmp_copy, tmp_scale, tmp_add, tmp_triad;
-    ocrGuid_t tmp_finalize;
+    ocrGuid_t tmp_check, tmp_finalize;
     ocrGuid_t edt_finalize, edt_mainLet;
     u64 i;
 
@@ -418,15 +464,16 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
      * to children through paramv so cross-rank EDTs can use the same
      * GUIDs without per-rank template recreation. */
     ocrEdtTemplateCreate(&tmp_mainLet, mainLet, MAINLET_PARAMC, 0);
-    ocrEdtTemplateCreate(&tmp_finalize, finalize, 3, numThreads);
+    ocrEdtTemplateCreate(&tmp_finalize, finalize, 2, numThreads);
     ocrEdtTemplateCreate(&tmp_copy,  copy,  3, 2);
     ocrEdtTemplateCreate(&tmp_scale, scale, 3, 2);
     ocrEdtTemplateCreate(&tmp_add,   add,   3, 3);
     ocrEdtTemplateCreate(&tmp_triad, triad, 3, 3);
+    ocrEdtTemplateCreate(&tmp_check, check, 3, 1);
     ocrEdtTemplateCreate(&tmp_loop,  loop,  LOOP_PARAMC, 3);
-    /* finalize paramv: [nTimes, numThreads, perThreadSize] (remote ranks
-     * cannot read the file-scope size globals). */
-    u64 finalize_param[3] = { nTimes, numThreads, perThreadSize };
+    /* finalize paramv: [numThreads, perThreadSize] (remote ranks cannot read
+     * the file-scope size globals). */
+    u64 finalize_param[2] = { numThreads, perThreadSize };
     ocrEdtCreate(&edt_finalize, tmp_finalize, EDT_PARAM_DEF, finalize_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, NULL);
 
     for(i = 0; i<numThreads; i++) {
@@ -446,7 +493,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
           (u64)tmp_add.guid,
           (u64)tmp_triad.guid,
           (u64)tmp_loop.guid,
-          perThreadSize, nTimes
+          perThreadSize, nTimes,
+          (u64)tmp_check.guid
         };
         ocrEdtCreate(&edt_mainLet, tmp_mainLet, EDT_PARAM_DEF, mainLet_param,
                      EDT_PARAM_DEF, NULL,
@@ -503,27 +551,44 @@ void preamble(void)
     PRINTF(HLINE);
 }
 
+/* A sample is written by the task that ran the sweep and read here, so a
+ * cell is meaningful only on the process that holds the array and only when
+ * both the start and the end of that sweep ran on it; the sign encoding
+ * leaves every other cell non-positive.  Report what is present and say so
+ * when nothing is. */
 int printTimes(void)
 {
     double avgtime = 0.0;
     double mintime = FLT_MAX;
     double maxtime = 0.0;
-    int j, k;
+    u64 j, k, samples = 0;
+
+    PRINTF(HLINE);
+    if (times == NULL) {
+        PRINTF("No kernel timings on this process: MB/s not reported\n");
+        PRINTF(HLINE);
+        return 0;
+    }
 
     for (k=1; k<nTimes; k++) /* note -- skip first iteration */
         {
         for (j=0; j<numThreads; j++)
             {
-            avgtime = avgtime + TIMES(j, k);
-            mintime = MIN(mintime, TIMES(j, k));
-            maxtime = MAX(maxtime, TIMES(j, k));
+            double t = TIMES(j, k);
+            if (t <= 0.0) continue;   /* start or end ran in another process */
+            avgtime = avgtime + t;
+            mintime = MIN(mintime, t);
+            maxtime = MAX(maxtime, t);
+            samples++;
             }
         }
 
-    PRINTF(HLINE);
-    PRINTF("%f MB/s %f %f %f\n",
-           1.0E-06*10*sizeof(STREAM_TYPE)*perThreadSize/mintime,
-           avgtime/((nTimes-1)*numThreads), mintime, maxtime);
+    if (samples == 0)
+        PRINTF("No complete kernel timing: MB/s not reported\n");
+    else
+        PRINTF("%f MB/s %f %f %f\n",
+               1.0E-06*10*sizeof(STREAM_TYPE)*perThreadSize/mintime,
+               avgtime/(double)samples, mintime, maxtime);
     PRINTF(HLINE);
 
     return 0;

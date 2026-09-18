@@ -15,13 +15,17 @@
  * North/NW share its band on every row except the nranks-1 band-boundary
  * rows, so the heavy row-to-row payload stays rank-local while the
  * anti-diagonal frontier still reaches every band once it is a band tall.
- * A round-robin map makes EVERY neighbour remote instead. */
+ * A round-robin map makes EVERY neighbour remote instead.
+ * Precondition of the map: one band per rank spans every rank only while
+ * there are at least as many tile rows as ranks.  With fewer rows its image
+ * covers only some of them, so below that threshold it yields to the
+ * no-preference placement, which covers all of them. */
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
 #include <extensions/ocr-affinity.h>
 static ocrHint_t * swBandEdtHint(ocrHint_t *h, u64 row, u64 nrows) {
     u64 nranks;
     ocrAffinityCount(AFFINITY_PD, &nranks);
-    if (nranks <= 1 || nrows == 0) return NULL_HINT;
+    if (nranks <= 1 || nrows < nranks) return NULL_HINT;
     u64 band = (row * nranks) / nrows;
     if (band >= nranks) band = nranks - 1;
     ocrGuid_t aff;
@@ -32,13 +36,14 @@ static ocrHint_t * swBandEdtHint(ocrHint_t *h, u64 row, u64 nrows) {
 }
 /* The blocks a tile produces are created by the tile itself and so are homed
  * where it runs, which the placement above already decides.  The left column's
- * seed blocks are the exception: they are built up front, outside any tile, and
- * every band consumes the ones on its own rows.  Place each on the band that
- * will read it. */
+ * seed blocks are the exception: they are built up front, outside any tile.
+ * Each is placed on the band of the tile that reads it, which for a column
+ * seed is the tile in the same row and for a corner seed the tile one row
+ * below (a diagonal input crosses one row boundary). */
 static ocrHint_t * swBandDbHint(ocrHint_t *h, u64 row, u64 nrows) {
     u64 nranks;
     ocrAffinityCount(AFFINITY_PD, &nranks);
-    if (nranks <= 1 || nrows == 0) return NULL_HINT;
+    if (nranks <= 1 || nrows < nranks) return NULL_HINT;
     u64 band = (row * nranks) / nrows;
     if (band >= nranks) band = nranks - 1;
     ocrGuid_t aff;
@@ -125,11 +130,14 @@ u32 clear_whitespaces_do_mapping ( s8* buffer, u32 size ) {
     return non_ws_index;
 }
 
+/* The block backing the returned buffer is handed to the caller in *buf_db:
+ * the buffer outlives this call, so its lifetime is the caller's to end. */
 #ifdef TG_ARCH
-s8* read_file( s8* filestart, u32* n_chars ) {
+s8* read_file( s8* filestart, u32* n_chars, ocrGuid_t* buf_db ) {
     static FILE *file = NULL;
     s8* file_buffer;
 
+    *buf_db = NULL_GUID;
     if(file==NULL) file = fopen((const char *)filestart, "r");
     u32 file_size = *n_chars;
     ocrGuid_t filebuf;
@@ -139,12 +147,14 @@ s8* read_file( s8* filestart, u32* n_chars ) {
 
     // Clean up what has been read
     *n_chars =  clear_whitespaces_do_mapping(file_buffer, file_size);
+    *buf_db = filebuf;
     return file_buffer;
 }
 #else
-s8* read_file( s8* filename, u32* n_chars ) {
+s8* read_file( s8* filename, u32* n_chars, ocrGuid_t* buf_db ) {
     FILE* file = fopen(filename, "r");
 
+    *buf_db = NULL_GUID;
     if (!file) {
         ocrPrintf("could not open file %s\n",filename);
         return NULL;
@@ -160,8 +170,11 @@ s8* read_file( s8* filename, u32* n_chars ) {
     fread(file_buffer, sizeof(s8), file_size, file);
     file_buffer[file_size] = '\0';
 
+    fclose(file);
+
     /* shams' sample inputs have newlines in them */
     *n_chars = clear_whitespaces_do_mapping(file_buffer, file_size);
+    *buf_db = filebuf;
     return file_buffer;
 }
 #endif
@@ -394,7 +407,7 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
         ocrGuid_t db_guid_i_0_br;
         void* db_guid_i_0_br_data;
         ocrHint_t brHNT;
-        ocrDbCreate( &db_guid_i_0_br, &db_guid_i_0_br_data, sizeof(s32), DB_PROP_NONE, swBandDbHint(&brHNT, i - 1, n_tiles_height), NO_ALLOC );
+        ocrDbCreate( &db_guid_i_0_br, &db_guid_i_0_br_data, sizeof(s32), DB_PROP_NONE, swBandDbHint(&brHNT, i, n_tiles_height), NO_ALLOC );
 
         allocated = (s32*)db_guid_i_0_br_data;
         /* Use actual position for edge tile */
@@ -405,7 +418,7 @@ static void initialize_border_values( Tile_t** tile_matrix, s32 n_tiles_width, s
     }
 }
 
-static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_tiles_height, s32* p_n_tiles_width, s32* p_tile_width, s32* p_tile_height, s8** p_string_1, s8** p_string_2, u32 *check_score, s32* p_string1_len, s32* p_string2_len) {
+static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_tiles_height, s32* p_n_tiles_width, s32* p_tile_width, s32* p_tile_height, s8** p_string_1, ocrGuid_t* p_string1_db, s8** p_string_2, ocrGuid_t* p_string2_db, u32 *check_score, s32* p_string1_len, s32* p_string2_len) {
     u64 argc = ocrGetArgc(marshalled);
 
     if(argc < 6) {
@@ -441,20 +454,36 @@ static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_ti
     file_name_score = ocrGetArgv(marshalled, 5);
 #endif
 
-    *p_string_1 = read_file(file_name_1, &n_char_in_file_1);
+    if (*p_tile_width < 1 || *p_tile_height < 1) {
+        ocrPrintf("tileWidth and tileHeight must be positive integers\n");
+        return 1;
+    }
+
+    *p_string_1 = read_file(file_name_1, &n_char_in_file_1, p_string1_db);
     if(*p_string_1 == NULL) return 1;
     ocrPrintf("Size of input string 1 is %d\n", n_char_in_file_1 );
     *p_string1_len = (s32)n_char_in_file_1;
 
-    *p_string_2 = read_file(file_name_2, &n_char_in_file_2);
+    *p_string_2 = read_file(file_name_2, &n_char_in_file_2, p_string2_db);
     if(*p_string_2 == NULL) return 1;
     ocrPrintf("Size of input string 2 is %d\n", n_char_in_file_2 );
     *p_string2_len = (s32)n_char_in_file_2;
 
-    *check_score = atoi((char *)read_file(file_name_score, &n_char_in_file_score));
+    ocrGuid_t score_db;
+    s8 *score_text = read_file(file_name_score, &n_char_in_file_score, &score_db);
+    if (score_text == NULL) return 1;
+    *check_score = atoi((char *)score_text);
+    ocrDbDestroy(score_db);
     ocrPrintf("Score to get it %u\n", *check_score);
     ocrPrintf("Tile width is %d\n", *p_tile_width);
     ocrPrintf("Tile height is %d\n", *p_tile_height);
+
+    /* An empty sequence leaves the tile grid empty, so no task would ever
+     * reach the bottom-right corner that ends the run. */
+    if (n_char_in_file_1 == 0 || n_char_in_file_2 == 0) {
+        ocrPrintf("both input sequences must contain at least one nucleotide\n");
+        return 1;
+    }
 
     /* Use ceiling division to handle partial tiles at edges */
     *p_n_tiles_width = (n_char_in_file_1 + *p_tile_width - 1) / *p_tile_width;
@@ -476,13 +505,15 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     s32 tile_height;
     s8* string_1;
     s8* string_2;
+    ocrGuid_t string1_db;
+    ocrGuid_t string2_db;
     u32 check_score;
     s32 string1_len;
     s32 string2_len;
 
     smithWatermanPRM_t smithWatermanParamv;
 
-    if(ioHandling(depv[0].ptr, &n_tiles_height, &n_tiles_width, &tile_width, &tile_height, &string_1, &string_2, &check_score, &string1_len, &string2_len))
+    if(ioHandling(depv[0].ptr, &n_tiles_height, &n_tiles_width, &tile_width, &tile_height, &string_1, &string1_db, &string_2, &string2_db, &check_score, &string1_len, &string2_len))
     {
         ocrShutdown();
         return NULL_GUID;
@@ -551,6 +582,11 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     }
 
     ocrDbRelease(dbParamsGuid);
+
+    /* The sequence bytes now live in the block every task reads; the parse
+     * buffers have no further reader. */
+    ocrDbDestroy(string1_db);
+    ocrDbDestroy(string2_db);
 
     for ( i = 1; i < n_tiles_height+1; ++i ) {
         for ( j = 1; j < n_tiles_width+1; ++j ) {

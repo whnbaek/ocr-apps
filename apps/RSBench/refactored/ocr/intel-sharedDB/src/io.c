@@ -100,7 +100,7 @@ Inputs read_CLI( int argc, char * argv[] )
             if( ++i < argc )
                 input.nthreads = atoi(argv[i]);
             else
-                print_CLI_error();
+                print_CLI_error("-t needs a lane count");
         }
         // nprocs (-p)
         else if( strcmp(arg, "-p") == 0 )
@@ -108,7 +108,7 @@ Inputs read_CLI( int argc, char * argv[] )
             if( ++i < argc )
                 input.nprocs = atoi(argv[i]);
             else
-                print_CLI_error();
+                print_CLI_error("-p needs an SPMD instance count");
         }
         // lookups (-l)
         else if( strcmp(arg, "-l") == 0 )
@@ -116,7 +116,7 @@ Inputs read_CLI( int argc, char * argv[] )
             if( ++i < argc )
                 input.lookups = atoi(argv[i]);
             else
-                print_CLI_error();
+                print_CLI_error("-l needs a lookup count");
         }
         // nuclides (-n)
         else if( strcmp(arg, "-n") == 0 )
@@ -124,7 +124,7 @@ Inputs read_CLI( int argc, char * argv[] )
             if( ++i < argc )
                 input.n_nuclides = atoi(argv[i]);
             else
-                print_CLI_error();
+                print_CLI_error("-n needs a nuclide count");
         }
         // HM (-s)
         else if( strcmp(arg, "-s") == 0 )
@@ -139,10 +139,10 @@ Inputs read_CLI( int argc, char * argv[] )
                 else if ( strcmp(argv[i], "large") == 0 )
                     input.HM = LARGE;
                 else
-                    print_CLI_error();
+                    print_CLI_error("-s takes small or large");
             }
             else
-                print_CLI_error();
+                print_CLI_error("-s needs a size class");
         }
         // Doppler Broadening (Temperature Dependence)
         else if( strcmp(arg, "-d") == 0 )
@@ -155,7 +155,7 @@ Inputs read_CLI( int argc, char * argv[] )
             if( ++i < argc )
                 input.avg_n_windows = atoi(argv[i]);
             else
-                print_CLI_error();
+                print_CLI_error("-w needs a window count");
         }
         // Avg number of poles per nuclide (-a)
         else if( strcmp(arg, "-a") == 0 )
@@ -163,37 +163,50 @@ Inputs read_CLI( int argc, char * argv[] )
             if( ++i < argc )
                 input.avg_n_poles = atoi(argv[i]);
             else
-                print_CLI_error();
+                print_CLI_error("-a needs a pole count");
         }
         else
-            print_CLI_error();
+        {
+            ocrPrintf("Unrecognized option: %s\n", arg);
+            print_CLI_error("unrecognized option");
+        }
     }
 
     // Validate Input
 
     // Validate nthreads
     if( input.nthreads < 1 )
-        print_CLI_error();
+        print_CLI_error("-t must be at least 1");
 
     // Validate nprocs
     if( input.nprocs < 1 )
-        print_CLI_error();
+        print_CLI_error("-p must be at least 1");
 
-    // Validate n_isotopes
-    if( input.n_nuclides < 1 )
-        print_CLI_error();
+    // Validate n_isotopes.  The material tables are literals: the small one
+    // names nuclide IDs below 68, the large one below 355, and every
+    // per-nuclide array is sized by this count, so any other value indexes
+    // outside the arrays in the lookup kernel.
+    if( input.n_nuclides != 68 && input.n_nuclides < 355 )
+        print_CLI_error("-n must be 68 (H-M small) or at least 355 (H-M large)");
 
     // Validate lookups
     if( input.lookups < 1 )
-        print_CLI_error();
+        print_CLI_error("-l must be at least 1");
 
-    // Validate lookups
+    // Validate poles per nuclide
     if( input.avg_n_poles < 1 )
-        print_CLI_error();
+        print_CLI_error("-a must be at least 1");
 
-    // Validate lookups
+    // Validate windows per nuclide
     if( input.avg_n_windows < 1 )
-        print_CLI_error();
+        print_CLI_error("-w must be at least 1");
+
+    // A window's pole loop runs from its start to its end index, which are
+    // laid out by dividing a nuclide's poles among its windows: with fewer
+    // poles than windows the division floors to zero and the windows carry no
+    // poles at all.
+    if( input.avg_n_poles < input.avg_n_windows )
+        print_CLI_error("-a must be at least -w");
 
     // Set HM size specific parameters
     // (defaults to large)
@@ -202,8 +215,9 @@ Inputs read_CLI( int argc, char * argv[] )
     return input;
 }
 
-void print_CLI_error(void)
+void print_CLI_error(const char * reason)
 {
+    ocrPrintf("ERROR: %s\n", reason);
     ocrPrintf("Usage: ./multibench <options>\n");
     ocrPrintf("Options include:\n");
     ocrPrintf("  -t <threads>     Number of OpenMP threads to run\n");
@@ -249,7 +263,7 @@ void print_input_summary(Inputs input)
 
 }
 
-void print_results(Inputs input, int mype, double runtime, int nprocs, u64 g_abrarov, u64 g_alls)
+void print_results(Inputs input, int mype, double runtime, int nprocs, u64 g_abrarov, u64 g_alls, u64 g_xsDigest)
 {
     if( mype == 0 )
     {
@@ -264,6 +278,13 @@ void print_results(Inputs input, int mype, double runtime, int nprocs, u64 g_abr
     ocrPrintf("Runtime:     %.3f seconds\n", runtime);
     ocrPrintf("Lookups:     "); fancy_int(input.lookups);
     ocrPrintf("Lookups/s:   "); fancy_int((double) input.lookups / (runtime));
+    ocrPrintf("Pole Evaluations:   %"PRIu64"\n", g_alls);
+    ocrPrintf("Abrarov Evaluations:   %"PRIu64"\n", g_abrarov);
+    // Kept below 2^53 so the printed digest survives a conversion to double
+    // unchanged and can be compared for equality.
+    ocrPrintf("XS Checksum:   %"PRIu64"\n",
+              (rs_mix64(g_abrarov) ^ rs_mix64(g_alls) ^ rs_mix64(g_xsDigest))
+              & RS_DIGEST_MASK);
 
     border_print();
     }

@@ -7,6 +7,10 @@
 #include<strings.h>
 #include<math.h>
 
+// The generator the table is built from is shared with the other ports of this
+// program: the tables they build must agree value for value.
+#include "../../xs_index_rng.h"
+
 // Papi Header
 #ifdef PAPI
 #include "papi.h"

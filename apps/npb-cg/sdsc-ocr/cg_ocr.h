@@ -47,7 +47,9 @@ void print_results(classdb_t* class, double t, double mops);
 
 void conj_grad(u64 n, u64 blk, ocrGuid_t a, ocrGuid_t x, ocrGuid_t cont, u32 dep);
 
-int makea(classdb_t* class, ocrGuid_t* a);
+/* Builds one row block of the blocked matrix layout; one per block, created
+   by cg_gen_spawn. */
+ocrGuid_t cg_block_build_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 /* one row's random entries; the draw count is data-dependent, so the stream
    position after a row is only known by having drawn it */

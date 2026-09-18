@@ -7,21 +7,21 @@
  */
 
 /*
- * Restructured neighbour exchange: the same cube-sphere decomposition, the same
- * neighbour topology and the same cross-check, with the halo expressed per RANK
- * PAIR rather than per patch edge.
+ * Neighbour exchange over a cube sphere: every patch stamps its own number into
+ * each of its eight neighbours once per timestep, and the neighbour table one
+ * patch collects is printed at the end as the cross-check.
  *
- * The port this replaces gives every patch edge its own datablock and bounces
- * it between the two patches: a timestep acquires it RW on one side, stamps
- * eight bytes into it and hands it back, so a boundary edge migrates exclusive
- * ownership across the rank line twice per timestep.  Placement already makes
- * almost every edge rank-local -- the crossing edges are under half a percent
- * -- but what does cross is one message per edge per timestep, and each of
- * those carries eight bytes of payload behind a few hundred bytes of protocol.
+ * The exchange is expressed per RANK PAIR: what leaves a rank in a timestep
+ * travels as one block per peer, so the number of crossings a stamp makes is
+ * the topology's and the number of messages is the rank graph's.
  *
- * Here each rank keeps its own patches' inbound stamps in plain memory and
- * batches everything bound for one peer into a single block per timestep.  The
- * same stamps cross, the same number of times; they cross together.
+ * A rank's state is sized by what the rank owns, not by the sphere: the
+ * ownership map is invertible, so a rank enumerates its own patches without
+ * touching the others.  Ownership is a box of the k x 6k patch strip, cut again
+ * into tiles -- the groups -- that are the unit of parallelism: a group builds
+ * its own patches' geometry, opens their tasks each round, and delivers every
+ * stamp that stays inside it.  Only what leaves a tile reaches the rank's one
+ * serial point per round.
  */
 
 #ifndef ENABLE_EXTENSION_LABELING
@@ -29,6 +29,7 @@
 #endif
 
 #include <ocr.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -501,10 +502,8 @@ s64 findNeighborPatch( u64 patchNum, u64 k, u32 dir )
 }
 
 /* The direction a stamp travels back along.  It is NOT the geometric opposite:
- * the cube sphere reverses orientation across some face seams, which is why
- * the port this replaces learns each reverse link by exchange at setup rather
- * than computing it.  Derive it from the topology instead -- the direction of
- * `me` as seen from `neighbour` is whichever of its eight points back. */
+ * the cube sphere reverses orientation across some face seams, so the direction
+ * of `me` as seen from `neighbour` is whichever of its eight points back. */
 static u32 reverseDir( u64 me, u64 neighbour, u64 k )
 {
     u32 e;
@@ -513,38 +512,155 @@ static u32 reverseDir( u64 me, u64 neighbour, u64 k )
     return 8;                            /* no reverse link: nothing to deliver */
 }
 
-/* This tier changes ONE thing: what crosses a rank boundary.  The task
- * structure is the base program's -- one task per patch per timestep, so the
- * width follows the same dial and the two rows compare directly -- and each
- * task does the same eight stores.  What used to be one message per boundary
- * edge per timestep is one block per rank pair per timestep.
- *
- * Per rank per timestep: the patch tasks write their stamps into their own
- * persistent slice, a fan-in level concatenates the slices, and the rank's
- * single apply turns the result into memory writes for the patches it owns and
- * into one outgoing block per peer.  The fan-in is the shape of a reduction --
- * a block written by many tasks at once would serialise them, and an apply
- * that took every slice directly would carry one dependence per patch -- not a
- * limit on how many patches run at once. */
-#define TEMPEST_GROUPS     512     /* fan-in arity cap; task count is unaffected */
-#define TEMPEST_MAX_RANKS  64
-#define TEMPEST_MAXGEN     2       /* generations in flight, as the base uses */
+/* One stamp on the wire: `from` belongs in direction `dir` of patch `to`.  The
+ * triple travels rather than an agreed ordering, so the two sides need agree
+ * on nothing beyond the geometry they both compute. */
+typedef struct{ s64 to, dir, from; }xfer_t;
 
-static u64 patchHomeRank( u64 patchNum, u64 k, u64 nranks )
+/* A stamp whose destination lies outside the group that produced it.  A
+ * negative `peer` names a group of this rank and the element of that group's
+ * view to write; otherwise it names the peer slot the pair (a, b) = (patch,
+ * direction) is delivered to.  `a < 0` terminates the block. */
+typedef struct{ s64 peer, a, b, from; }esc_t;
+
+#define TEMPEST_GROUPS       512      /* default group target; argv[3] overrides */
+#define TEMPEST_MAX_RANKS    64
+#define TEMPEST_MAX_RANGE    65535    /* every size derived from 6k^2 stays in u64 */
+#define TEMPEST_MAX_DURATION 1000000
+#define TEMPEST_MAX_GROUPS   1048576
+#define TEMPEST_MAXGEN       2        /* generations in flight, as the base uses */
+
+typedef struct{
+    u64 k, rounds, nranks, myRank;
+    u64 nlocal, ngroup, npeers, maxTile;
+    u64 Pn, Q, R0, R1, C0, C1;       /* the rank's row/column box in the strip */
+    u64 gr, gc;                      /* the box's grid of groups              */
+    ocrGuid_t patchTPT, groupTPT, spawnTPT, applyTPT;
+    ocrGuid_t doneEvt;
+    ocrGuid_t chan[TEMPEST_MAX_RANKS];
+    ocrGuid_t peerChan[TEMPEST_MAX_RANKS];
+    u64 peerCount[TEMPEST_MAX_RANKS];
+    u64 peerIdx[TEMPEST_MAX_RANKS];  /* rank -> peer slot, TEMPEST_MAX_RANKS where none */
+}rankState_t;
+
+/* A group owns one tile of its rank's box and everything those patches need for
+ * the whole run: their numbers, the destination of each of their eight stamps,
+ * one slice per patch, the tile's view and the block its escaping stamps are
+ * collected in.  Trailing arrays, in order:
+ * u64 pnum[n]; ocrGuid_t slice[n]; s64 dst[n*8]. */
+typedef struct{
+    u64 r0, c0, h, w;                /* the tile, in the rank box's coordinates */
+    u64 n, nesc;
+    ocrGuid_t vw, esc;
+}groupState_t;
+
+static u64 groupBytes( u64 n )
 {
-    if( nranks < 6 )
-        return ( patchNum * nranks ) / ( 6 * k * k );
-    u64 P = 1, best = (u64)-1, p;
+    return sizeof(groupState_t) + n * sizeof(u64) + n * sizeof(ocrGuid_t)
+         + n * 8 * sizeof(s64);
+}
+static u64 *       gsPnum ( groupState_t * gs ){ return (u64 *)( gs + 1 ); }
+static ocrGuid_t * gsSlice( groupState_t * gs ){ return (ocrGuid_t *)( gsPnum( gs ) + gs->n ); }
+static s64 *       gsDst  ( groupState_t * gs ){ return (s64 *)( gsSlice( gs ) + gs->n ); }
+
+static u64 ceilDiv( u64 a, u64 b ){ return ( a + b - 1 ) / b; }
+
+/* Patch numbering unrolls the six faces into a k x 6k strip: row R within a
+ * face, column C across the strip. */
+static void stripCoord( u64 P, u64 k, u64 * R, u64 * C )
+{
+    u64 face = P / ( k * k ), idx = P % ( k * k );
+    *R = idx / k;
+    *C = face * k + ( idx % k );
+}
+static u64 patchAt( u64 k, u64 R, u64 C )
+{
+    return ( C / k ) * k * k + R * k + ( C % k );
+}
+
+/* The ownership map and its inverse.  The strip is cut into a Pn x Q grid of
+ * boxes whose total cut length is minimal over the factorisations of the rank
+ * count.  Cutting an axis of length L into m parts at ceil(i*L/m) puts x in
+ * part floor(x*m/L); homeOf and ownedRange must stay that pair, since a rank
+ * routes a stamp with the one and indexes its own state with the other. */
+static u64 homeOf( const rankState_t * st, u64 P )
+{
+    u64 R, C;
+    stripCoord( P, st->k, &R, &C );
+    return ( ( R * st->Pn ) / st->k ) * st->Q + ( C * st->Q ) / ( 6 * st->k );
+}
+
+static void ownedRange( rankState_t * st )
+{
+    u64 k = st->k, nranks = st->nranks, rank = st->myRank;
+    u64 P = 1, best = (u64)-1, p, br, bc;
+
     for( p = 1; p <= nranks; ++p ){
+        u64 q, cut;
         if( nranks % p ) continue;
-        u64 q = nranks / p;
-        u64 cut = ( p - 1 ) * 6 * k + ( q - 1 ) * k;
+        q = nranks / p;
+        cut = ( p - 1 ) * 6 * k + ( q - 1 ) * k;
         if( cut < best ){ best = cut; P = p; }
     }
-    u64 Q = nranks / P;
-    u64 face = patchNum / ( k * k ), idx = patchNum % ( k * k );
-    u64 R = idx / k, C = face * k + ( idx % k );
-    return ( ( R * P ) / k ) * Q + ( C * Q ) / ( 6 * k );
+    st->Pn = P; st->Q = nranks / P;
+    br = rank / st->Q; bc = rank % st->Q;
+    st->R0 = ceilDiv( br * k, st->Pn );
+    st->R1 = ceilDiv( ( br + 1 ) * k, st->Pn );
+    st->C0 = ceilDiv( bc * 6 * k, st->Q );
+    st->C1 = ceilDiv( ( bc + 1 ) * 6 * k, st->Q );
+    if( st->R1 > k ) st->R1 = k;
+    if( st->C1 > 6 * k ) st->C1 = 6 * k;
+    if( st->R1 <= st->R0 || st->C1 <= st->C0 ){
+        st->R1 = st->R0; st->C1 = st->C0; st->nlocal = 0;
+    }else{
+        st->nlocal = ( st->R1 - st->R0 ) * ( st->C1 - st->C0 );
+    }
+}
+
+/* The rank's box is cut again, into about `groups` tiles.  A tile delivers
+ * every stamp that stays inside it and no other, so its perimeter -- its SHAPE,
+ * not the tile count -- is what has to pass through the rank's single point of
+ * contact; tiles are therefore kept as square as the box allows. */
+static void groupGrid( rankState_t * st, u64 groups )
+{
+    u64 h = st->R1 - st->R0, w = st->C1 - st->C0, gr = 1, gc;
+
+    if( !st->nlocal || !groups ){
+        st->gr = st->gc = st->ngroup = 0; st->maxTile = 1; return;
+    }
+    while( gr < h && ( gr + 1 ) * ( gr + 1 ) * w <= groups * h ) gr++;
+    gc = ceilDiv( groups, gr );
+    if( gc > w ) gc = w;
+    st->gr = gr; st->gc = gc;
+    st->ngroup = gr * gc;
+    st->maxTile = ceilDiv( h, gr ) * ceilDiv( w, gc );
+}
+
+static void groupTile( const rankState_t * st, u64 g,
+                       u64 * r0, u64 * c0, u64 * h, u64 * w )
+{
+    u64 bh = st->R1 - st->R0, bw = st->C1 - st->C0;
+    u64 gy = g / st->gc, gx = g % st->gc;
+    u64 a = ceilDiv( gy * bh, st->gr ), b = ceilDiv( ( gy + 1 ) * bh, st->gr );
+    u64 c = ceilDiv( gx * bw, st->gc ), d = ceilDiv( ( gx + 1 ) * bw, st->gc );
+    *r0 = a; *c0 = c; *h = b - a; *w = d - c;
+}
+
+/* Where a patch sits on this rank: the group that owns it and the first of its
+ * eight elements in that group's view.  Zero when the patch is not here. */
+static int localPlace( const rankState_t * st, u64 P, u64 * grp, u64 * elem )
+{
+    u64 R, C, r, c, bh, bw, gy, gx, r0, c0, h, w;
+
+    stripCoord( P, st->k, &R, &C );
+    if( R < st->R0 || R >= st->R1 || C < st->C0 || C >= st->C1 ) return 0;
+    bh = st->R1 - st->R0; bw = st->C1 - st->C0;
+    r = R - st->R0; c = C - st->C0;
+    gy = ( r * st->gr ) / bh; gx = ( c * st->gc ) / bw;
+    *grp = gy * st->gc + gx;
+    groupTile( st, *grp, &r0, &c0, &h, &w );
+    *elem = ( ( r - r0 ) * w + ( c - c0 ) ) * 8;
+    return 1;
 }
 
 static ocrHint_t * rankEdtHint( ocrHint_t * h, u64 rank )
@@ -562,158 +678,270 @@ static ocrHint_t * rankDbHint( ocrHint_t * h, u64 rank )
     return h;
 }
 
-/* One stamp in flight: `from` belongs in direction `dir` of patch `to`.  The
- * triple travels rather than an agreed ordering, so the two sides need agree
- * on nothing beyond the geometry they both compute. */
-typedef struct{ s64 to, dir, from; }xfer_t;
+static void printCross( const s64 * v )
+{
+    printf( "*CROSS-CHECKING NEIGHBOR DATA EXCHANGE*\n" );
+    printf( "%lld\t%lld\t%lld\n", (long long)v[NW], (long long)v[N],  (long long)v[NE] );
+    printf( "%lld\t%lld\t%lld\n", (long long)v[W],  (long long)TEST_PATCH, (long long)v[E] );
+    printf( "%lld\t%lld\t%lld\n", (long long)v[SW], (long long)v[S],  (long long)v[SE] );
+    fflush( stdout );
+}
 
-typedef struct{
-    u64 k, duration, nranks, myRank, step, nlocal, ngroup, fanin;
-    ocrGuid_t patchTPT, groupTPT, applyTPT;
-    ocrGuid_t doneEvt;
-    ocrGuid_t chan[TEMPEST_MAX_RANKS];
-    ocrGuid_t peerChan[TEMPEST_MAX_RANKS];
-    u64 peerCount[TEMPEST_MAX_RANKS];
-    u64 peer[TEMPEST_MAX_RANKS];
-    u64 npeers;
-}rankState_t;
+/* A round: every patch stamps its own slice; the group that owns the patch
+ * turns each stamp into a write into its own view when the destination is one
+ * of its patches, and into an entry of its escaping block otherwise; the rank's
+ * single apply routes what escaped -- into the view of another group of the
+ * rank, or into one block per peer.  A destination was decided once, at setup,
+ * so no round evaluates geometry.
+ *
+ * Three ordering rules hold the structure together.  Every hand-off between
+ * tasks is an output event, so a consumer acquires a block only after its
+ * producer released it.  A round's incoming blocks are all consumed before any
+ * outgoing block is published, so a peer that is a round ahead cannot overtake
+ * a reader of the buffer it reuses.  And the blocks a round reuses in place are
+ * ordered by creation: the producers of round t+1 are created only after the
+ * last access round t makes to them. */
 
-static u64 viewEntries( u64 k ){ return 6 * k * k * 8; }
-
-/* One patch, one timestep: the same eight stores the base port's patch task
- * does, into this patch's own slice. */
+/* One patch, one round: the same eight stores the base port's patch task does,
+ * into this patch's own slice.  A direction with no reverse link stores -1,
+ * which delivers nothing. */
 ocrGuid_t patchEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
-    rankState_t * st = (rankState_t *)depv[0].ptr;
-    xfer_t * out = (xfer_t *)depv[1].ptr;
-    u64 p = paramv[0], n = 0;
+    groupState_t * gs = (groupState_t *)depv[0].ptr;
+    s64 * out         = (s64 *)depv[1].ptr;
+    u64 j = paramv[0];
+    s64 p = (s64)gsPnum( gs )[j];
+    const s64 * dst = gsDst( gs ) + j * 8;
     u32 d;
-    for( d = 0; d < 8; d++ ){
-        s64 nb = findNeighborPatch( p, st->k, d );
-        if( nb < 0 ) continue;
-        u32 rev = reverseDir( p, (u64)nb, st->k );
-        if( rev >= 8 ) continue;
-        out[n].to = nb; out[n].dir = (s64)rev; out[n].from = (s64)p;
-        n++;
-    }
-    out[n].to = -1;
-    return NULL_GUID;
+
+    for( d = 0; d < 8; d++ ) out[d] = dst[d] == -1 ? -1 : p;
+    return depv[1].guid;
 }
 
-/* Fan-in: concatenate a group's slices so the rank's apply carries one
- * dependence per group rather than one per patch. */
+/* A group delivers what it can: a stamp landing on one of its own patches
+ * becomes a write into its own view, the rest are copied into the block the
+ * rank's apply routes.  This is the only writer of either block in a round, and
+ * it is as wide as the rank's group count. */
 ocrGuid_t groupEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
-    xfer_t * out = (xfer_t *)depv[0].ptr;
-    u64 n = 0, i, j;
-    for( i = 1; i < depc; i++ ){
-        xfer_t * s = (xfer_t *)depv[i].ptr;
-        if( s == NULL ) continue;
-        for( j = 0; s[j].to >= 0; j++ ) out[n++] = s[j];
+    esc_t * esc       = (esc_t *)depv[0].ptr;
+    s64 * vw          = (s64 *)depv[1].ptr;
+    groupState_t * gs = (groupState_t *)depv[2].ptr;
+    const s64 * dst   = gsDst( gs );
+    u64 j;
+    u32 d;
+
+    for( j = 0; j < gs->n; j++ ){
+        const s64 * in = (const s64 *)depv[3 + j].ptr;
+        if( in == NULL ) continue;
+        for( d = 0; d < 8; d++ ){
+            s64 v = in[d], t = dst[ j * 8 + d ];
+            if( v < 0 || t == -1 ) continue;
+            if( t >= 0 ) vw[t] = v;
+            else esc[ -t - 2 ].from = v;
+        }
     }
-    out[n].to = -1;
+    return depv[0].guid;
+}
+
+/* Setup for one group: the patch numbers of its tile, the destination of each
+ * of their eight stamps, one slice per patch, the tile's view and its escaping
+ * block.  Runs once per group, so the geometry is evaluated once per patch for
+ * the whole run and the groups of a rank build in parallel. */
+ocrGuid_t groupBuildEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
+{
+    groupState_t * gs = (groupState_t *)depv[0].ptr;
+    rankState_t *  st = (rankState_t *)depv[1].ptr;
+    ocrGuid_t apply   = (ocrGuid_t){ .guid = paramv[1] };
+    u64 g = paramv[0];
+    u64 * pnum      = gsPnum( gs );
+    ocrGuid_t * sl  = gsSlice( gs );
+    s64 * dst       = gsDst( gs );
+    esc_t * ep;
+    void * vp;
+    ocrHint_t dh;
+    u64 r, c, j, nesc = 0;
+    u32 d;
+
+    for( r = 0; r < gs->h; r++ )
+        for( c = 0; c < gs->w; c++ )
+            pnum[ r * gs->w + c ] = patchAt( st->k, st->R0 + gs->r0 + r,
+                                             st->C0 + gs->c0 + c );
+
+    for( j = 0; j < gs->n; j++ )
+        for( d = 0; d < 8; d++ ){
+            s64 nb = findNeighborPatch( pnum[j], st->k, d );
+            u64 grp, elem;
+            u32 rev;
+            if( nb < 0 ){ dst[ j * 8 + d ] = -1; continue; }
+            rev = reverseDir( pnum[j], (u64)nb, st->k );
+            if( rev >= 8 ){ dst[ j * 8 + d ] = -1; continue; }
+            if( localPlace( st, (u64)nb, &grp, &elem ) && grp == g )
+                dst[ j * 8 + d ] = (s64)( elem + rev );
+            else
+                dst[ j * 8 + d ] = -2 - (s64)nesc++;
+        }
+    gs->nesc = nesc;
+
+    ocrDbCreate( &gs->esc, (void **)&ep, sizeof(esc_t) * ( nesc + 1 ), 0,
+                 rankDbHint( &dh, st->myRank ), NO_ALLOC );
+    for( j = 0; j < gs->n; j++ )
+        for( d = 0; d < 8; d++ ){
+            s64 t = dst[ j * 8 + d ], nb;
+            u64 grp, elem, home;
+            u32 rev;
+            if( t >= -1 ) continue;
+            nb   = findNeighborPatch( pnum[j], st->k, d );
+            rev  = reverseDir( pnum[j], (u64)nb, st->k );
+            home = homeOf( st, (u64)nb );
+            ep[ -t - 2 ].from = -1;
+            if( home == st->myRank && localPlace( st, (u64)nb, &grp, &elem ) ){
+                ep[ -t - 2 ].peer = -1;
+                ep[ -t - 2 ].a    = (s64)grp;
+                ep[ -t - 2 ].b    = (s64)( elem + rev );
+            }else{
+                ep[ -t - 2 ].peer = (s64)st->peerIdx[home];
+                ep[ -t - 2 ].a    = nb;
+                ep[ -t - 2 ].b    = (s64)rev;
+            }
+        }
+    ep[nesc].peer = -1; ep[nesc].a = -1; ep[nesc].b = -1; ep[nesc].from = -1;
+    ocrDbRelease( gs->esc );
+
+    for( j = 0; j < gs->n; j++ ){
+        s64 * sp;
+        ocrDbCreate( &sl[j], (void **)&sp, sizeof(s64) * 8, 0,
+                     rankDbHint( &dh, st->myRank ), NO_ALLOC );
+        for( d = 0; d < 8; d++ ) sp[d] = -1;
+        ocrDbRelease( sl[j] );
+    }
+    ocrDbCreate( &gs->vw, &vp, sizeof(s64) * gs->n * 8, 0,
+                 rankDbHint( &dh, st->myRank ), NO_ALLOC );
+    for( j = 0; j < gs->n * 8; j++ ) ((s64 *)vp)[j] = -1;
+    ocrDbRelease( gs->vw );
+
+    ocrAddDependence( gs->vw, apply, (u32)( 2 + st->ngroup + g ), DB_MODE_RW );
+    return depv[0].guid;
+}
+
+/* Open one group's next round: its patch tasks, its delivery task, and that
+ * task's edge into the rank's apply.  One of these per group, so the rank's
+ * spawn is as wide as its group count and a round's creation cost per task is
+ * bounded by the group knob rather than by the problem. */
+ocrGuid_t spawnEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
+{
+    groupState_t * gs = (groupState_t *)depv[0].ptr;
+    rankState_t *  st = (rankState_t *)depv[1].ptr;
+    ocrGuid_t apply = (ocrGuid_t){ .guid = paramv[1] };
+    u64 g = paramv[0], j;
+    ocrGuid_t grp, gOut, t, tOut;
+    ocrHint_t eh;
+
+    /* A task's output event is registered on its consumer before the task's
+     * own inputs are wired: a once event that fires with no waiter is gone,
+     * and a task whose inputs are all blocks is runnable the moment the last
+     * one is added. */
+    ocrEdtCreate( &grp, st->groupTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PROP_NONE, rankEdtHint( &eh, st->myRank ), &gOut );
+    ocrAddDependence( gOut, apply, (u32)( 2 + g ), DB_MODE_RO );
+
+    for( j = 0; j < gs->n; j++ ){
+        u64 prm[1] = { j };
+        ocrEdtCreate( &t, st->patchTPT, EDT_PARAM_DEF, prm, EDT_PARAM_DEF, NULL,
+                      EDT_PROP_NONE, rankEdtHint( &eh, st->myRank ), &tOut );
+        ocrAddDependence( tOut, grp, (u32)( 3 + j ), DB_MODE_RO );
+        ocrAddDependence( depv[0].guid,     t, 0, DB_MODE_RO );
+        ocrAddDependence( gsSlice( gs )[j], t, 1, DB_MODE_RW );
+    }
+    for( j = gs->n; j < st->maxTile; j++ )
+        ocrAddDependence( NULL_GUID, grp, (u32)( 3 + j ), DB_MODE_RO );
+
+    ocrAddDependence( gs->esc,      grp, 0, DB_MODE_RW );
+    ocrAddDependence( gs->vw,       grp, 1, DB_MODE_RW );
+    ocrAddDependence( depv[0].guid, grp, 2, DB_MODE_RO );
     return NULL_GUID;
 }
 
-static void spawnTimestep( rankState_t * st, ocrGuid_t stDb, ocrGuid_t viewDb,
-                           ocrGuid_t lpDb, ocrGuid_t sgDb, ocrGuid_t ggDb,
-                           u64 * lp, ocrGuid_t * sliceG, ocrGuid_t * groupG )
+static void spawnRound( const rankState_t * st, const ocrGuid_t * gg,
+                        ocrGuid_t stDb, ocrGuid_t apply )
 {
     ocrHint_t eh;
-    ocrGuid_t apply, t;
-    u64 i, g;
-    ocrEdtCreate( &apply, st->applyTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, rankEdtHint( &eh, st->myRank ), NULL );
-    ocrAddDependence( stDb,   apply, 0, DB_MODE_RW );
-    ocrAddDependence( viewDb, apply, 1, DB_MODE_RW );
-    ocrAddDependence( lpDb,   apply, 2, DB_MODE_RO );
-    ocrAddDependence( sgDb,   apply, 3, DB_MODE_RO );
-    ocrAddDependence( ggDb,   apply, 4, DB_MODE_RO );
-
-    /* one task per patch, as the base program has */
-    for( i = 0; i < st->nlocal; i++ ){
-        u64 prm[1] = { lp[i] };
-        ocrEdtCreate( &t, st->patchTPT, EDT_PARAM_DEF, prm, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_NONE, rankEdtHint( &eh, st->myRank ), NULL );
-        ocrAddDependence( stDb,      t, 0, DB_MODE_RO );
-        ocrAddDependence( sliceG[i], t, 1, DB_MODE_RW );
-    }
-    /* fan-in, then the rank's single point of contact */
+    u64 g;
     for( g = 0; g < st->ngroup; g++ ){
-        ocrEdtCreate( &t, st->groupTPT, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+        ocrGuid_t s;
+        u64 prm[2] = { g, (u64)apply.guid };
+        ocrEdtCreate( &s, st->spawnTPT, EDT_PARAM_DEF, prm, EDT_PARAM_DEF, NULL,
                       EDT_PROP_NONE, rankEdtHint( &eh, st->myRank ), NULL );
-        ocrAddDependence( groupG[g], t, 0, DB_MODE_RW );
-        for( i = 0; i < st->fanin; i++ ){
-            u64 idx = g * st->fanin + i;
-            ocrAddDependence( idx < st->nlocal ? sliceG[idx] : NULL_GUID,
-                              t, (u32)( 1 + i ), DB_MODE_RO );
-        }
-        ocrAddDependence( groupG[g], apply, (u32)( 5 + g ), DB_MODE_RO );
+        ocrAddDependence( gg[g],     s, 0, DB_MODE_RO );
+        ocrAddDependence( stDb,      s, 1, DB_MODE_RO );
+        ocrAddDependence( NULL_GUID, s, 2, DB_MODE_RO );
     }
-    for( i = 0; i < st->npeers; i++ )
-        ocrAddDependence( st->chan[i], apply, (u32)( 5 + st->ngroup + i ), DB_MODE_RO );
 }
 
-/* The rank's single point of contact for a timestep: stamps for its own
- * patches become memory writes, everything else becomes one block per peer. */
+/* The rank's single point of contact for a round.  It sees only the stamps that
+ * left their group: those bound for another group of this rank become writes
+ * into that group's view, the rest become one block per peer.  Its cost is the
+ * perimeter of the rank's tiles, never the number of patches it owns. */
 ocrGuid_t applyEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
     rankState_t * st = (rankState_t *)depv[0].ptr;
-    s64 * view       = (s64 *)depv[1].ptr;
-    u64 * lp         = (u64 *)depv[2].ptr;
-    ocrGuid_t * sliceG = (ocrGuid_t *)depv[3].ptr;
-    ocrGuid_t * groupG = (ocrGuid_t *)depv[4].ptr;
-    u64 ngroup = st->ngroup, npeers = st->npeers, i, j;
-    u32 pi;
-
-    for( pi = 0; pi < npeers; pi++ ){
-        xfer_t * in = (xfer_t *)depv[5 + ngroup + pi].ptr;
-        if( in == NULL ) continue;
-        for( j = 0; in[j].to >= 0; j++ ) view[ in[j].to * 8 + in[j].dir ] = in[j].from;
-    }
-
+    u64 step   = paramv[0];
+    u64 ngroup = st->ngroup, npeers = st->npeers;
+    u64 esc0 = 2, view0 = 2 + ngroup, ch0 = 2 + 2 * ngroup;
+    u64 g, i, j;
+    int sending = ( step + 1 < st->rounds );
     ocrGuid_t outDb[TEMPEST_MAX_RANKS];
     xfer_t *  outPtr[TEMPEST_MAX_RANKS];
     u64       outN[TEMPEST_MAX_RANKS];
-    for( pi = 0; pi < npeers; pi++ ){
-        ocrHint_t h;
-        ocrDbCreate( &outDb[pi], (void **)&outPtr[pi],
-                     sizeof(xfer_t) * ( st->peerCount[pi] + 1 ), 0,
-                     rankDbHint( &h, st->myRank ), NO_ALLOC );
-        outN[pi] = 0;
+
+    for( i = 0; i < npeers; i++ ){
+        const xfer_t * in = (const xfer_t *)depv[ ch0 + i ].ptr;
+        if( in == NULL ) continue;
+        for( j = 0; in[j].to >= 0; j++ ){
+            u64 grp, elem;
+            if( !localPlace( st, (u64)in[j].to, &grp, &elem ) ) continue;
+            ((s64 *)depv[ view0 + grp ].ptr)[ elem + (u64)in[j].dir ] = in[j].from;
+        }
     }
-    for( i = 0; i < ngroup; i++ ){
-        xfer_t * s = (xfer_t *)depv[5 + i].ptr;
-        if( s == NULL ) continue;
-        for( j = 0; s[j].to >= 0; j++ ){
-            u64 home = patchHomeRank( (u64)s[j].to, st->k, st->nranks );
-            if( home == st->myRank ){
-                view[ s[j].to * 8 + s[j].dir ] = s[j].from;
-            }else{
-                for( pi = 0; pi < npeers; pi++ ) if( st->peer[pi] == home ) break;
-                if( pi < npeers ) outPtr[pi][ outN[pi]++ ] = s[j];
+
+    if( sending )
+        for( i = 0; i < npeers; i++ ){
+            ocrHint_t h;
+            ocrDbCreate( &outDb[i], (void **)&outPtr[i],
+                         sizeof(xfer_t) * ( st->peerCount[i] + 1 ), 0,
+                         rankDbHint( &h, st->myRank ), NO_ALLOC );
+            outN[i] = 0;
+        }
+
+    for( g = 0; g < ngroup; g++ ){
+        const esc_t * e = (const esc_t *)depv[ esc0 + g ].ptr;
+        if( e == NULL ) continue;
+        for( j = 0; e[j].a >= 0; j++ ){
+            s64 pi = e[j].peer;
+            if( pi < 0 ){
+                ((s64 *)depv[ view0 + (u64)e[j].a ].ptr)[ (u64)e[j].b ] = e[j].from;
+            }else if( sending && (u64)pi < npeers ){
+                xfer_t * o = &outPtr[pi][ outN[pi]++ ];
+                o->to = e[j].a; o->dir = e[j].b; o->from = e[j].from;
             }
         }
     }
-    for( pi = 0; pi < npeers; pi++ ){
-        outPtr[pi][ outN[pi] ].to = -1;
-        ocrDbRelease( outDb[pi] );
-        ocrEventSatisfy( st->peerChan[pi], outDb[pi] );
-    }
 
-    st->step++;
-    if( st->step >= st->duration ){
-        if( patchHomeRank( TEST_PATCH, st->k, st->nranks ) == st->myRank ){
-            s64 * v = &view[ TEST_PATCH * 8 ];
-            printf( "*CROSS-CHECKING NEIGHBOR DATA EXCHANGE*\n" );
-            printf( "%lld\t%lld\t%lld\n", (long long)v[NW], (long long)v[N], (long long)v[NE] );
-            printf( "%lld\t%lld\t%lld\n", (long long)v[W], (long long)TEST_PATCH, (long long)v[E] );
-            printf( "%lld\t%lld\t%lld\n", (long long)v[SW], (long long)v[S], (long long)v[SE] );
-            fflush( stdout );
+    if( sending )
+        for( i = 0; i < npeers; i++ ){
+            outPtr[i][ outN[i] ].to = -1;
+            ocrDbRelease( outDb[i] );
+            ocrEventSatisfy( st->peerChan[i], outDb[i] );
         }
-        /* No further timestep is spawned, so the rank's templates are done. */
+
+    if( !sending ){
+        u64 grp, elem;
+        if( localPlace( st, TEST_PATCH, &grp, &elem ) && grp < ngroup )
+            printCross( &((const s64 *)depv[ view0 + grp ].ptr)[ elem ] );
+        /* No further round is opened, so the rank's templates are done. */
         ocrEdtTemplateDestroy( st->patchTPT );
         ocrEdtTemplateDestroy( st->groupTPT );
+        ocrEdtTemplateDestroy( st->spawnTPT );
         ocrEdtTemplateDestroy( st->applyTPT );
         { ocrGuid_t d; void * dp; ocrHint_t dh;
           ocrDbCreate( &d, &dp, sizeof(u64), 0, rankDbHint( &dh, st->myRank ), NO_ALLOC );
@@ -721,8 +949,22 @@ ocrGuid_t applyEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
           ocrEventSatisfy( st->doneEvt, d ); }
         return NULL_GUID;
     }
-    spawnTimestep( st, depv[0].guid, depv[1].guid, depv[2].guid, depv[3].guid, depv[4].guid,
-                   lp, sliceG, groupG );
+
+    /* The next round's producers are created here, after the last read of every
+     * block this round reuses, so a buffer's writer for round t+1 is ordered
+     * behind this task's own accesses to it. */
+    { ocrHint_t eh;
+      ocrGuid_t next;
+      u64 aprm[1] = { step + 1 };
+      ocrEdtCreate( &next, st->applyTPT, EDT_PARAM_DEF, aprm, EDT_PARAM_DEF, NULL,
+                    EDT_PROP_NONE, rankEdtHint( &eh, st->myRank ), NULL );
+      ocrAddDependence( depv[0].guid, next, 0, DB_MODE_RO );
+      ocrAddDependence( depv[1].guid, next, 1, DB_MODE_RO );
+      for( g = 0; g < ngroup; g++ )
+          ocrAddDependence( depv[ view0 + g ].guid, next, (u32)( view0 + g ), DB_MODE_RW );
+      for( i = 0; i < npeers; i++ )
+          ocrAddDependence( st->chan[i], next, (u32)( ch0 + i ), DB_MODE_RO );
+      spawnRound( st, (const ocrGuid_t *)depv[1].ptr, depv[0].guid, next ); }
     return NULL_GUID;
 }
 
@@ -762,92 +1004,119 @@ ocrGuid_t rankStartEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
     u64 myRank = paramv[0], nranks = paramv[1], k = paramv[2], duration = paramv[3];
     ocrGuid_t doneEvt = (ocrGuid_t){ .guid = paramv[4] };
+    u64 groups = paramv[5];
     ocrGuid_t * recvChan = (ocrGuid_t *)depv[0].ptr;
-    u64 total = 6 * k * k, i, p;
+    u64 i, p, g, r, c, bh, bw, ngroup, npeers;
     u32 d;
-
-    ocrGuid_t stDb, viewDb, lpDb, sgDb, ggDb;
-    rankState_t * st; s64 * view; u64 * lp; ocrGuid_t * sliceG, * groupG;
-    ocrHint_t dh;
-    ocrDbCreate( &stDb, (void **)&st, sizeof(rankState_t), 0, rankDbHint( &dh, myRank ), NO_ALLOC );
-    ocrDbCreate( &viewDb, (void **)&view, sizeof(s64) * viewEntries( k ), 0, rankDbHint( &dh, myRank ), NO_ALLOC );
-    for( i = 0; i < viewEntries( k ); i++ ) view[i] = -1;
-
-    u64 nlocal = 0;
-    for( i = 0; i < total; i++ ) if( patchHomeRank( i, k, nranks ) == myRank ) nlocal++;
-    if( nlocal == 0 ) nlocal = 0;
-    ocrDbCreate( &lpDb, (void **)&lp, sizeof(u64) * ( nlocal ? nlocal : 1 ), 0, rankDbHint( &dh, myRank ), NO_ALLOC );
-    { u64 n = 0; for( i = 0; i < total; i++ ) if( patchHomeRank( i, k, nranks ) == myRank ) lp[n++] = i; }
-
-    st->k = k; st->duration = duration; st->nranks = nranks; st->myRank = myRank;
-    st->step = 0; st->nlocal = nlocal; st->doneEvt = doneEvt; st->npeers = 0;
-    st->ngroup = nlocal <= TEMPEST_GROUPS ? nlocal : TEMPEST_GROUPS;
-    st->fanin  = st->ngroup ? ( nlocal + st->ngroup - 1 ) / st->ngroup : 1;
-
+    ocrHint_t dh, eh;
+    ocrGuid_t stDb, ggDb, buildTPT, applyTPT, spawnTPT, apply0;
+    rankState_t * st; ocrGuid_t * gg;
+    ocrGuid_t inChan[TEMPEST_MAX_RANKS];
     u64 cnt[TEMPEST_MAX_RANKS];
+
+    ocrDbCreate( &stDb, (void **)&st, sizeof(rankState_t), 0, rankDbHint( &dh, myRank ), NO_ALLOC );
+    st->k = k; st->nranks = nranks; st->myRank = myRank;
+    st->rounds = duration;
+    st->doneEvt = doneEvt; st->npeers = 0;
+    ownedRange( st );
+    groupGrid( st, groups );
+    ngroup = st->ngroup;
+    bh = st->R1 - st->R0; bw = st->C1 - st->C0;
+
+    /* A stamp with no reverse link is never sent, so counting every outbound
+     * neighbour is an upper bound on what a peer receives -- which is all the
+     * outgoing block needs to be sized by. */
     for( p = 0; p < TEMPEST_MAX_RANKS; p++ ) cnt[p] = 0;
-    for( i = 0; i < nlocal; i++ )
-        for( d = 0; d < 8; d++ ){
-            s64 nb = findNeighborPatch( lp[i], k, d );
-            if( nb < 0 ) continue;
-            if( reverseDir( lp[i], (u64)nb, k ) >= 8 ) continue;
-            u64 home = patchHomeRank( (u64)nb, k, nranks );
-            if( home != myRank ) cnt[home]++;
+    for( r = 0; r < bh; r++ )
+        for( c = 0; c < bw; c++ ){
+            u64 pn = patchAt( k, st->R0 + r, st->C0 + c );
+            for( d = 0; d < 8; d++ ){
+                s64 nb = findNeighborPatch( pn, k, d );
+                u64 home;
+                if( nb < 0 ) continue;
+                home = homeOf( st, (u64)nb );
+                if( home != myRank ) cnt[home]++;
+            }
         }
+    for( p = 0; p < TEMPEST_MAX_RANKS; p++ ) st->peerIdx[p] = TEMPEST_MAX_RANKS;
     { u64 slot = 1;
       for( p = 0; p < nranks; p++ ){
         if( p == myRank ) continue;
         if( cnt[p] ){
             u64 pi = st->npeers++;
-            st->peer[pi] = p; st->peerCount[pi] = cnt[p];
+            st->peerCount[pi] = cnt[p]; st->peerIdx[p] = pi;
             st->chan[pi] = recvChan[p];
             st->peerChan[pi] = *(ocrGuid_t *)depv[slot].ptr;
         }
         slot++;
       } }
-
-    /* Slices and group blocks are made once and reused every timestep, the way
-     * the base port reuses its halo blocks. */
-    ocrDbCreate( &sgDb, (void **)&sliceG, sizeof(ocrGuid_t) * ( nlocal ? nlocal : 1 ), 0,
-                 rankDbHint( &dh, myRank ), NO_ALLOC );
-    ocrDbCreate( &ggDb, (void **)&groupG, sizeof(ocrGuid_t) * ( st->ngroup ? st->ngroup : 1 ), 0,
-                 rankDbHint( &dh, myRank ), NO_ALLOC );
-    for( i = 0; i < nlocal; i++ ){
-        void * sp;
-        ocrDbCreate( &sliceG[i], &sp, sizeof(xfer_t) * 9, 0, rankDbHint( &dh, myRank ), NO_ALLOC );
-        ((xfer_t *)sp)[0].to = -1;
-        ocrDbRelease( sliceG[i] );
-    }
-    for( i = 0; i < st->ngroup; i++ ){
-        void * gp;
-        ocrDbCreate( &groupG[i], &gp, sizeof(xfer_t) * ( st->fanin * 8 + 1 ), 0,
-                     rankDbHint( &dh, myRank ), NO_ALLOC );
-        ((xfer_t *)gp)[0].to = -1;
-        ocrDbRelease( groupG[i] );
-    }
+    npeers = st->npeers;
+    for( i = 0; i < npeers; i++ ) inChan[i] = st->chan[i];
 
     ocrEdtTemplateCreate( &st->patchTPT, patchEdt, 1, 2 );
-    ocrEdtTemplateCreate( &st->groupTPT, groupEdt, 0, (u32)( 1 + st->fanin ) );
-    ocrEdtTemplateCreate( &st->applyTPT, applyEdt, 0, (u32)( 5 + st->ngroup + st->npeers ) );
+    ocrEdtTemplateCreate( &st->groupTPT, groupEdt, 0, (u32)( 3 + st->maxTile ) );
+    ocrEdtTemplateCreate( &st->spawnTPT, spawnEdt, 2, 3 );
+    ocrEdtTemplateCreate( &st->applyTPT, applyEdt, 1,
+                          (u32)( 2 + 2 * ngroup + npeers ) );
+    ocrEdtTemplateCreate( &buildTPT, groupBuildEdt, 2, 2 );
+    applyTPT = st->applyTPT; spawnTPT = st->spawnTPT;
 
-    /* Seed each incoming channel once.  The first timestep's apply waits on
-     * what the peers send, and the peers' first apply waits on this rank in
-     * the same way, so without a seed generation neither ever runs -- the base
-     * port seeds its halo blocks at timestep 0 for the same reason. */
-    for( i = 0; i < st->npeers; i++ ){
+    /* Seed each incoming channel once.  The first round's apply waits on what
+     * the peers send, and the peers' first apply waits on this rank in the same
+     * way, so without a seed generation neither ever runs -- the base port
+     * seeds its halo blocks at timestep 0 for the same reason. */
+    for( i = 0; i < npeers; i++ ){
         ocrGuid_t seed; void * sp; ocrHint_t sh;
         ocrDbCreate( &seed, &sp, sizeof(xfer_t), 0, rankDbHint( &sh, myRank ), NO_ALLOC );
         ((xfer_t *)sp)[0].to = -1;
         ocrDbRelease( seed );
-        ocrEventSatisfy( st->chan[i], seed );
+        ocrEventSatisfy( inChan[i], seed );
     }
 
-    /* Spawn before releasing: lp, sliceG and groupG point into blocks this
-     * task still holds, and a released block may not be read. */
-    rankState_t snap = *st;
-    spawnTimestep( &snap, stDb, viewDb, lpDb, sgDb, ggDb, lp, sliceG, groupG );
-    ocrDbRelease( stDb ); ocrDbRelease( viewDb ); ocrDbRelease( lpDb );
-    ocrDbRelease( sgDb ); ocrDbRelease( ggDb );
+    ocrDbCreate( &ggDb, (void **)&gg, sizeof(ocrGuid_t) * ( ngroup ? ngroup : 1 ), 0,
+                 rankDbHint( &dh, myRank ), NO_ALLOC );
+    for( g = 0; g < ngroup; g++ ){
+        groupState_t * gs;
+        u64 gr0, gc0, gh, gw;
+        groupTile( st, g, &gr0, &gc0, &gh, &gw );
+        ocrDbCreate( &gg[g], (void **)&gs, groupBytes( gh * gw ), 0,
+                     rankDbHint( &dh, myRank ), NO_ALLOC );
+        gs->r0 = gr0; gs->c0 = gc0; gs->h = gh; gs->w = gw;
+        gs->n = gh * gw; gs->nesc = 0;
+        gs->vw = NULL_GUID; gs->esc = NULL_GUID;
+        ocrDbRelease( gg[g] );
+    }
+
+    /* A datablock dependence is satisfied the moment it is added, so every
+     * block is released before anything is wired to it: a task must not become
+     * runnable while its producer still holds the block. */
+    ocrDbRelease( stDb );
+
+    { u64 aprm[1] = { 0 };
+      ocrEdtCreate( &apply0, applyTPT, EDT_PARAM_DEF, aprm, EDT_PARAM_DEF, NULL,
+                    EDT_PROP_NONE, rankEdtHint( &eh, myRank ), NULL );
+      ocrAddDependence( stDb, apply0, 0, DB_MODE_RO );
+      for( i = 0; i < npeers; i++ )
+          ocrAddDependence( inChan[i], apply0, (u32)( 2 + 2 * ngroup + i ), DB_MODE_RO ); }
+
+    for( g = 0; g < ngroup; g++ ){
+        ocrGuid_t build, buildOut, spawn;
+        u64 bprm[2] = { g, (u64)apply0.guid };
+        u64 sprm[2] = { g, (u64)apply0.guid };
+        ocrEdtCreate( &build, buildTPT, EDT_PARAM_DEF, bprm, EDT_PARAM_DEF, NULL,
+                      EDT_PROP_NONE, rankEdtHint( &eh, myRank ), &buildOut );
+        ocrEdtCreate( &spawn, spawnTPT, EDT_PARAM_DEF, sprm, EDT_PARAM_DEF, NULL,
+                      EDT_PROP_NONE, rankEdtHint( &eh, myRank ), NULL );
+        ocrAddDependence( buildOut,  spawn, 0, DB_MODE_RO );
+        ocrAddDependence( stDb,      spawn, 1, DB_MODE_RO );
+        ocrAddDependence( NULL_GUID, spawn, 2, DB_MODE_RO );
+        ocrAddDependence( gg[g], build, 0, DB_MODE_RW );
+        ocrAddDependence( stDb,  build, 1, DB_MODE_RO );
+    }
+    ocrEdtTemplateDestroy( buildTPT );
+
+    ocrDbRelease( ggDb );
+    ocrAddDependence( ggDb, apply0, 1, DB_MODE_RO );
     return NULL_GUID;
 }
 
@@ -861,21 +1130,26 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
     void * marshalled = depv[0].ptr;
     u32 argc = ocrGetArgc( marshalled ), i;
-    u64 k = 2, duration = DURATION, p, r;
+    u64 k = 2, duration = DURATION, groups = TEMPEST_GROUPS, p, r;
 
-    if( argc > 3 ){
-        ocrPrintf( "USAGE: %s [patchRange [duration]]  expected at most 2 arguments, got %u\n",
+    if( argc > 4 ){
+        ocrPrintf( "USAGE: %s [patchRange [duration [groups]]]  expected at most 3 arguments, got %u\n",
                    ocrGetArgv( marshalled, 0 ), argc - 1 );
         ocrShutdown(); return NULL_GUID;
     }
-    { u64 * out[2] = { &k, &duration };
-      const char * names[2] = { "patchRange", "duration" };
+    { u64 * out[3] = { &k, &duration, &groups };
+      const u64 cap[3] = { TEMPEST_MAX_RANGE, TEMPEST_MAX_DURATION, TEMPEST_MAX_GROUPS };
+      const char * names[3] = { "patchRange", "duration", "groups" };
       for( i = 1; i < argc; i++ ){
         char * arg = ocrGetArgv( marshalled, i ), * endptr;
-        long val = strtol( arg, &endptr, 10 );
-        if( *arg == '\0' || *endptr != '\0' || val <= 0 ){
-            ocrPrintf( "USAGE: %s [patchRange [duration]]  %s must be a positive integer, got '%s'\n",
-                       ocrGetArgv( marshalled, 0 ), names[i-1], arg );
+        long val;
+        errno = 0;
+        val = strtol( arg, &endptr, 10 );
+        if( *arg == '\0' || *endptr != '\0' || errno == ERANGE
+            || val <= 0 || (u64)val > cap[i-1] ){
+            ocrPrintf( "USAGE: %s [patchRange [duration [groups]]]  %s must be a positive integer <= %lu, got '%s'\n",
+                       ocrGetArgv( marshalled, 0 ), names[i-1],
+                       (unsigned long)cap[i-1], arg );
             ocrShutdown(); return NULL_GUID;
         }
         *out[i-1] = (u64)val;
@@ -918,15 +1192,14 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     ocrGuid_t chanTPT, startTPT;
     ocrEdtTemplateCreate( &chanTPT,  chanInitEdt,  3, 1 );
-    ocrEdtTemplateCreate( &startTPT, rankStartEdt, 5, (u32)nranks );
+    ocrEdtTemplateCreate( &startTPT, rankStartEdt, 6, (u32)nranks );
     for( r = 0; r < nranks; r++ ){
         ocrHint_t eh;
         ocrGuid_t chanGuid, chanOut, startGuid;
         u64 cprm[3] = { r, nranks, (u64)range.guid };
         ocrEdtCreate( &chanGuid, chanTPT, EDT_PARAM_DEF, cprm, EDT_PARAM_DEF, NULL,
                       EDT_PROP_NONE, rankEdtHint( &eh, r ), &chanOut );
-        ocrAddDependence( chanDb[r], chanGuid, 0, DB_MODE_RW );
-        u64 sprm[5] = { r, nranks, k, duration, (u64)doneEvt[r].guid };
+        u64 sprm[6] = { r, nranks, k, duration, (u64)doneEvt[r].guid, groups };
         ocrEdtCreate( &startGuid, startTPT, EDT_PARAM_DEF, sprm, EDT_PARAM_DEF, NULL,
                       EDT_PROP_NONE, rankEdtHint( &eh, r ), NULL );
         ocrAddDependence( chanOut, startGuid, 0, DB_MODE_RO );
@@ -937,6 +1210,7 @@ ocrGuid_t mainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
             ocrGuidFromIndex( &name, range, r * nranks + p );
             ocrAddDependence( name, startGuid, slot++, DB_MODE_RO );
           } }
+        ocrAddDependence( chanDb[r], chanGuid, 0, DB_MODE_RW );
     }
     /* Every task that uses them has been created. */
     ocrEdtTemplateDestroy( wrapTPT );

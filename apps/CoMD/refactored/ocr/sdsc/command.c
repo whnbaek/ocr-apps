@@ -55,15 +55,17 @@ static int find_option(option* o, u32 o_num, char c)
   return i;
 }
 
-static void process_args(int argc, char** argv, command* cmd)
+static u8 process_args(int argc, char** argv, command* cmd)
 {
+  u8 bad = 0;
   while(1) {
     int option_index = 0;
     int c = getopt_long(argc, argv, cmd->args, cmd->long_opt, &option_index);
     if(c == -1) break;
     option_index = find_option(cmd->options, cmd->options_num, c);
     if(option_index == cmd->options_num) {
-      ocrPrintf("\n\ninvalid switch : -%c in getopt()\n\n", c);
+      ocrPrintf("\n\nERROR unrecognized switch : -%c\n\n", c);
+      bad = 1;
       continue;
     }
 
@@ -127,14 +129,16 @@ static void process_args(int argc, char** argv, command* cmd)
         *(char*)cmd->options[option_index].ptr = *optarg;
         break;
       default:
-        ocrPrintf("\n\n    invalid type : %c in getopt()\n    valid values are"
-               " 'e', 'z'. 'i','d','f','s', and 'c'\n\n\n", c);
+        ocrPrintf("\n\n    ERROR invalid type : %c\n    valid values are"
+               " 'i','d','f','s', and 'c'\n\n\n", cmd->options[option_index].type);
+        bad = 1;
       }
     }
   }
+  return bad;
 }
 
-void parse_command(int argc, char** argv, void* c)
+u8 parse_command(int argc, char** argv, void* c)
 {
   command* cmd = (command*) c;
   strcpy(cmd->pot_dir,  "pots");
@@ -155,7 +159,7 @@ void parse_command(int argc, char** argv, void* c)
   cmd->args_num = 0;
   cmd->longest = 1;
 
-  u8 help=0;
+  int help = 0;
   // add arguments for processing.  Please update the html documentation too!
   add_arg("help",     'h', 0, 'i', &help,                0,              "print this message", cmd);
   add_arg("pot_dir",  'd', 1, 's', cmd->pot_dir,  sizeof(cmd->pot_dir),  "potential directory", cmd);
@@ -172,7 +176,7 @@ void parse_command(int argc, char** argv, void* c)
   add_arg("temp",     'T', 1, 'd', &(cmd->temperature),   0,             "initial temperature (K)", cmd);
   add_arg("delta",    'r', 1, 'd', &(cmd->initial_delta), 0,             "initial delta (Angstroms)", cmd);
 
-  process_args(argc,argv,cmd);
+  u8 bad = process_args(argc,argv,cmd);
 
   if(strlen(cmd->pot_name) == 0) {
     if(strcmp(cmd->pot_type, "setfl") == 0)
@@ -183,20 +187,43 @@ void parse_command(int argc, char** argv, void* c)
 
   if(help)
     print_args(cmd);
-  else
-    ocrPrintf("Command Line Parameters:\n");
-    ocrPrintf("  doeam: %u\n", cmd->doeam);
-    ocrPrintf("  pot_dir: %s\n", cmd->pot_dir);
-    ocrPrintf("  pot_name: %s\n", cmd->pot_name);
-    ocrPrintf("  pot_type: %s\n", cmd->pot_type);
-    ocrPrintf("  nx: %u\n", cmd->nx);
-    ocrPrintf("  ny: %u\n", cmd->ny);
-    ocrPrintf("  nz: %u\n", cmd->nz);
-    ocrPrintf("  Lattice constant: %f Angstroms\n", cmd->lat);
-    ocrPrintf("  Steps: %u\n",                      cmd->steps);
-    ocrPrintf("  Period: %u\n",                     cmd->period);
-    ocrPrintf("  Time step: %f fs\n",               cmd->dt);
-    ocrPrintf("  Initial Temperature: %f K\n",      cmd->temperature);
-    ocrPrintf("  Initial Delta: %f Angstroms\n",    cmd->initial_delta);
-    ocrPrintf("\n");
+
+  ocrPrintf("Command Line Parameters:\n");
+  ocrPrintf("  doeam: %u\n", cmd->doeam);
+  ocrPrintf("  pot_dir: %s\n", cmd->pot_dir);
+  ocrPrintf("  pot_name: %s\n", cmd->pot_name);
+  ocrPrintf("  pot_type: %s\n", cmd->pot_type);
+  ocrPrintf("  nx: %u\n", cmd->nx);
+  ocrPrintf("  ny: %u\n", cmd->ny);
+  ocrPrintf("  nz: %u\n", cmd->nz);
+  ocrPrintf("  Lattice constant: %f Angstroms\n", cmd->lat);
+  ocrPrintf("  Steps: %u\n",                      cmd->steps);
+  ocrPrintf("  Period: %u\n",                     cmd->period);
+  ocrPrintf("  Time step: %f fs\n",               cmd->dt);
+  ocrPrintf("  Initial Temperature: %f K\n",      cmd->temperature);
+  ocrPrintf("  Initial Delta: %f Angstroms\n",    cmd->initial_delta);
+  ocrPrintf("\n");
+
+  /* The option table stores every integer through an int*, so a count read
+   * back through its unsigned field has already lost the sign of a negative
+   * argument: range-check these as signed, before any use. */
+  if((int)cmd->nx < 1 || (int)cmd->ny < 1 || (int)cmd->nz < 1) {
+    ocrPrintf("ERROR the unit cell count must be positive on every axis\n");
+    bad = 1;
+  }
+  if((int)cmd->steps < 1 || (int)cmd->period < 1) {
+    ocrPrintf("ERROR the step count and the output period must be positive\n");
+    bad = 1;
+  }
+  if(cmd->dt <= 0.0) {
+    ocrPrintf("ERROR the time step must be positive\n");
+    bad = 1;
+  }
+  if(cmd->lat == 0.0) {
+    ocrPrintf("ERROR the lattice constant must be nonzero"
+              " (a negative value selects the potential's own)\n");
+    bad = 1;
+  }
+
+  return bad;
 }

@@ -39,6 +39,52 @@
 #define MIN(x,y) ((x)<(y)?(x):(y))
 #endif
 
+// Counter-based generation.  A generated value is a pure function of its
+// stream key and of the position it occupies in the array being filled, so the
+// data is the same whatever order, concurrency or process produces it, and no
+// generator state is shared between producers.  The mixer is the one the
+// unshared port uses, but the draws are composed differently, so the two
+// ports' checksums are not comparable to each other.
+static inline u64 xs_mix64( u64 x )
+{
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
+static inline u64 xs_stream( u64 seed, u64 stream )
+{
+    return xs_mix64( seed ^ (stream * 0xD1B54A32D192ED03ULL) );
+}
+
+static inline u64 xs_draw( u64 key, u64 index )
+{
+    return xs_mix64( key + index );
+}
+
+// Uniform on [0,1) over the 53 bits a double holds exactly.
+static inline double xs_draw_unit( u64 key, u64 index )
+{
+    return (double)(xs_draw(key, index) >> 11) * (1.0 / 9007199254740992.0);
+}
+
+// Magnitude-relative quantization: a digest built on it is insensitive to
+// differences below the kept mantissa bits and moves on anything larger.
+static inline u64 xs_quantize( double v )
+{
+    int e = 0;
+    double m = frexp( v, &e );
+    return (u64)( (s64)e * 2097152 + (s64)(m * 1048576.0) );
+}
+
+#define XS_DATA_SEED 42
+
+enum xs_stream_id {
+    XS_STREAM_GRIDS = 1,
+    XS_STREAM_CONCS
+};
+
 // Structures
 typedef struct{
     double energy;
@@ -57,6 +103,14 @@ typedef struct{
 typedef struct{
     double energy;
 } GridPoint;
+
+/* One lookup chain's private result cell: the last lookup's macroscopic cross
+ * sections (kept so the kernel's result cannot be optimized away) and the
+ * chain's running digest of every lookup it has performed. */
+typedef struct{
+    double xs[5];
+    u64 digest;
+} LaneResult;
 
 typedef struct{
     int nprocs;
@@ -80,10 +134,6 @@ typedef struct
     ocrDBK_t DBK_concs_all;
     //ocrDBK_t DBK_mats[12], DBK_concs[12];
     ocrDBK_t DBK_mat_ptrs, DBK_conc_ptrs;
-
-	#ifdef VERIFICATION
-    ocrDBK_t DBK_seed_v, DBK_hash;
-    #endif
 } rankDataH_t;
 
 typedef struct
@@ -130,9 +180,7 @@ void gpmatrix_free( NuclideGridPoint ** M );
 int NGP_compare( const void * a, const void * b );
 
 void generate_grids( NuclideGridPoint ** nuclide_grids,
-                     long n_isotopes, long n_gridpoints );
-void generate_grids_v( NuclideGridPoint ** nuclide_grids,
-                     long n_isotopes, long n_gridpoints, u64* seed );
+                     long n_isotopes, long n_gridpoints, u64 dataSeed );
 
 void sort_nuclide_grids( NuclideGridPoint ** nuclide_grids, long n_isotopes,
                          long n_gridpoints );
@@ -140,9 +188,10 @@ void sort_nuclide_grids( NuclideGridPoint ** nuclide_grids, long n_isotopes,
 GridPoint * generate_energy_grid( ocrDBK_t* DBK_uEnergy_grid, ocrDBK_t* DBK_xs_grid, long n_isotopes, long n_gridpoints,
                                   NuclideGridPoint ** nuclide_grids, int mype, int ** PTR_xs_grid);
 
-void set_grid_ptrs( GridPoint * energy_grid, int * xs_grid,
-                    NuclideGridPoint ** nuclide_grids,
-                    long n_isotopes, long n_gridpoints, int mype );
+void set_grid_ptrs_range( GridPoint * energy_grid, int * xs_rows,
+                          NuclideGridPoint ** nuclide_grids,
+                          long n_isotopes, long n_gridpoints,
+                          u64 ibegin, u64 iend );
 
 int binary_search( NuclideGridPoint * A, double quarry, int n );
 
@@ -170,8 +219,7 @@ long grid_search_double( long n, double quarry, double * A);
 
 int * load_num_nucs( ocrDBK_t* DBK_num_nucs, long n_isotopes);
 int ** load_mats( rankDataH_t* PTR_rankDataH, int * num_nucs, long n_isotopes );
-double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs );
-double ** load_concs_v( rankDataH_t* PTR_rankDataH, int * num_nucs, u64* seed );
+double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs, u64 dataSeed );
 int pick_mat(u64* seed);
 double rn(u64* seed);
 void counter_stop( int * eventset, int num_papi_events );
@@ -180,14 +228,12 @@ void do_flops(void);
 void do_loads( int nuc,
                NuclideGridPoint ** restrict nuclide_grids,
                long n_gridpoints );
-Inputs read_CLI( int argc, char * argv[] );
-void print_CLI_error(void);
-double rn_v(u64* seed);
+int read_CLI( int argc, char * argv[], Inputs * input );
+void print_CLI_error(const char * reason);
 double round_double( double input );
-unsigned long hash(unsigned char *str, int nbins);
 size_t estimate_mem_usage( Inputs in );
 void print_inputs(Inputs in, int nprocs, int version);
-void print_results( Inputs in, int mype, double runtime, int nprocs, u64 vhash );
+void print_results( Inputs in, int mype, double runtime, int nprocs, u64 checksum );
 void binary_dump(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid, int * xs_grid);
 void binary_read(long n_isotopes, long n_gridpoints, NuclideGridPoint ** nuclide_grids, GridPoint * energy_grid, int * xs_grid);
 

@@ -63,7 +63,7 @@ void fancy_int( int a )
     else
         ocrPrintf("%d\n",a);
 #endif
-    ocrPrintf("%ld\n", a);
+    ocrPrintf("%d\n", a);
 }
 
 Inputs read_CLI( int argc, char * argv[] )
@@ -185,9 +185,16 @@ Inputs read_CLI( int argc, char * argv[] )
     if( nthreads_specified )
         ocrPrintf("WARNING: -t <threads> has no effect in this port; task parallelism comes from -l\n");
 
-    // Validate n_isotopes
-    if( input.n_nuclides < 1 )
+    // Validate n_isotopes.  The H-M material tables hold fixed nuclide IDs --
+    // up to 62 in the small fuel table and up to 354 in the large one -- and
+    // which table is used is decided by the nuclide count alone, so any other
+    // count indexes the per-nuclide arrays out of bounds.
+    if( input.n_nuclides != 68 && input.n_nuclides < 355 )
+    {
+        ocrPrintf("ERROR: -n must be exactly 68 (H-M small tables) or at least 355 "
+                  "(H-M large tables); got %d\n", input.n_nuclides);
         print_CLI_error();
+    }
 
     // Validate lookups
     if( input.lookups < 1 )
@@ -255,18 +262,17 @@ void print_input_summary(Inputs input)
 
 }
 
-void print_results(Inputs input, double runtime)
+void print_results(Inputs input, double runtime, unsigned long long cksum)
 {
     border_print();
     center_print("RESULTS", 79);
     border_print();
 
-    printf("Threads:     %d\n", input.nthreads);
-//  if( input.doppler)
-//      printf("Slow Faddeeva: %.2lf%%\n", (double) g_abrarov/g_alls * 100.f);
-    printf("Runtime:     %.3lf seconds\n", runtime);
-    printf("Lookups:     "); fancy_int(input.lookups);
-    printf("Lookups/s:   "); fancy_int((double) input.lookups / (runtime));
+    ocrPrintf("Threads:     %d\n", input.nthreads);
+    ocrPrintf("Runtime:     %.3lf seconds\n", runtime);
+    ocrPrintf("Lookups:     "); fancy_int(input.lookups);
+    ocrPrintf("Lookups/s:   "); fancy_int((int)((double) input.lookups / runtime));
+    ocrPrintf("RSBench lookup checksum: %llu\n", cksum);
 
     border_print();
 

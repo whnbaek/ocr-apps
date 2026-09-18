@@ -151,6 +151,9 @@ ocrPrintf("allocate AffineParams\n");RAG_FLUSH;
 	/* The detects output is written by every build flavor; input paths and
 	 * their argv overrides exist only in the runtime-input build. */
 	const char *out_detects = argv_4;
+	/* Optional knobs, 0 meaning "keep the compiled default". */
+	int arg_blk_tile = 0, arg_blk_cfar = 0, arg_blk_affine = 0;
+	int write_detects = 0;
 #ifndef RAG_IMPLICIT_INPUTS
 	/* Data/output paths and the radar-parameter file: compiled defaults
 	 * (argv.h macros / Parameters.txt), overridable by program argv
@@ -177,6 +180,16 @@ ocrPrintf("allocate AffineParams\n");RAG_FLUSH;
 		}
 		if( rag_argc >= 6 )
 			rag_params_path = ocrGetArgv(depv[0].ptr, 5);
+		/* [6] tile block  [7] detection block  [8] resample block
+		 * [9] write the detections file (0/1). */
+		if( rag_argc >= 7 ) arg_blk_tile   = atoi(ocrGetArgv(depv[0].ptr, 6));
+		if( rag_argc >= 8 ) arg_blk_cfar   = atoi(ocrGetArgv(depv[0].ptr, 7));
+		if( rag_argc >= 9 ) arg_blk_affine = atoi(ocrGetArgv(depv[0].ptr, 8));
+		if( rag_argc >= 10) write_detects  = atoi(ocrGetArgv(depv[0].ptr, 9));
+		if( write_detects != 0 && write_detects != 1 ) {
+			ocrPrintf("detects-file switch must be 0 or 1. %d Exiting.\n",write_detects);RAG_FLUSH;
+			xe_exit(1);
+		}
 	}
 	/* Validation opens only — fail fast on a bad path.  The handles are not
 	 * kept: a FILE* is process-local, so the consuming tasks (ReadData_edt,
@@ -226,6 +239,67 @@ ocrPrintf("// Pulse transmission timestamps\n");RAG_FLUSH;
 		  ocrPrintf("Unexpected return value from ReadParams.\n");RAG_FLUSH;
 		  xe_exit(1);
 	}
+	/* Blocking factors: the compiled value is the default and, where a task
+	 * sizes automatic storage from it, also the maximum -- a larger one would
+	 * overrun that storage, so it is refused here rather than discovered as a
+	 * corrupted stack. */
+#ifdef RAG_NEW_BLK_SIZE
+	image_params.blk_tile = RAG_NEW_BLK_SIZE;
+#else
+	image_params.blk_tile = 0;
+#endif
+#ifdef RAG_CFAR_BLK_SIZE
+	image_params.blk_cfar = RAG_CFAR_BLK_SIZE;
+#else
+	image_params.blk_cfar = image_params.blk_tile;
+#endif
+#ifdef RAG_AFFINE_BLK_SIZE
+	image_params.blk_affine = RAG_AFFINE_BLK_SIZE;
+#else
+	image_params.blk_affine = image_params.blk_tile;
+#endif
+	if( arg_blk_tile ) {
+		if( arg_blk_tile < 1 || arg_blk_tile > image_params.Ix ) {
+			ocrPrintf("tile block %d outside [1,%d]. Exiting.\n",arg_blk_tile,image_params.Ix);RAG_FLUSH;
+			xe_exit(1);
+		}
+		image_params.blk_tile = arg_blk_tile;
+	}
+	if( arg_blk_cfar ) {
+#ifdef RAG_CFAR_BLK_SIZE
+		if( arg_blk_cfar < 1 || arg_blk_cfar > RAG_CFAR_BLK_SIZE ) {
+			ocrPrintf("detection block %d outside [1,%d]. Exiting.\n",arg_blk_cfar,RAG_CFAR_BLK_SIZE);RAG_FLUSH;
+			xe_exit(1);
+		}
+#else
+		if( arg_blk_cfar < 1 ) {
+			ocrPrintf("detection block %d must be positive. Exiting.\n",arg_blk_cfar);RAG_FLUSH;
+			xe_exit(1);
+		}
+#endif
+		image_params.blk_cfar = arg_blk_cfar;
+	}
+	if( arg_blk_affine ) {
+#ifdef RAG_AFFINE_BLK_SIZE
+		if( arg_blk_affine < 1 || arg_blk_affine > RAG_AFFINE_BLK_SIZE ) {
+			ocrPrintf("resample block %d outside [1,%d]. Exiting.\n",arg_blk_affine,RAG_AFFINE_BLK_SIZE);RAG_FLUSH;
+			xe_exit(1);
+		}
+#else
+		if( arg_blk_affine < 1 ) {
+			ocrPrintf("resample block %d must be positive. Exiting.\n",arg_blk_affine);RAG_FLUSH;
+			xe_exit(1);
+		}
+#endif
+		image_params.blk_affine = arg_blk_affine;
+	}
+	/* The stripe layer cuts the image along one axis and every phase indexes
+	 * both from it, so the grid has to be square. */
+	if( image_params.Ix != image_params.Iy ) {
+		ocrPrintf("Ix %d and Iy %d must be equal. Exiting.\n",
+			image_params.Ix, image_params.Iy);RAG_FLUSH;
+		xe_exit(1);
+	}
 
 #ifdef TG_ARCH
 	pOutFile = NULL;
@@ -233,12 +307,15 @@ ocrPrintf("// Pulse transmission timestamps\n");RAG_FLUSH;
 #ifdef TRACE_LVL_1
 ocrPrintf("// Detects.txt\n");RAG_FLUSH;
 #endif
-	/* Validation open only — post_CFAR_edt reopens the path on its node. */
-	if( (pOutFile = fopen(out_detects, "wb")) == NULL ) {
-		ocrPrintf("Error opening %s\n", out_detects);
-		xe_exit(1);
+	/* Validation open only — post_CFAR_edt reopens the path on its node.
+	 * Nothing is opened when the file is not going to be written. */
+	if( write_detects ) {
+		if( (pOutFile = fopen(out_detects, "wb")) == NULL ) {
+			ocrPrintf("Error opening %s\n", out_detects);RAG_FLUSH;
+			xe_exit(1);
+		}
+		fclose(pOutFile);
 	}
-	fclose(pOutFile);
 #endif // TG_ARCH
 
 #ifdef TRACE_LVL_1
@@ -485,50 +562,19 @@ ocrPrintf("// Allocate memory for timestamp of pulse transmissions\n");RAG_FLUSH
 	}
 
 #ifdef TRACE_LVL_1
-ocrPrintf("// Allocate memory for current image\n");RAG_FLUSH;
+ocrPrintf("// Create the image generation tokens\n");RAG_FLUSH;
 #endif
-	ocrGuid_t curImage_dbg;
-#ifdef RAG_DRAM
-	curImage = (struct complexData **)dram_malloc(&curImage_dbg,(image_params.Iy)*sizeof(struct complexData *)
-								   +(image_params.Iy)*(image_params.Ix)*sizeof(struct complexData));
-#else
-	curImage = (struct complexData **) bsm_malloc(&curImage_dbg,(image_params.Iy)*sizeof(struct complexData *)
-								   +(image_params.Iy)*(image_params.Ix)*sizeof(struct complexData));
-#endif
-	if( curImage == NULL) {
-		ocrPrintf("Error allocating memory for curImage.\n");RAG_FLUSH;
+	/* An image is its stripe set: every phase produces stripes and every
+	 * consumer reads the stripes it covers, so no task ever holds the picture
+	 * whole.  These two blocks carry no pixel; they are the tokens the wiring
+	 * discriminates the reference generation from the current one by, and they
+	 * are never dereferenced. */
+	ocrGuid_t curImage_dbg, refImage_dbg;
+	curImage = (struct complexData **)bsm_malloc(&curImage_dbg,sizeof(struct complexData *));
+	refImage = (struct complexData **)bsm_malloc(&refImage_dbg,sizeof(struct complexData *));
+	if( curImage == NULL || refImage == NULL) {
+		ocrPrintf("Error allocating the image generation tokens.\n");RAG_FLUSH;
 		xe_exit(1);
-	}
-	struct complexData *curImage_data_ptr = (struct complexData *)&curImage[image_params.Iy];
-	if (curImage_data_ptr == NULL) {
-		ocrPrintf("Unable to allocate memory for curImage.\n");RAG_FLUSH;
-		xe_exit(1);
-	}
-	for(int i=0; i<image_params.Iy; i++) {
-		curImage[i] = curImage_data_ptr + i*image_params.Ix;
-	}
-#ifdef TRACE_LVL_1
-ocrPrintf("// Allocate memory for reference image\n");RAG_FLUSH;
-#endif
-	ocrGuid_t refImage_dbg;
-#ifdef RAG_DRAM
-	refImage = (struct complexData **)dram_malloc(&refImage_dbg,(image_params.Iy)*sizeof(struct complexData *)
-								   +(image_params.Iy)*(image_params.Ix)*sizeof(struct complexData));
-#else
-	refImage = (struct complexData **) bsm_malloc(&refImage_dbg,(image_params.Iy)*sizeof(struct complexData *)
-								   +(image_params.Iy)*(image_params.Ix)*sizeof(struct complexData));
-#endif
-	if(refImage == NULL) {
-		ocrPrintf("Error allocating memory for refImage.\n");RAG_FLUSH;
-		xe_exit(1);
-	}
-	struct complexData *refImage_data_ptr = (struct complexData *)&refImage[image_params.Iy];
-	if (refImage_data_ptr == NULL) {
-		ocrPrintf("Unable to allocate memory for refImage.\n");RAG_FLUSH;
-		xe_exit(1);
-	}
-	for(int i=0; i<image_params.Iy; i++) {
-		refImage[i] = refImage_data_ptr + i*image_params.Ix;
 	}
 ////////////////////////////////////////////////////////////////////////////
 //  DONE WITH INITIALIZATION OF PARAMETER DATA, PUT DATA INTO DATA BLOCKS //
@@ -559,6 +605,7 @@ ocrPrintf("// Allocate memory for reference image\n");RAG_FLUSH;
 #endif
 	strncpy(file_args_lcl.out_detects,  out_detects,  RAG_PATH_MAX-1);
 #endif
+	file_args_lcl.write_detects = write_detects;
 	file_args_ptr = (struct file_args_t *)bsm_malloc(&file_args_dbg,sizeof(struct file_args_t));
 	if(file_args_ptr == NULL) {
 		ocrPrintf("Error allocating memory for file_args.\n");RAG_FLUSH;
@@ -636,6 +683,8 @@ ocrPrintf("// create an edt for main_body_edt\n");RAG_FLUSH;
 	ocrGuid_t main_body_scg, main_body_evg;
     mainBodyPRM_t mainBodyParamv;
     mainBodyParamv.post_main_scg = post_main_scg;
+    mainBodyParamv.curImage_dbg = curImage_dbg;
+    mainBodyParamv.refImage_dbg = refImage_dbg;
 {
 	retval = ocrEdtCreate(
 			&main_body_scg,		// *created_edt_guid
@@ -658,6 +707,10 @@ ocrPrintf("// main_body_scg = %ld\n",main_body_scg);RAG_FLUSH;
 ocrPrintf("// provide the arguments to main_body_edt.\n");RAG_FLUSH;
 #endif
 
+/* The scope's completion is wired to its consumer before the scope can
+ * start: a once event that fires with no waiter is gone. */
+RAG_DEF_MACRO_BSM( post_main_scg,NULL,NULL,NULL,NULL,main_body_evg,12);
+
 /* main_body wires the pipeline and hands the images' GUIDs on; it reads no
  * pixel, so it takes them by GUID only. */
 RAG_DEF_MACRO_GUID_ONLY(main_body_scg,curImage_dbg,0);
@@ -670,8 +723,6 @@ RAG_DEF_MACRO_BSM_RO( main_body_scg,struct complexData **,NULL,NULL,NULL,X_dbg,6
 RAG_DEF_MACRO_BSM_RO( main_body_scg,float **,NULL,NULL,NULL,Pt_dbg,7);
 RAG_DEF_MACRO_BSM_RO( main_body_scg,float *,NULL,NULL,NULL,Tp_dbg,8);
 RAG_DEF_MACRO_BSM_RO( main_body_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,9);
-
-RAG_DEF_MACRO_BSM( post_main_scg,NULL,NULL,NULL,NULL,main_body_evg,12);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// leave mainEdt\n");RAG_FLUSH;
@@ -690,8 +741,8 @@ ocrPrintf("// enter main_body_edt\n");RAG_FLUSH;
 	ocrGuid_t post_main_scg = mainBodyParamvIn->post_main_scg;
 
 	assert(depc==10);
-RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,0);
-RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,1);
+	ocrGuid_t curImage_dbg = mainBodyParamvIn->curImage_dbg;
+	ocrGuid_t refImage_dbg = mainBodyParamvIn->refImage_dbg;
 RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,2);
 RAG_REF_MACRO_SPAD(struct RadarParams,radar_params,radar_params_ptr,radar_params_lcl,radar_params_dbg,3);
 RAG_REF_MACRO_SPAD(struct AffineParams,affine_params,affine_params_ptr,affine_params_lcl,affine_params_dbg,4);
@@ -801,6 +852,7 @@ ocrPrintf("// create an edt for CFAR_edt\n");RAG_FLUSH;
 	memcpy(CFARParamv.post.out_detects, file_args_lcl.out_detects,
 	       sizeof(CFARParamv.post.out_detects));
 #endif
+	CFARParamv.post.write_detects = file_args_lcl.write_detects;
 {
 	retval = ocrEdtCreate(
 			&CFAR_scg,		// *created_edt_guid
@@ -875,9 +927,18 @@ ocrPrintf("// create an edt for curImage/refImage Affine_edt\n");RAG_FLUSH;
 			   boundary task reaches into is a smaller piece was measured and
 			   is a wash at these rank counts; ownership stays contiguous
 			   either way, which is what the layout guarantees. */
+			/* The shortest stripe a consumer's footprint still fits in:
+			   the detection window, the resample's bounded source, and the
+			   correlation window, whichever is tallest. */
+			int _minrows = image_params->blk_cfar + cfar_params->Ncfar
+			             + image_params->Ncor - 2;
+			if(_minrows < image_params->blk_affine + 64)
+				_minrows = image_params->blk_affine + 64;
+			if(_minrows < affine_params->Sc + 2*affine_params->Rc)
+				_minrows = affine_params->Sc + 2*affine_params->Rc;
 			img_stripes_layout(_stp, (int)_nranks, (int)_nranks,
 			                   image_params->Iy, image_params->Ix,
-			                   RAG_NEW_BLK_SIZE);
+			                   image_params->blk_tile, _minrows);
 			OCR_DB_RELEASE(*_which[_i]);
 		}
 	}
@@ -909,6 +970,8 @@ ocrPrintf("// create an edt for curImage FormImage_edt\n");RAG_FLUSH;
     formImagePRM_t formImageParamv;
     formImageParamv.arg_scg = Affine_scg;
     formImageParamv.stripes_dbg = st_cur_dbg;
+    formImageParamv.curImage_dbg = curImage_dbg;
+    formImageParamv.refImage_dbg = refImage_dbg;
 {
 	retval = ocrEdtCreate(
 			&FormImage_scg,		// *created_edt_guid
@@ -950,6 +1013,13 @@ ocrPrintf("// create an edt for refImage FormImage_edt\n");RAG_FLUSH;
     formImagePRM_t refFormImageParamv;
     refFormImageParamv.arg_scg = ReadData_scg;
     refFormImageParamv.stripes_dbg = st_ref_dbg;
+    refFormImageParamv.curImage_dbg = curImage_dbg;
+    /* The first image has no reference yet; the token says so. */
+#ifdef RAG_TG_ARCH_NULL_GUID_WORKAROUND
+    refFormImageParamv.refImage_dbg = curImage_dbg;
+#else
+    refFormImageParamv.refImage_dbg = NULL_GUID;
+#endif
 {
 	retval = ocrEdtCreate(
 			&refFormImage_scg,	// *created_edt_guid
@@ -998,11 +1068,11 @@ ocrPrintf("// Form first image\n");RAG_FLUSH;
 #endif
 RAG_DEF_MACRO_SPAD_RO(refFormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
 RAG_DEF_MACRO_SPAD_RO(refFormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
-RAG_DEF_MACRO_BSM (refFormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
+RAG_DEF_MACRO_GUID_ONLY(refFormImage_scg,curImage_dbg,2);
 #ifdef RAG_TG_ARCH_NULL_GUID_WORKAROUND
-RAG_DEF_MACRO_BSM (refFormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,3);
+RAG_DEF_MACRO_GUID_ONLY(refFormImage_scg,curImage_dbg,3);
 #else
-RAG_DEF_MACRO_BSM (refFormImage_scg,NULL,NULL,NULL,NULL,NULL_GUID,3);
+RAG_DEF_MACRO_GUID_ONLY(refFormImage_scg,NULL_GUID,3);
 #endif
 //RAG_DEF_MACRO_BSM( refFormImage_scg,NULL,NULL,NULL,NULL,X_dbg,4);
 // done by refReadInputs_edt
@@ -1046,8 +1116,8 @@ ocrPrintf("// Form second image (image_id=%d)\n",image);RAG_FLUSH;
 #endif
 RAG_DEF_MACRO_SPAD_RO(FormImage_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
 RAG_DEF_MACRO_SPAD_RO(FormImage_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
-RAG_DEF_MACRO_SPAD(FormImage_scg,NULL,NULL,NULL,NULL,curImage_dbg,2);
-RAG_DEF_MACRO_SPAD(FormImage_scg,NULL,NULL,NULL,NULL,refImage_dbg,3);
+RAG_DEF_MACRO_GUID_ONLY(FormImage_scg,curImage_dbg,2);
+RAG_DEF_MACRO_GUID_ONLY(FormImage_scg,refImage_dbg,3);
 //RAG_DEF_MACRO_BSM( FormImage_scg,NULL,NULL,NULL,NULL,X_dbg,4);
 // done by ReadInputs_edt
 //RAG_DEF_MACRO_SBSM FormImage_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
@@ -1105,7 +1175,7 @@ RAG_DEF_MACRO_SPAD(post_affine_async_1_scg,NULL,NULL,NULL,NULL,Affine_evg,7);
 /* The reducer wires the resample from the current image's stripe layout, and
    hands the registered image's stripe set to its own gather to fill. */
 RAG_DEF_MACRO_SPAD_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,st_cur_dbg,CTRLPT_ST_CUR_SLOT);
-RAG_DEF_MACRO_GUID_ONLY(post_affine_async_1_scg,st_reg_dbg,CTRLPT_ST_REG_SLOT);
+RAG_DEF_MACRO_SPAD_RO(post_affine_async_1_scg,NULL,NULL,NULL,NULL,st_reg_dbg,CTRLPT_ST_REG_SLOT);
 RAG_DEF_MACRO_SPAD(post_affine_async_2_scg,NULL,NULL,NULL,NULL,post_affine_async_1_evg,8);
 /* CFAR_scg's trigger slot is satisfied by the affine resample gather. */
 
@@ -1130,8 +1200,8 @@ RAG_REF_MACRO_BSM( float *,image_params_xr_ptr,NULL,NULL,image_params_xr_dbg,2);
 RAG_REF_MACRO_SPAD(struct RadarParams,radar_params,radar_params_ptr,radar_params_lcl,radar_params_dbg,3);
 RAG_REF_MACRO_SPAD(struct AffineParams,affine_params,affine_params_ptr,affine_params_lcl,affine_params_dbg,4);
 RAG_REF_MACRO_SPAD(struct CfarParams,cfar_params,cfar_params_ptr,cfar_params_lcl,cfar_params_dbg,5);
-RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,6);
-RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,7);
+RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,curImage_dbg,6);
+RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,refImage_dbg,7);
 RAG_REF_MACRO_BSM( struct complexData **,X,NULL,NULL,X_dbg,8);
 RAG_REF_MACRO_BSM( struct point **,Pt,NULL,NULL,Pt_dbg,9);
 RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,10);
@@ -1139,60 +1209,7 @@ RAG_REF_MACRO_SPAD(struct file_args_t,file_args,file_args_ptr,file_args_lcl,file
 
 	/* No handles to close: file-touching tasks open and close their own. */
 
-#ifdef DEBUG_SSCP
-#ifdef TRACE_LVL_1
-ocrPrintf("// Output Images to .bin files\n");RAG_FLUSH;
-#endif
-    {
-	// Rebuild the row-pointer tables against this node's copies before the
-	// curImage/refImage dumps below.  There is no correlation map to dump:
-	// the detection pass computes its own values and never stores them.
-	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
-	RAG_REMAP_2D(refImage, image_params->Iy, image_params->Ix, struct complexData);
-#ifndef TG_ARCH
-        FILE *pOutImg = fopen("images_debug.bin", "wb");
 
-        assert(pOutImg != NULL);
-#endif
-
-#ifndef TG_ARCH
-        for(int m=0; m<image_params->Iy; m++)
-            fwrite(&curImage[m][0], sizeof(struct complexData), image_params->Ix, pOutImg);
-        for(int m=0; m<image_params->Iy; m++)
-            fwrite(&refImage[m][0], sizeof(struct complexData), image_params->Ix, pOutImg);
-#else
-        for(int m=0; m<image_params->Iy; m++) {
-            for(int n=0; n<image_params->Ix; n++) {
-		ocrPrintf("cur 0x%x 0x%x\n",*(uint32_t *)&curImage[m][n].real, *(uint32_t *)&curImage[m][n].imag);
-	    } // for n
-	} // for m
-
-        for(int m=0; m<image_params->Iy; m++) {
-            for(int n=0; n<image_params->Ix; n++) {
-		ocrPrintf("ref 0x%x 0x%x\n",*(uint32_t *)&refImage[m][n].real, *(uint32_t *)&refImage[m][n].imag);
-	    } // for n
-	} // for m
-
-#endif
-
-#ifndef TG_ARCH
-        fclose(pOutImg);
-#endif
-    }
-#endif // DEBUG_SSCP
-
-
-#ifdef RAG_DRAM
-	dram_free(refImage,refImage_dbg); //refImage[][]
-#else
-	 bsm_free(refImage,refImage_dbg); //refImage[][]
-#endif
-
-#ifdef RAG_DRAM
-	dram_free(curImage,curImage_dbg); // curImage[][]
-#else
-	 bsm_free(curImage,curImage_dbg); // curImage[][]
-#endif
 
 #ifdef RAG_DRAM
 	dram_free(Tp,Tp_dbg);  // Tp[]

@@ -39,6 +39,19 @@ Copyright Intel Corporation 2015
 #define GET_CHANNEL_IDX(face, phase) (face)
 #endif
 
+/* The added placement layer, one switchable name per piece so a measurement can
+ * turn a piece off and attribute what it moved.  Only one object of this
+ * program is both placed by a hint and read from another node in the timestep
+ * loop, so the layer has one piece.  It needs the affinity extension: without
+ * it no create carries a placement at all and there is nothing to override. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#ifdef ENABLE_EXTENSION_AFFINITY
+#ifndef STENCIL_NO_HALO_HOME_HINT
+#define STENCIL_HALO_HOME_HINT
+#endif
+#endif
+#endif
+
 
 static void timestamp(const char* msg)
 {
@@ -1065,14 +1078,16 @@ void destroyOcrObjects(rankH_t* PTR_rankH)
 
     u64 i;
 
-    for(i=0;i<=3;i++)
-    {
+    //The channel endpoint of a direction is created by one side and destroyed
+    //by the other, so every phase of every direction has to be covered here or
+    //the channels the other side created outlive the run.
 #ifdef CHANNEL_EVENTS_AT_RECEIVER
+    for(i=0;i<NB_SEND_CHANNELS;i++)
         ocrEventDestroy(PTR_rankH->haloSendEVTs[i]);
 #else
+    for(i=0;i<NB_RECV_CHANNELS;i++)
         ocrEventDestroy(PTR_rankH->haloRecvEVTs[i]);
 #endif
-    }
 
     ocrEventDestroy(PTR_rankH->EVT_OUT_timer_reduction);
     ocrEventDestroy(PTR_rankH->EVT_OUT_norm_reduction);
@@ -1199,25 +1214,77 @@ ocrGuid_t channelSetupEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrSetHintValue(&myDbkAffinityHNT, OCR_HINT_DB_EAGER, 1);
 #endif
 
+    //Home of each send buffer.  The default is this tile's own node, which is
+    //where the buffer is packed.
+    ocrHint_t* sendHNT[4];
+    for( i = 0; i < nbrUb; i++ ) sendHNT[i] = &myDbkAffinityHNT;
+
+#ifdef STENCIL_HALO_HOME_HINT
+    //A send buffer has exactly one reader for the whole run: the neighbour's
+    //receive task on the opposite face, which is pinned to a node the index
+    //map already fixes, so the buffer's home can be put where it is read
+    //instead of where it is packed.  A face whose neighbour shares this node
+    //has nothing to move, and a face on the domain edge is never sent on at
+    //all, so both keep the default home.
+    ocrHint_t nbrDbkHNT[4];
+    {
+        u64 pdCount = 1;
+        u64 pdGridDims[2];
+        u64 edtGridDims[2];
+        s64 nbrId[4];
+        int faceIsSent[4];
+        s64 my_x = PTR_rankParamH->id_x;
+        s64 my_y = PTR_rankParamH->id_y;
+        s64 NR_X = PTR_globalParamH->NR_X;
+        s64 NR_Y = PTR_globalParamH->NR_Y;
+        int myPD, nbrPD;
+
+        ocrAffinityCount( AFFINITY_PD, &pdCount );
+        splitDimension_Cart2D( pdCount, &pdGridDims[0], &pdGridDims[1] );
+        edtGridDims[0] = (u64) NR_X;
+        edtGridDims[1] = (u64) NR_Y;
+        myPD = getPolicyDomainID_Cart2D( (int) id, edtGridDims, pdGridDims );
+
+        nbrId[0] = id - 1;      faceIsSent[0] = ( my_x != 0 );
+        nbrId[1] = id + 1;      faceIsSent[1] = ( my_x != NR_X - 1 );
+        nbrId[2] = id - NR_X;   faceIsSent[2] = ( my_y != 0 );
+        nbrId[3] = id + NR_X;   faceIsSent[3] = ( my_y != NR_Y - 1 );
+
+        for( i = 0; i < nbrUb; i++ )
+        {
+            nbrDbkHNT[i] = myDbkAffinityHNT;
+            if( !faceIsSent[i] ) continue;
+            nbrPD = getPolicyDomainID_Cart2D( (int) nbrId[i], edtGridDims, pdGridDims );
+            if( nbrPD == myPD ) continue;
+
+            ocrGuid_t nbrAffinity;
+            ocrAffinityGetAt( AFFINITY_PD, nbrPD, &nbrAffinity );
+            ocrSetHintValue( &nbrDbkHNT[i], OCR_HINT_DB_AFFINITY,
+                             ocrAffinityToHintValue(nbrAffinity) );
+            sendHNT[i] = &nbrDbkHNT[i];
+        }
+    }
+#endif
+
     double *lsend, *rsend; //halo buffers
     ocrDbCreate( &(PTR_rankH->DBK_LsendBufs[0]), (void **) &lsend, sizeof(double)*HALO_RADIUS*np_y,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[0], NO_ALLOC );
     ocrDbCreate( &(PTR_rankH->DBK_LsendBufs[1]), (void **) &lsend, sizeof(double)*HALO_RADIUS*np_y,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[0], NO_ALLOC );
     ocrDbCreate( &(PTR_rankH->DBK_RsendBufs[0]), (void **) &rsend, sizeof(double)*HALO_RADIUS*np_y,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[1], NO_ALLOC );
     ocrDbCreate( &(PTR_rankH->DBK_RsendBufs[1]), (void **) &rsend, sizeof(double)*HALO_RADIUS*np_y,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[1], NO_ALLOC );
 
     double *tsend, *bsend; //halo buffers
     ocrDbCreate( &(PTR_rankH->DBK_TsendBufs[0]), (void **) &tsend, sizeof(double)*HALO_RADIUS*np_x,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[3], NO_ALLOC );
     ocrDbCreate( &(PTR_rankH->DBK_TsendBufs[1]), (void **) &tsend, sizeof(double)*HALO_RADIUS*np_x,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[3], NO_ALLOC );
     ocrDbCreate( &(PTR_rankH->DBK_BsendBufs[0]), (void **) &bsend, sizeof(double)*HALO_RADIUS*np_x,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[2], NO_ALLOC );
     ocrDbCreate( &(PTR_rankH->DBK_BsendBufs[1]), (void **) &bsend, sizeof(double)*HALO_RADIUS*np_x,
-                 DB_PROP_NONE, &myDbkAffinityHNT, NO_ALLOC );
+                 DB_PROP_NONE, sendHNT[2], NO_ALLOC );
 
     _paramc = 0; _depc = 3;
     ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_Lsend), FNC_Lsend, _paramc, _depc );
@@ -1423,6 +1490,15 @@ _OCR_TASK_FNC_( initEdt )
     return NULL_GUID;
 }
 
+static void rejectSettings( void* PTR_cmdLineArgs, const char* why )
+{
+    ocrPrintf( "stencil_2d: %s\nUsage: %s NP NR NT   (all three or none; positive"
+               " integers, NR <= NP, NP > 2*radius, every tile at least the halo"
+               " radius wide; -1 keeps a default)\n",
+               why, ocrGetArgv( PTR_cmdLineArgs, 0 ) );
+    ocrAbort( EXIT_FAILURE );
+}
+
 void init_settings( void* PTR_cmdLineArgs, globalCmdParamH_t* PTR_cmdParamH )
 {
     u32 argc = ocrGetArgc(PTR_cmdLineArgs);
@@ -1435,6 +1511,9 @@ void init_settings( void* PTR_cmdLineArgs, globalCmdParamH_t* PTR_cmdParamH )
     ntimesteps = NTIMESTEPS;
 
     //Overwrite defaults
+    if (argc != 1 && argc != 4)
+        rejectSettings( PTR_cmdLineArgs, "the three sizes are all-or-nothing" );
+
     if (argc == 4)
     {
         u32 i = 1;
@@ -1445,6 +1524,15 @@ void init_settings( void* PTR_cmdLineArgs, globalCmdParamH_t* PTR_cmdParamH )
         npoints = (npoints != -1) ? npoints : NPOINTS;
         nRanks = (nRanks != -1) ? nRanks : NRANKS;
         ntimesteps = (ntimesteps != -1) ? ntimesteps : NTIMESTEPS;
+
+        if (npoints < 2*HALO_RADIUS + 1)
+            rejectSettings( PTR_cmdLineArgs, "NP must exceed twice the stencil radius" );
+        if (nRanks < 1)
+            rejectSettings( PTR_cmdLineArgs, "NR must be positive" );
+        if (ntimesteps < 1)
+            rejectSettings( PTR_cmdLineArgs, "NT must be positive" );
+        if (nRanks > npoints)
+            rejectSettings( PTR_cmdLineArgs, "NR must not exceed NP" );
     }
 
     PTR_cmdParamH->NP = npoints; //squre global tile is assumed; side
@@ -1461,7 +1549,14 @@ void init_settings( void* PTR_cmdLineArgs, globalCmdParamH_t* PTR_cmdParamH )
 
     PTR_cmdParamH->NR_X = (s64) Num_procsx;
     PTR_cmdParamH->NR_Y = (s64) Num_procsy;
+
     //ocrPrintf("NR_X = %d NR_Y = %d\n", PTR_cmdParamH->NR_X, PTR_cmdParamH->NR_Y);
+
+    //A tile narrower than the halo has its own frontier strip read past its far
+    //edge, so every tile must be at least the radius wide in both dimensions.
+    if (PTR_cmdParamH->NP_X / PTR_cmdParamH->NR_X < HALO_RADIUS ||
+        PTR_cmdParamH->NP_Y / PTR_cmdParamH->NR_Y < HALO_RADIUS)
+        rejectSettings( PTR_cmdLineArgs, "a tile is thinner than the stencil radius" );
 
     ocrPrintf("\n");
     ocrPrintf("OCR stencil execution on 2D grid\n");
@@ -1501,11 +1596,21 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 
     ocrEventCreate( &(ocrParamH.EVT_OUT_spmdJoin_reduction), OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG );
 
+    //The join reduction returns to the tile whose id is 0, which the tile map
+    //places here, so the consumer of that event belongs on this rank too.
+    ocrHint_t shutdownEdtHNT;
+    ocrHintInit( &shutdownEdtHNT, OCR_HINT_EDT_T );
+#ifdef ENABLE_EXTENSION_AFFINITY
+    ocrGuid_t currentAffinity = NULL_GUID;
+    ocrAffinityGetCurrent( &currentAffinity );
+    ocrSetHintValue( &shutdownEdtHNT, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(currentAffinity) );
+#endif
+
     ocrGuid_t shutdownTML;
     ocrEdtTemplateCreate( &shutdownTML, shutdownEdt, 0, 1 );
     ocrEdtCreate( NULL, shutdownTML,
                   0, NULL, 1, &(ocrParamH.EVT_OUT_spmdJoin_reduction),
-                  EDT_PROP_NONE, NULL_HINT, NULL );
+                  EDT_PROP_NONE, &shutdownEdtHNT, NULL );
     ocrEdtTemplateDestroy( shutdownTML );
 
     //A datablock to store the commandline and the OCR objects created above

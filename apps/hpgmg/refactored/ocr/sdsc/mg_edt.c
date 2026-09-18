@@ -10,24 +10,6 @@
 #include "strings.h"
 #endif
 
-/* Home a per-box EDT with the box DB it will acquire RW: the query resolves
- * the box's current placement so the EDT lands where its dependency already
- * lives, turning the acquire local. */
-static ocrHint_t * mgBoxEdtHint(ocrHint_t * h, ocrGuid_t box)
-{
-#if defined(OCR_APP_OPTIMIZED_PLACEMENT) && defined(ENABLE_EXTENSION_AFFINITY)
-  u64 count = 1;
-  ocrGuid_t aff = NULL_GUID;
-  ocrAffinityQuery(box, &count, &aff);
-  ocrHintInit(h, OCR_HINT_EDT_T);
-  ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
-  return h;
-#else
-  (void)h; (void)box;
-  return NULL_HINT;
-#endif
-}
-
 // deps: level0
 ocrGuid_t init_ur_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
@@ -150,56 +132,6 @@ ocrGuid_t init_ur_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   return NULL_GUID;
 }
 
-
-// deps: mg_level, level0, all boxes
-// pars: u, u_true, vec_temp
-ocrGuid_t finalize_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
-{
-  VERBOSEP("finalize_edt\n");
-
-  level_type* l = (level_type*)depv[1].ptr;
-  int n = l->num_boxes;
-  int ii,i,j,k;
-  int jStride, kStride;
-  double max_norm = 0.0;
-
-  jStride = l->jStride;
-  kStride = l->kStride;
-
-
-  // compute max norm
-  for (ii = 0; ii < n; ii++) {
-    box_type *b  = (box_type *)depv[ii+3].ptr;
-    double *u_g = (double *)(((char*)b)+ paramv[0]);
-    double *u_true_g = (double *)(((char*)b)+ paramv[1]);
-    double *vec_temp_g = (double *)(((char*)b)+ paramv[2]);
-    double *u = u_g + NUM_GHOSTS * (1 + l->jStride + l->kStride);
-    double *u_true = u_true_g + NUM_GHOSTS * (1 + l->jStride + l->kStride);
-    double *vec_temp = vec_temp_g + NUM_GHOSTS * (1 + l->jStride + l->kStride);
-
-    for (i = 0; i < l->box_dim; i++) {
-      for (j = 0; j < l->box_dim; j++) {
-        for (k = 0; k < l->box_dim; k++) {
-	  int ijk = i + j*jStride + k*kStride;
-	  vec_temp[ijk] = u[ijk] - u_true[ijk];
-	  if (max_norm < fabs(vec_temp[ijk]))
-	    max_norm = fabs(vec_temp[ijk]);
-	}
-      }
-    }
-  }
-  ocrPrintf("h = %f  ||error|| = %22.15f\n\n", l->h, max_norm);
-
-  ocrPrintf("Time = %22f\n", l->time_operators[4]/TIMED);
-
-  ocrDbDestroy(depv[0].guid);
-  /* Shutdown is NOT called here: this EDT still owes the release of every
-   * dependence it holds, and calling ocrShutdown from the body would truncate
-   * that release work (and its coherence traffic) out of the run.  A dedicated
-   * shutdown EDT wired to this EDT's output event runs once the releases have
-   * completed. */
-  return NULL_GUID;
-}
 
 ocrGuid_t shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {

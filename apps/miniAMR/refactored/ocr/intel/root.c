@@ -64,6 +64,30 @@ ocrGuid_t mainEdt (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
    return rootLaunch_Func(paramc, paramv, depc, depv);
 } // mainEdt
 
+// Fetch the value that must follow a value-taking flag, advancing the scan index.  A flag in the last position has no value to read, and reading past it is an out-of-bounds access of the argument
+// vector, so the shortfall is reported and the run refused rather than parsed from whatever follows the vector in memory.
+
+static char * argValue (char ** argv, u32 argc, int * i, const char * flag) {
+   if (((u32) (*i + 1)) >= argc) {
+      printf ("** Error ** %s must be followed by a value.\n", flag); fflush(stdout);
+      *((int *) 123) = 456;
+      ocrShutdown();
+   }
+   return ocrGetArgv(argv, (u64) ++(*i));
+} // argValue
+
+// The refinement-driving object supplied when the argument vector names none.  Refinement is the behaviour this program exists to exercise, and with no object in the mesh none of the refine,
+// coarsen or parent machinery ever runs, so the default is the published one-object specification rather than an empty object list.  A spheroid boundary that starts overlapping the near corner of
+// the unit mesh and drifts diagonally out of it refines a shell of blocks and then coarsens them back within the default timestep count.
+
+#define DEFAULT_OBJECT_TYPE     2
+#define DEFAULT_OBJECT_BOUNCE   0
+#define DEFAULT_OBJECT_CENTER (-0.11)
+#define DEFAULT_OBJECT_MOVE     0.04
+#define DEFAULT_OBJECT_SIZE     1.7
+#define DEFAULT_OBJECT_INC      0.0
+#define DEFAULT_NUM_OBJECTS     1
+
 // ***************************************************************************************************************************************************************************************
 // rootLaunch_Func  -- "Thunked" to by mainEdt, i.e. called as a function directly from mainEdt, NOT created as an EDT therefrom.
 // -- Topology:  mainEdt --> Launch(create datablocks) --> Init(initialize contents of datablocks, create children) --> Clone(steady state: perform service requests of children; clone again)
@@ -87,29 +111,24 @@ ocrGuid_t rootLaunch_Func ( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
 // Process the command line only to the extent necessary to figure out how many objects to model, and how many totally-unrefined blocks there are in the mesh..
 
    for (i = 1; i < argc; i++) {
-      if (!strcmp(ocrGetArgv(argv, i), "--num_objects")) {
+      char * flag = ocrGetArgv(argv, i);
+      if (!strcmp(flag, "--num_objects")) {
          if (num_objects != -9999) {
             printf ("--num_objects should only appear once on the command line.\n"); fflush(stdout);
             *((int *) 123) = 456;
             ocrShutdown();
          }
-         if (i + 1 == argc) {
-            printf ("Number of objects must appear after the --num_objects keyword on the command-line.\n"); fflush(stdout);
-            *((int *) 123) = 456;
-            ocrShutdown();
-         }
-         num_objects = atoi(ocrGetArgv(argv, ++i));
+         num_objects = atoi(argValue(argv, argc, &i, flag));
          if (num_objects < 0) {
             printf ("Number of objects must be non-negative.\n"); fflush(stdout);
             *((int *) 123) = 456;
             ocrShutdown();
          }
-      }
-      if (!strcmp(ocrGetArgv(argv, i), "--npx") || !strcmp(ocrGetArgv(argv, i), "--npy") || !strcmp(ocrGetArgv(argv, i), "--npz")) {
-         num_blocks *= atoi(ocrGetArgv(argv, ++i));
+      } else if (!strcmp(flag, "--npx") || !strcmp(flag, "--npy") || !strcmp(flag, "--npz")) {
+         num_blocks *= atoi(argValue(argv, argc, &i, flag));
       }
    }
-   if (num_objects == -9999) num_objects = 0;   // Must match rootInit_Func's default for control->num_objects: this pre-scan sizes the allObjects datablock that control->num_objects later indexes.
+   if (num_objects == -9999) num_objects = DEFAULT_NUM_OBJECTS;   // Must match rootInit_Func's default for control->num_objects: this pre-scan sizes the allObjects datablock that control->num_objects later indexes.
    if (num_blocks > MAX_NUM_UNREFINED_BLOCKS) {
       printf ("Number of totally unrefined blocks, i.e. npx*npy*npz, is excessive.  Recommendation:\n");
       printf ("reduce, and plan to do more refinement.  Otherwise, modify limits and try again.\n");
@@ -243,97 +262,116 @@ ocrGuid_t rootInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[])
    control->code = 0;
    control->permute = 0;
    control->refine_ghost = 0;
-   control->num_objects = 0;
+   control->num_objects = DEFAULT_NUM_OBJECTS;   // Must match rootLaunch_Func's pre-scan default: the pre-scan sized the object array that this count indexes.
 
 //   * Parse the command line into control_t and allScratchObjects_t.
 
    int object_num = 0;
+   int objects_from_argv = 0;
 
    for (i = 1; i < argc; i++) {
-      if (!strcmp(ocrGetArgv(argv, i), "--nx")) {
-         control->x_block_size = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--ny")) {
-         control->y_block_size = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--nz")) {
-         control->z_block_size = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--npx")) {
-         control->npx = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--npy")) {
-         control->npy = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--npz")) {
-         control->npz = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--num_refine")) {
-         control->num_refine = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--block_change")) {
-         control->block_change = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--uniform_refine")) {
-         control->uniform_refine = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--refine_freq")) {
-         control->refine_freq = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--num_vars")) {
-         control->num_vars = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--comm_vars")) {
-         control->comm_vars = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--num_tsteps")) {
-         control->num_tsteps = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--stages_per_ts")) {
-         control->stages_per_ts = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--checksum_freq")) {
-         control->checksum_freq = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--stencil")) {
-         control->stencil = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--error_tol")) {
-         control->error_tol = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--report_diffusion")) {
-         control->report_diffusion = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--report_perf")) {
-         control->report_perf = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--plot_freq")) {
-         control->plot_freq = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--code")) {
-         control->code = atoi(ocrGetArgv(argv, ++i));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--permute")) {
+      char * flag = ocrGetArgv(argv, i);
+      if (!strcmp(flag, "--nx")) {
+         control->x_block_size = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--ny")) {
+         control->y_block_size = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--nz")) {
+         control->z_block_size = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--npx")) {
+         control->npx = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--npy")) {
+         control->npy = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--npz")) {
+         control->npz = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--num_refine")) {
+         control->num_refine = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--block_change")) {
+         control->block_change = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--uniform_refine")) {
+         control->uniform_refine = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--refine_freq")) {
+         control->refine_freq = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--num_vars")) {
+         control->num_vars = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--comm_vars")) {
+         control->comm_vars = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--num_tsteps")) {
+         control->num_tsteps = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--stages_per_ts")) {
+         control->stages_per_ts = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--checksum_freq")) {
+         control->checksum_freq = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--stencil")) {
+         control->stencil = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--error_tol")) {
+         control->error_tol = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--report_diffusion")) {
+         control->report_diffusion = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--report_perf")) {
+         control->report_perf = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--plot_freq")) {
+         control->plot_freq = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--code")) {
+         control->code = atoi(argValue(argv, argc, &i, flag));
+      } else if (!strcmp(flag, "--permute")) {
          control->permute = 1;
-      } else if (!strcmp(ocrGetArgv(argv, i), "--refine_ghost")) {
+      } else if (!strcmp(flag, "--refine_ghost")) {
          control->refine_ghost = 1;
-      } else if (!strcmp(ocrGetArgv(argv, i), "--num_objects")) {
-         control->num_objects = atoi(ocrGetArgv(argv, ++i));
+      } else if (!strcmp(flag, "--num_objects")) {
+         control->num_objects = atoi(argValue(argv, argc, &i, flag));
          object_num = 0;
-         // Datablock payload is not zeroed by ocrDbCreate; any object not
-         // covered by an --object spec must still land on a well-defined
-         // (inert) entry rather than whatever bytes the allocator returned.
-         if (control->num_objects > 0)
-            memset(scratchAllObjects->object, 0, control->num_objects * sizeof(Object_t));
-      } else if (!strcmp(ocrGetArgv(argv, i), "--object")) {
+         objects_from_argv = 1;
+      } else if (!strcmp(flag, "--object")) {
+         objects_from_argv = 1;
          if (object_num >= control->num_objects) {
             printf("object number greater than num_objects\n"); fflush(stdout);
             *((int *) 123) = 456;
             ocrShutdown();
          }
-         scratchAllObjects->object[object_num].type    = atoi(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].bounce  = atoi(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].cen[0]  = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].cen[1]  = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].cen[2]  = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].move[0] = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].move[1] = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].move[2] = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].size[0] = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].size[1] = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].size[2] = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].inc[0]  = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].inc[1]  = atof(ocrGetArgv(argv, ++i));
-         scratchAllObjects->object[object_num].inc[2]  = atof(ocrGetArgv(argv, ++i));
+         // Datablock payload is not zeroed at create, and the specification does not cover every field of an object.
+         memset(&scratchAllObjects->object[object_num], 0, sizeof(Object_t));
+         scratchAllObjects->object[object_num].type    = atoi(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].bounce  = atoi(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].cen[0]  = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].cen[1]  = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].cen[2]  = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].move[0] = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].move[1] = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].move[2] = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].size[0] = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].size[1] = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].size[2] = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].inc[0]  = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].inc[1]  = atof(argValue(argv, argc, &i, flag));
+         scratchAllObjects->object[object_num].inc[2]  = atof(argValue(argv, argc, &i, flag));
          object_num++;
-      } else if (!strcmp(ocrGetArgv(argv, i), "--help")) {
+      } else if (!strcmp(flag, "--help")) {
          print_help_message();
          *((int *) 123) = 456;
          ocrShutdown();
       } else {
-         printf("** Error ** Unknown input parameter %s\n", ocrGetArgv(argv, i)); fflush(stdout);
+         printf("** Error ** Unknown input parameter %s\n", flag); fflush(stdout);
          print_help_message();
          *((int *) 123) = 456;
          ocrShutdown();
+      }
+   }
+
+   // Object slots the command line did not describe.  With no --object at all they take the default specification, so that the mesh refines; where the command line named the count but not the
+   // objects they are inert, which is the caller's stated intent, but they must still be defined -- datablock payload is not zeroed at create.
+   {
+      int o, j;
+      for (o = object_num; o < control->num_objects; o++) {
+         memset(&scratchAllObjects->object[o], 0, sizeof(Object_t));
+         if (objects_from_argv) continue;
+         scratchAllObjects->object[o].type   = DEFAULT_OBJECT_TYPE;
+         scratchAllObjects->object[o].bounce = DEFAULT_OBJECT_BOUNCE;
+         for (j = 0; j < 3; j++) {
+            scratchAllObjects->object[o].cen[j]  = DEFAULT_OBJECT_CENTER;
+            scratchAllObjects->object[o].move[j] = DEFAULT_OBJECT_MOVE;
+            scratchAllObjects->object[o].size[j] = DEFAULT_OBJECT_SIZE;
+            scratchAllObjects->object[o].inc[j]  = DEFAULT_OBJECT_INC;
+         }
       }
    }
 
@@ -399,6 +437,9 @@ TODO:
    meta->cloningState.topPtrAdjRecOffset              = -9999;
    meta->cloningState.numberOfDatablocks              = countof_rootClone_Deps_t;
    meta->cloningState.cloneNum                        = 0;
+   meta->lastChecksum                                 = 0.0;
+   meta->lastWeightedChecksum                         = 0.0;
+   meta->lastTimeStep                                 = -1;
 
 //   * Create the first in the series of root clones, to await the first service request from the children.
 
@@ -468,7 +509,16 @@ TODO:
    unsigned long long numBlksAllLevels = (011111111111111111LL & ((1LL << ((control->num_refine+1) * 3LL)) - 1LL)) * control->npx * control->npy * control->npz;
    unsigned long long roundRobinSpan   = 1; // TODO:  if we decide we need more than 1 "robin in the nest", modify both here and at usage site.  Usage site presently just assumes ONE, as I think this is enough.
    unsigned long long numCommBatches   = 1; // TODO:  if we decide to fan-out and perform the comm_vars-sized batches in openMP-style parallelism, increase to ceiling(num_vars/comm_vars).  Propagate change.
-   ocrGuidRangeCreate (&blockLaunch_Params.labeledGuidRangeForHaloExchange, numBlksAllLevels * 36 * roundRobinSpan * numCommBatches, GUID_USER_EVENT_STICKY);
+   unsigned long long numHaloGuids     = numBlksAllLevels * 36 * roundRobinSpan * numCommBatches;
+// The reservation is indexed by a 32-bit slot number on the implementations this program targets, and an over-large request is truncated rather than refused -- after which two distinct faces share
+// an inbox and the mesh silently exchanges the wrong halo.  Refuse the (block count, refinement depth) pair here instead, where it can still be reported.
+   if (numHaloGuids > 0xFFFFFFFFULL) {
+      printf ("Halo exchange needs %llu labeled event slots for %d unrefined blocks at %d refinement levels, which exceeds the addressable range.\n", numHaloGuids, control->npx*control->npy*control->npz, control->num_refine);
+      printf ("Reduce --num_refine or the block grid: the requirement is npx*npy*npz * 36 * (8^(num_refine+1)-1)/7 <= 4294967295.\n"); fflush(stdout);
+      *((int *) 123) = 456;
+      ocrShutdown();
+   }
+   ocrGuidRangeCreate (&blockLaunch_Params.labeledGuidRangeForHaloExchange, numHaloGuids, GUID_USER_EVENT_STICKY);
 
    int xLim, yLim, zLim, idep;
    xLim     = control->npx;
@@ -600,6 +650,10 @@ ocrGuid_t rootClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
 
    meta    = (RootMeta_t *)  myDeps->meta_Dep.ptr;
    control = (Control_t *)   myDeps->control_Dep.ptr;
+   /* The annex count reads through the control block, so it is taken once here, while that block is held: a
+    * datablock pointer is valid only between its acquire and its release, and both epilogues below run after
+    * the block has been released or destroyed. */
+   int numTopLevelBlocks = countof_rootClone_AnnexDeps_t;
 
 //printf ("Function %36s, File %30s, line %4d\n", __func__, __FILE__, __LINE__); fflush(stdout);
 
@@ -667,7 +721,7 @@ ocrGuid_t rootClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
 
       gasket__ocrDbRelease(   myDeps->control_Dep.guid,                                                                               __FILE__, __func__, __LINE__, nanny, "control");
       ADD_DEPENDENCE(         myDeps->control_Dep.guid,                 rootClone_Edt, rootClone_Deps_t, control_Dep,                 DB_MODE_RW,                   nanny, "control")
-      gasket__ocrDbRelease(   myDeps->goldenChecksum_Dep.guid,                                                                        __FILE__, __func__, __LINE__, nanny, "goldenChecksum");
+      gasket__ocrDbRelease(   myDeps->goldenChecksum_Dep.guid,                                                                       __FILE__, __func__, __LINE__, nanny, "goldenChecksum");
       ADD_DEPENDENCE(         myDeps->goldenChecksum_Dep.guid,          rootClone_Edt, rootClone_Deps_t, goldenChecksum_Dep,          DB_MODE_RO,                   nanny, "goldenChecksum")
       if (ocrGuidIsNull(myDeps->scratchChecksum_Dep.guid)) {
          ADD_DEPENDENCE(      NULL_GUID,                                rootClone_Edt, rootClone_Deps_t, scratchChecksum_Dep,         DB_MODE_NULL,                 nanny, "scratchChecksum")
@@ -675,7 +729,7 @@ ocrGuid_t rootClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
          gasket__ocrDbRelease(myDeps->scratchChecksum_Dep.guid,                                                                       __FILE__, __func__, __LINE__, nanny, "scratchChecksum");
          ADD_DEPENDENCE(      myDeps->scratchChecksum_Dep.guid,         rootClone_Edt, rootClone_Deps_t, scratchChecksum_Dep,         DB_MODE_RW,                   nanny, "scratchChecksum")
       }
-      for (i = 0; i < countof_rootClone_AnnexDeps_t; i++) {
+      for (i = 0; i < numTopLevelBlocks; i++) {
 #ifdef NANNY_ON_STEROIDS
          char name[NANNYLEN];
          sprintf(name, "serviceRequest[%8d]", i);
@@ -694,9 +748,18 @@ ocrGuid_t rootClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
       ADD_DEPENDENCE(         myDeps->meta_Dep.guid,                    rootClone_Edt, rootClone_Deps_t, meta_Dep,                    DB_MODE_RW,                   nanny, "meta")
 
    } else {  // (topOfStack[1].resumption_case_num != 0)    If that was the very last iteration, clean up and shut down.
+      // The aggregate of the final checksum round is the run's result: it is reported once, after the last timestep, rather than once per round on the root's critical path.  A configuration that
+      // aggregated no round at all has no result, and must print none rather than a well-formed line carrying the initial value of the record.
+      double lastChecksum         = meta->lastChecksum;
+      double lastWeightedChecksum = meta->lastWeightedChecksum;
+      int    lastTimeStep         = meta->lastTimeStep;
       gasket__ocrDbDestroy(&myDeps->goldenChecksum_Dep.guid, &myDeps->goldenChecksum_Dep.ptr, __FILE__, __func__, __LINE__, "rootClone", "goldenChecksum");
       gasket__ocrDbDestroy(&myDeps->control_Dep.guid,        &myDeps->control_Dep.ptr,        __FILE__, __func__, __LINE__, "rootClone", "control");
       gasket__ocrDbDestroy(&myDeps->meta_Dep.guid,           &myDeps->meta_Dep.ptr,           __FILE__, __func__, __LINE__, "rootClone", "meta");
+      if (lastTimeStep >= 0) {
+         ocrPrintf ("Grand Total Checksum == %f at timestep %d\n", lastChecksum, lastTimeStep);
+         ocrPrintf ("Weighted Mesh Checksum == %f at timestep %d\n", lastWeightedChecksum, lastTimeStep);
+      }
       printf ("Success!  miniAMR shutting down normally.\n"); fflush(stdout);
       ocrShutdown();
    }
@@ -710,7 +773,7 @@ ocrGuid_t rootClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
       myDeps->goldenChecksum_Dep.guid      = NULL_GUID;
       myDeps->scratchChecksum_Dep.guid     = NULL_GUID;
       int i;
-      for (i=0; i < countof_rootClone_AnnexDeps_t; i++) myDeps->serviceRequest_Dep[i].guid = NULL_GUID;
+      for (i=0; i < numTopLevelBlocks; i++) myDeps->serviceRequest_Dep[i].guid = NULL_GUID;
    }
    return NULL_GUID;
 
@@ -753,10 +816,16 @@ void rootClone_SoupToNuts(rootClone_Params_t * myParams, u32 depc, ocrEdtDep_t d
 
       // Process the service requested from children.
 
-      opcode = (((DbCommHeader_t *) (myDeps->serviceRequest_Dep[0].ptr)))->serviceOpcode;
+      DbCommHeader_t * slot0 = (DbCommHeader_t *) (myDeps->serviceRequest_Dep[0].ptr);
+      opcode = slot0->serviceOpcode;
       for (idep = 1; idep < countof_rootClone_AnnexDeps_t; idep++) {
-         if (((DbCommHeader_t *) (myDeps->serviceRequest_Dep[idep].ptr))->serviceOpcode != opcode) {
-            *((int *) 123) = 456;   // Service opcodes from children don't match!
+         DbCommHeader_t * slot = (DbCommHeader_t *) (myDeps->serviceRequest_Dep[idep].ptr);
+         if (slot->serviceOpcode != opcode) {   // Every block reporting to the root must request the same service in the same round.
+            printf ("Error!  Blocks reporting to the root requested different services in one round: slot 0 opcode %d at timestep %d, slot %d opcode %d at timestep %d "
+                    "(of %d slots, clone=%d)\n",
+                    (int) opcode, slot0->timeStep, idep, (int) slot->serviceOpcode, slot->timeStep,
+                    (int) countof_rootClone_AnnexDeps_t, meta->cloningState.cloneNum); fflush(stdout);
+            *((int *) 123) = 456;
          }
       }
 

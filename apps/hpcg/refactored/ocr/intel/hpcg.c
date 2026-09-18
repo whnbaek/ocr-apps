@@ -38,6 +38,16 @@ Oct  2016: modified to support reduction library change (ALLREDUCE, REDUCE, BROA
 #define COMPUTE  //undefine to suppress compute
 #endif
 
+/* The added placement layer, one switchable name per piece so a measurement
+ * can turn a piece off and attribute what it moved.  Only one object of this
+ * program is both placed by a hint and created more than once per run, so the
+ * layer has one piece. */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+#ifndef HPCG_NO_HALO_HOME_HINT
+#define HPCG_HALO_HOME_HINT
+#endif
+#endif
+
 #ifndef NO_AFFINITY
 #define AFFINITY
 #endif
@@ -146,6 +156,11 @@ typedef struct{
     ocrGuid_t unpackTML;
     ocrGuid_t haloSendEVT[26];
     ocrGuid_t haloRecvEVT[26];
+#ifdef HPCG_HALO_HOME_HINT
+//home of each outgoing halo block: the node its one reader runs on
+    ocrHint_t haloHNT[26];
+    u8 haloRemote[26];
+#endif
     ocrGuid_t finalOnceEVT;
 //WARNING: time only works for <=30 iterations
 
@@ -202,6 +217,22 @@ u32   myy = (myrank/npx)%npy;
 u32   myz = myrank/(npx*npy);
 
 return(getMyPDc(PDstart, PDend, myx, myy, myz, npx, npy, npz));
+}
+
+/* Home of one outgoing halo block.  Such a block has exactly one reader -- the
+ * neighbour task that unpacks and then destroys it -- and that reader is
+ * pinned to a node known before the block is written, so the block's directory
+ * entry can be put where it will be read instead of where it was packed.  A
+ * direction whose neighbour shares this node has nothing to move and keeps the
+ * default home. */
+static ocrHint_t * haloHint(privateBlock_t * pbPTR, u32 dir) {
+#ifdef HPCG_HALO_HOME_HINT
+    if(pbPTR->haloRemote[dir]) return(&(pbPTR->haloHNT[dir]));
+#else
+    (void) pbPTR;
+    (void) dir;
+#endif
+    return(NULL_HINT);
 }
 
 
@@ -783,12 +814,12 @@ if(debug > 1) ocrPrintf("HE%d after launch unpack\n", myrank);
 
     for(i=0;i<26;i++) {
         if(!ocrGuidIsNull(pbPTR->haloSendEVT[i])) {
-            ocrDbCreate(&haloDBK, (void **) &sendPTR, (pbPTR->gather[level]).length[i]*sizeof(double), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
+            ocrDbCreate(&haloDBK, (void **) &sendPTR, (pbPTR->gather[level]).length[i]*sizeof(double), DB_PROP_NONE, haloHint(pbPTR, i), NO_ALLOC);
 if(debug != 0) ocrPrintf("PK%d L%d \n", myrank, level);
 
 
 if(debug != 0) ocrPrintf("PK%d L%d start vi %d pbDBK "GUIDF" \n", myrank, level, vectorIndex, GUIDA(pbDBK));
-if(debug > 1) for(i=0;i<26;i++) ocrPrintf("PK%d i%d haloDBK "GUIDF" \n", myrank, i, GUIDA(haloDBK));
+if(debug > 1) ocrPrintf("PK%d i%d haloDBK "GUIDF" \n", myrank, i, GUIDA(haloDBK));
 
 
     src = vector;
@@ -1512,7 +1543,7 @@ if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d finishing \n", myrank, timestep, ph
 
 //consume rtr   CONVERGENCE test
 if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d global rtr %f \n", myrank, timestep, phase, *returnPTR);
-        if(myrank==0) ocrPrintf("time %d rtr %f \n", timestep, *returnPTR);
+        if(pbPTR->debug > 0 && myrank==0) ocrPrintf("time %d rtr %f \n", timestep, *returnPTR);
         if(timestep==0) pbPTR->rtr0 = *returnPTR;
            else if(*returnPTR/pbPTR->rtr0 < 1e-13 || timestep == pbPTR->maxIter) {
 if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d finishing \n", myrank, timestep, phase);
@@ -1628,7 +1659,7 @@ if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d local rtz %e \n", myrank, timestep,
 
     case 3:
 //consume rtz
-        if(myrank==0) ocrPrintf("time %d rtz %f \n", timestep, *returnPTR);
+        if(pbPTR->debug > 0 && myrank==0) ocrPrintf("time %d rtz %f \n", timestep, *returnPTR);
         pbPTR->rtz = *returnPTR;
 #ifdef COMPUTE
 //compute beta
@@ -2154,6 +2185,17 @@ if(pbPTR->debug > 0) ocrPrintf("HI%d start\n", myrank);
     ocrGuid_t channelDBK, * channelPTR;
     u32 ind = 0;
     u32 index = 0;
+
+#ifdef HPCG_HALO_HOME_HINT
+    u64 PDcount, myPD;
+    u32 dir;
+    ocrAffinityCount(AFFINITY_PD, &PDcount);
+    myPD = getMyPD(0L, PDcount-1, myrank, pbPTR->npx, pbPTR->npy, pbPTR->npz);
+    for(dir=0;dir<26;dir++) {
+        pbPTR->haloRemote[dir] = 0;
+        ocrHintInit(&(pbPTR->haloHNT[dir]), OCR_HINT_DB_T);
+    }
+#endif
     for(k=-1;k<2;k++)
         for(j=-1;j<2;j++)
             for(i=-1;i<2;i++) {
@@ -2174,6 +2216,27 @@ if(pbPTR->debug > 1) ocrPrintf("ind %d \n", ind);
                     *channelPTR = pbPTR->haloSendEVT[ind];
                     ocrDbRelease(channelDBK);
                     ocrEventSatisfy(stickyEVT, channelDBK);
+
+#ifdef HPCG_HALO_HOME_HINT
+                    {
+//the direction offsets are negative on three of the six faces, so the
+//neighbour's rank must be formed in a signed width wide enough to hold it --
+//the unsigned grid extents would otherwise wrap it into a different rank
+                        s64 nbrRank = (s64) myrank
+                          + (s64) k * (s64) pbPTR->npx * (s64) pbPTR->npy
+                          + (s64) j * (s64) pbPTR->npx
+                          + (s64) i;
+                        u64 nbrPD = getMyPD(0L, PDcount-1, (u64) nbrRank,
+                          pbPTR->npx, pbPTR->npy, pbPTR->npz);
+                        if(nbrPD != myPD) {
+                            ocrGuid_t nbrAffinity;
+                            ocrAffinityGetAt(AFFINITY_PD, nbrPD, &nbrAffinity);
+                            ocrSetHintValue(&(pbPTR->haloHNT[ind]), OCR_HINT_DB_AFFINITY,
+                              ocrAffinityToHintValue(nbrAffinity));
+                            pbPTR->haloRemote[ind] = 1;
+                        }
+                    }
+#endif
 
 //receive
                     index = 26*(myrank + k*pbPTR->npx*pbPTR->npy + j*pbPTR->npx + i) + 25-ind;
@@ -2283,27 +2346,34 @@ Passes the shared blocks to realMain
 
     if(argc > 3) {
         u32 k = 1;
-        npx = (s64) atoi(ocrGetArgv(programArgv, k++));
-        npy = (s64) atoi(ocrGetArgv(programArgv, k++));
-        npz = (s64) atoi(ocrGetArgv(programArgv, k++));
-        if(npx <= 0) bomb("npx must be positive");
-        if(npy <= 0) bomb("npy must be positive");
-        if(npz <= 0) bomb("npz must be positive");
+        s64 gx = (s64) atoi(ocrGetArgv(programArgv, k++));
+        s64 gy = (s64) atoi(ocrGetArgv(programArgv, k++));
+        s64 gz = (s64) atoi(ocrGetArgv(programArgv, k++));
+        if(gx <= 0) bomb("npx must be positive");
+        if(gy <= 0) bomb("npy must be positive");
+        if(gz <= 0) bomb("npz must be positive");
+        npx = gx;
+        npy = gy;
+        npz = gz;
         }
 
     if(argc > 4) {
-        m = (u64) atoi(ocrGetArgv(programArgv, 4));
-        if(m == 0) bomb("m must be positive");
-        m = 16*((m-1)/16 +1);
+        s64 edge = (s64) atoi(ocrGetArgv(programArgv, 4));
+        if(edge <= 0) bomb("m must be positive");
+        m = 16*((edge-1)/16 +1);
         }
 
     if(argc > 5) {
-        maxIter = (u64) atoi(ocrGetArgv(programArgv, 5));
-        if(maxIter > HPCGMAXITER) bomb("maxIter must be <= HPCGMAXITER\n");
+        s64 iter = (s64) atoi(ocrGetArgv(programArgv, 5));
+        if(iter <= 0) bomb("maxIter must be positive");
+        if(iter > HPCGMAXITER) bomb("maxIter must be <= HPCGMAXITER\n");
+        maxIter = iter;
         }
 
     if(argc>6) {
-        debug = (u64) atoi(ocrGetArgv(programArgv, 6));
+        s64 dbg = (s64) atoi(ocrGetArgv(programArgv, 6));
+        if(dbg < 0) bomb("debug must be non-negative");
+        debug = dbg;
         }
 
 

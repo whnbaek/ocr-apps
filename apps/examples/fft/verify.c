@@ -12,7 +12,7 @@ bool areSame(float a, float b) {
     return (fabs(a-b) < 1e-9);
 }
 
-void ditfft2(float *X_real, float *X_imag, float *x_in, int N, int step) {
+void ditfft2(float *X_real, float *X_imag, float *x_in, u64 N, u64 step) {
     if(N == 1) {
         X_real[0] = x_in[0];
         X_imag[0] = 0;
@@ -20,7 +20,7 @@ void ditfft2(float *X_real, float *X_imag, float *x_in, int N, int step) {
         // DFT even side
         ditfft2(X_real, X_imag, x_in, N/2, 2 * step);
         ditfft2(X_real+N/2, X_imag+N/2, x_in+step, N/2, 2 * step);
-        int k;
+        u64 k;
         for(k=0;k<N/2;k++) {
             float t_real = X_real[k];
             float t_imag = X_imag[k];
@@ -52,7 +52,7 @@ void ditfft2(float *X_real, float *X_imag, float *x_in, int N, int step) {
 //            2) X_imag
 //            3) user-defined event, allowing the EDT to be triggered on-demand
 ocrGuid_t fftVerifyEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-    int i;
+    u64 i;
     float *data_in;
     float *X_real_other;
     float *X_imag_other;
@@ -92,7 +92,7 @@ ocrGuid_t fftVerifyEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
         if(!areSame(X_real_other[i],X_real[i]) ||
            !areSame(X_imag_other[i],X_imag[i])) {
             intact = false;
-            ocrPrintf("Mismatch at index %d\n",i);
+            ocrPrintf("Mismatch at index %lu\n",(unsigned long)i);
             ocrPrintf("Expected: %f, %f\n", X_real[i], X_imag[i]);
             ocrPrintf("Computed: %f, %f\n", X_real_other[i], X_imag_other[i]);
             break;

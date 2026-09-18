@@ -212,6 +212,76 @@ int ReadParams(struct RadarParams *radar_params, struct ImageParams *image_param
   return 0;
 }
 
+
+#ifndef RAG_IMPLICIT_INPUTS
+/* Reading the pulse history is not the exhibit, but it is inside the measured
+ * window, so it is read in parallel.  The three input blocks are one object
+ * each and their consumers read them whole, so the readers cannot own separate
+ * pieces: concurrent writers to disjoint regions of one block are defined
+ * within a node and undefined across one, and every slab is therefore placed
+ * on the node that runs the task that hands the blocks on.  Without an affinity
+ * extension there is no way to express that placement, and the read would be a
+ * cross-node write race on a single object, so the build is refused rather than
+ * silently producing an undefined image. */
+#ifndef ENABLE_EXTENSION_AFFINITY
+#error "the parallel input read needs OCR_HINT_EDT_AFFINITY: concurrent writers to disjoint regions of one datablock are defined only within a node"
+#endif
+
+#define RAG_READ_SLABS 128
+
+typedef struct { u64 p0, p1, img; } readSlabPRM_t;
+typedef struct { ocrGuid_t arg_scg, X_dbg, Pt_dbg, Tp_dbg; } readJoinPRM_t;
+
+ocrGuid_t read_slab_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
+  readSlabPRM_t *p = (readSlabPRM_t *)paramv;
+  assert(paramc==PRMNUM(readSlab));
+  assert(depc==5);
+  RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,0);
+  RAG_REF_MACRO_SPAD(struct file_args_t,file_args,file_args_ptr,file_args_lcl,file_args_dbg,1);
+  RAG_REF_MACRO_BSM( struct complexData **,X,NULL,NULL,X_dbg,2);
+  RAG_REF_MACRO_BSM( float **,Pt,NULL,NULL,Pt_dbg,3);
+  RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,4);
+  const long P1 = image_params->P1;
+  const long S1 = image_params->S1;
+  const long p0 = (long)p->p0, np = (long)(p->p1 - p->p0);
+  /* A packed 2-D block lays its row-pointer table ahead of the payload; a slab
+     writes the payload rows it owns and leaves the table untouched. */
+  struct complexData *Xd  = (struct complexData *)&X[P1];
+  float              *Ptd = (float *)&Pt[P1];
+  FILE *f1 = fopen(file_args_lcl.in_data,      "rb");
+  FILE *f2 = fopen(file_args_lcl.in_platpos,   "rb");
+  FILE *f3 = fopen(file_args_lcl.in_pulsetime, "rb");
+  if( f1 == NULL || f2 == NULL || f3 == NULL ) {
+    ocrPrintf("Error opening %s / %s / %s\n", file_args_lcl.in_data,
+              file_args_lcl.in_platpos, file_args_lcl.in_pulsetime);RAG_FLUSH;
+    xe_exit(1);
+  }
+  const long base = (long)p->img*P1 + p0;
+  fseek(f1, base*S1*(long)sizeof(struct complexData), SEEK_SET);
+  fseek(f2, base*3L*(long)sizeof(float),              SEEK_SET);
+  fseek(f3, base*(long)sizeof(float),                 SEEK_SET);
+  fread(&Xd[(size_t)p0*(size_t)S1], sizeof(struct complexData), (size_t)np*(size_t)S1, f1);
+  fread(&Ptd[(size_t)p0*3],         sizeof(float),              (size_t)np*3,          f2);
+  fread(&Tp[p0],                    sizeof(float),              (size_t)np,            f3);
+  fclose(f1); fclose(f2); fclose(f3);
+  return NULL_GUID;
+}
+
+/* The successor is wired only once every slab is in: a data-block dependence
+ * satisfies its slot immediately, so wiring from the spawner would let the
+ * consumer acquire the blocks while they are still being filled. */
+ocrGuid_t read_join_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
+  int retval;
+  readJoinPRM_t *p = (readJoinPRM_t *)paramv;
+  assert(paramc==PRMNUM(readJoin));
+  (void)depc; (void)depv;
+  RAG_DEF_MACRO_SPAD_RO(p->arg_scg,NULL,NULL,NULL,NULL,p->X_dbg,4);
+  RAG_DEF_MACRO_SPAD_RO(p->arg_scg,NULL,NULL,NULL,NULL,p->Pt_dbg,5);
+  RAG_DEF_MACRO_SPAD_RO(p->arg_scg,NULL,NULL,NULL,NULL,p->Tp_dbg,6);
+  return NULL_GUID;
+}
+#endif // RAG_IMPLICIT_INPUTS
+
 // ReadData edt
 
 ocrGuid_t ReadData_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
@@ -228,6 +298,8 @@ ocrGuid_t ReadData_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
   RAG_REF_MACRO_BSM( struct complexData **,X,NULL,NULL,X_dbg,2);
   RAG_REF_MACRO_BSM( float **,Pt,NULL,NULL,Pt_dbg,3);
   RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,4);
+
+#ifdef RAG_IMPLICIT_INPUTS
   // The row-pointer tables are absolute and go stale when the block is
   // relocated into this EDT's address space; rebuild them against the current
   // base before writing the pulse/platform rows below.
@@ -237,48 +309,24 @@ ocrGuid_t ReadData_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
   void *pInFile  = file_args_lcl.pInFile;
   void *pInFile2 = file_args_lcl.pInFile2;
   void *pInFile3 = file_args_lcl.pInFile3;
-#else
-  FILE *pInFile = NULL, *pInFile2 = NULL, *pInFile3 = NULL;
-#ifndef RAG_IMPLICIT_INPUTS
-  /* A FILE* is process-local, so open the inputs on the node this task
-   * executes on and seek to the current image's slice: image i occupies the
-   * i-th contiguous block of P1 rows in each of the three files. */
-  {
-    const long img = image_params_lcl.imageNumber;
-    const long P1  = image_params_lcl.P1;
-    const long S1  = image_params_lcl.S1;
-    pInFile  = fopen(file_args_lcl.in_data,      "rb");
-    pInFile2 = fopen(file_args_lcl.in_platpos,   "rb");
-    pInFile3 = fopen(file_args_lcl.in_pulsetime, "rb");
-    if( pInFile == NULL || pInFile2 == NULL || pInFile3 == NULL ) {
-      ocrPrintf("Error opening %s / %s / %s\n", file_args_lcl.in_data,
-                file_args_lcl.in_platpos, file_args_lcl.in_pulsetime);RAG_FLUSH;
-      xe_exit(1);
-    }
-    fseek(pInFile,  img*P1*S1*(long)sizeof(struct complexData), SEEK_SET);
-    fseek(pInFile2, img*P1*3L*(long)sizeof(float),              SEEK_SET);
-    fseek(pInFile3, img*P1*(long)sizeof(float),                 SEEK_SET);
-  }
-#endif
-#endif
-#ifdef DEBUG
-  ocrPrintf("file descripters are %ld %ld %ld\n",(uint64_t)pInFile, (uint64_t)pInFile2, (uint64_t) pInFile3);RAG_FLUSH;
-#endif
-#ifndef TG_ARCH
-  void ReadData(struct ImageParams *image_params, FILE *pFile1, FILE *pFile2, FILE *pFile3,
-                struct complexData **X, float **Pt, float *Tp);
-#else
   void ReadData(struct ImageParams *image_params, void *pFile1, void *pFile2, void *pFile3,
                 struct complexData **X, float **Pt, float *Tp);
+#else
+  FILE *pInFile = NULL, *pInFile2 = NULL, *pInFile3 = NULL;
+  void ReadData(struct ImageParams *image_params, FILE *pFile1, FILE *pFile2, FILE *pFile3,
+                struct complexData **X, float **Pt, float *Tp);
 #endif
-
   ReadData(image_params, pInFile, pInFile2, pInFile3, X, Pt, Tp);
-
-#if !defined(TG_ARCH) && !defined(RAG_IMPLICIT_INPUTS)
-  fclose(pInFile);
-  fclose(pInFile2);
-  fclose(pInFile3);
-#endif
+#else // RAG_IMPLICIT_INPUTS
+  (void)file_args; (void)X; (void)Pt; (void)Tp;
+  /* Image i occupies the i-th contiguous run of P1 pulses in each of the three
+     files, so a slab's offset is a pure function of its pulse range. */
+  const int img = image_params->imageNumber;
+  image_params->imageNumber++;
+  int nslab = RAG_READ_SLABS;
+  if(nslab > image_params->P1) nslab = image_params->P1;
+  if(nslab < 1) nslab = 1;
+#endif // RAG_IMPLICIT_INPUTS
 
 #ifdef TG_ARCH
   SPADtoBSM(image_params_ptr,image_params,sizeof(struct ImageParams));
@@ -296,9 +344,57 @@ ocrGuid_t ReadData_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
   retval = ocrDbRelease(Pt_dbg);           assert(retval==0);
   retval = ocrDbRelease(Tp_dbg);           assert(retval==0);
 
+#ifdef RAG_IMPLICIT_INPUTS
   RAG_DEF_MACRO_SPAD_RO(arg_scg,NULL,NULL,NULL,NULL,X_dbg,4);
   RAG_DEF_MACRO_SPAD_RO(arg_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
   RAG_DEF_MACRO_SPAD_RO(arg_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
+#else
+  /* Every slab must land on this node; a slab placed elsewhere would be a
+     cross-node concurrent writer to one datablock, whose result is undefined. */
+  ocrHint_t _hnt; ocrHint_t *_hp;
+  {
+    ocrGuid_t _aff = NULL_GUID;
+    if(ocrAffinityGetCurrent(&_aff) != 0) {
+      ocrPrintf("Error reading the current affinity; the parallel input read"
+                " cannot place its slabs on one node\n");RAG_FLUSH;
+      xe_exit(1);
+    }
+    ocrHintInit(&_hnt, OCR_HINT_EDT_T);
+    ocrSetHintValue(&_hnt, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(_aff));
+    _hp = &_hnt;
+  }
+  ocrGuid_t _join_clg, _join_scg;
+  readJoinPRM_t _jp;
+  _jp.arg_scg = arg_scg; _jp.X_dbg = X_dbg; _jp.Pt_dbg = Pt_dbg; _jp.Tp_dbg = Tp_dbg;
+  retval = ocrEdtTemplateCreate(&_join_clg, read_join_edt, PRMNUM(readJoin), nslab);
+  assert(retval==0);
+  RAG_TEMPLATE_REGISTER(_join_clg);
+  retval = ocrEdtCreate(&_join_scg, _join_clg, EDT_PARAM_DEF, (u64 *)&_jp,
+                        EDT_PARAM_DEF, NULL, EDT_PROP_NONE, _hp, NULL);
+  assert(retval==0);
+
+  ocrGuid_t _slab_clg;
+  retval = ocrEdtTemplateCreate(&_slab_clg, read_slab_edt, PRMNUM(readSlab), 5);
+  assert(retval==0);
+  RAG_TEMPLATE_REGISTER(_slab_clg);
+  for(int _i = 0; _i < nslab; _i++) {
+    readSlabPRM_t _sp;
+    _sp.p0  = (u64)((long)image_params->P1 * _i       / nslab);
+    _sp.p1  = (u64)((long)image_params->P1 * (_i + 1) / nslab);
+    _sp.img = (u64)img;
+    ocrGuid_t _slab_scg, _slab_evg;
+    retval = ocrEdtCreate(&_slab_scg, _slab_clg, EDT_PARAM_DEF, (u64 *)&_sp,
+                          EDT_PARAM_DEF, NULL, EDT_PROP_NONE, _hp, &_slab_evg);
+    assert(retval==0);
+    retval = ocrAddDependence(_slab_evg, _join_scg, _i, DB_MODE_NULL);
+    assert(retval==0);
+    RAG_DEF_MACRO_SPAD_RO(_slab_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+    RAG_DEF_MACRO_SPAD_RO(_slab_scg,NULL,NULL,NULL,NULL,file_args_dbg,1);
+    RAG_DEF_MACRO_BSM(_slab_scg,NULL,NULL,NULL,NULL,X_dbg,2);
+    RAG_DEF_MACRO_BSM(_slab_scg,NULL,NULL,NULL,NULL,Pt_dbg,3);
+    RAG_DEF_MACRO_BSM(_slab_scg,NULL,NULL,NULL,NULL,Tp_dbg,4);
+  }
+#endif // RAG_IMPLICIT_INPUTS
 
 #ifdef TRACE_LVL_2
   ocrPrintf("//// leave ReadData_edt\n");RAG_FLUSH;

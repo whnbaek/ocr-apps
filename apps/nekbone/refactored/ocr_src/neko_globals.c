@@ -19,23 +19,18 @@
 #define XMEMSET(SRC, CHARC, SZ) {unsigned int xmIT; for(xmIT=0; xmIT<SZ; ++xmIT) *((char*)SRC+xmIT)=CHARC;}
 #define XMEMCPY(DEST, SRC, SZ) {unsigned int xmIT; for(xmIT=0; xmIT<SZ; ++xmIT) *((char*)DEST+xmIT)=*((char*)SRC+xmIT);}
 
-// The token must be a non-empty run of decimal digits: anything else is
-// reported through io_err and returns 0, since a value silently derived from
-// non-numeric text would set up a lattice nobody asked for.
+// The token must be a non-empty run of decimal digits whose value fits an
+// unsigned int: anything else is reported through io_err and returns 0.  A
+// value silently derived from non-numeric text, or wrapped around by an
+// overflowing accumulation, would set up a lattice nobody asked for.
 unsigned int myAtoU(const char *in, Err_t * io_err)
 {
-    const long max_length = 2048;
+    const unsigned int uint_max = (unsigned int)-1;
     unsigned int res = 0;
 
     const char * p = in;
-    while( *p != '\0' && (*p==' ' || *p=='\t') ) {
-            if(p-in > max_length) { //Error: text too long
-                ocrPrintf("ERROR: command line argument is longer than %ld characters\n", max_length);
-                if(!*io_err) *io_err = __LINE__;
-                return 0;
-            }
-            ++p;
-    }
+    while( *p != '\0' && (*p==' ' || *p=='\t') ) ++p;
+
     if(*p=='\0'){
         ocrPrintf("ERROR: command line argument \"%s\" is empty\n", in);
         if(!*io_err) *io_err = __LINE__;
@@ -52,7 +47,15 @@ unsigned int myAtoU(const char *in, Err_t * io_err)
             if(!*io_err) *io_err = __LINE__;
             return 0;
         }
-        res = res*10U + p[i] - '0';
+        {
+            const unsigned int d = (unsigned int)(p[i] - '0');
+            if( res > (uint_max - d)/10U ) {
+                ocrPrintf("ERROR: command line argument \"%s\" is too large for an unsigned int\n", in);
+                if(!*io_err) *io_err = __LINE__;
+                return 0;
+            }
+            res = res*10U + d;
+        }
     }
 
     return res;
@@ -167,7 +170,8 @@ Err_t init_NEKOstatics(NEKOstatics_t * io, void * in_programArgv)
         io->pDOF_max = 0;
         unsigned int i;
         for(i=io->pDOF_begin; i<io->pDOF_end; ++i) if(io->pDOF_max < i) io->pDOF_max = i;
-        if(io->pDOF_max == 0){
+        if(io->pDOF_max < 2){
+            ocrPrintf("ERROR: pDOF must be at least 2.  Received: %u\n", argPDOF_begin);
             err = __LINE__;
             break;
         }
@@ -187,8 +191,16 @@ Err_t init_NEKOstatics(NEKOstatics_t * io, void * in_programArgv)
         io->ByteSizeOf1DOF = sizeof(NBN_REAL);
 
         //===== Basic checks
-        if(io->Rtotal==0 || io->Rtotal != io->Rx * io->Ry * io->Rz ) { err=__LINE__; IFEB; }
-        if(io->Etotal==0 || io->Etotal != io->Ex * io->Ey * io->Ez ) { err=__LINE__; IFEB; }
+        if(io->Rtotal==0 || io->Rtotal != io->Rx * io->Ry * io->Rz ) {
+            ocrPrintf("ERROR: the rank lattice must be non-zero on every axis: Rx,Ry,Rz= %u,%u,%u\n",
+                      io->Rx, io->Ry, io->Rz);
+            err=__LINE__; IFEB;
+        }
+        if(io->Etotal==0 || io->Etotal != io->Ex * io->Ey * io->Ez ) {
+            ocrPrintf("ERROR: the element block must be non-zero on every axis: Ex,Ey,Ez= %u,%u,%u\n",
+                      io->Ex, io->Ey, io->Ez);
+            err=__LINE__; IFEB;
+        }
         if(io->pDOF_begin >= io->pDOF_end || io->pDOF_step==0) { err=__LINE__; IFEB; }
 
         if(NEKbone_neighborCount != 26) {err=__LINE__; IFEB;} //This should not change. This code only works with cubic lattices.
@@ -199,8 +211,16 @@ Err_t init_NEKOstatics(NEKOstatics_t * io, void * in_programArgv)
         //In order to alleviate this state of affair, the ordering of triplets
         // is forced to be ordered.
         //TODO: Remove the forced ordering of R,E,P triplets.
-        if(io->Rx < io->Ry || io->Ry < io->Rz || io->Rx < io->Rz) { err=__LINE__; IFEB; }
-        if(io->Ex < io->Ey || io->Ey < io->Ez || io->Ex < io->Ez) { err=__LINE__; IFEB; }
+        if(io->Rx < io->Ry || io->Ry < io->Rz || io->Rx < io->Rz) {
+            ocrPrintf("ERROR: the rank lattice must be non-increasing: Rx,Ry,Rz= %u,%u,%u\n",
+                      io->Rx, io->Ry, io->Rz);
+            err=__LINE__; IFEB;
+        }
+        if(io->Ex < io->Ey || io->Ey < io->Ez || io->Ex < io->Ez) {
+            ocrPrintf("ERROR: the element block must be non-increasing: Ex,Ey,Ez= %u,%u,%u\n",
+                      io->Ex, io->Ey, io->Ez);
+            err=__LINE__; IFEB;
+        }
 
         //===== Setup OCR affinities
         io->OCR_affinityCount = 0;
@@ -363,8 +383,10 @@ Err_t init_NEKOglobals(NEKOstatics_t * in_statics, unsigned int in_rankID, NEKOg
         XMEMSET(io, 0, sizeof(NEKOglobals_t));
 
         io->startTimeMark = nekbone_getTime();
-        TIMEPRINT2("NKTIME> rank=%u SPMD_fork="TIMEF"\n",
-                   in_rankID, io->startTimeMark - in_statics->startTimeMark);
+        if(in_rankID == 0){
+            TIMEPRINT2("NKTIME> rank=%u SPMD_fork="TIMEF"\n",
+                       in_rankID, io->startTimeMark - in_statics->startTimeMark);
+        }
 
         // The current number of degree of freedom for one polynomial Basis
         //      pDOF_begin <= pDOF < pDOF_end
@@ -420,7 +442,7 @@ Err_t init_NEKOglobals(NEKOstatics_t * in_statics, unsigned int in_rankID, NEKOg
         }
 
         //===== Output what we got
-        print_NEKOglobals(io);
+        if(in_rankID == 0) print_NEKOglobals(io);
 
         break;
     }

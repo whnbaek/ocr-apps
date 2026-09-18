@@ -32,78 +32,6 @@ double hpgmg_time() {
 #endif
 }
 
-double mean(level_type * level, int id_a){
-
-  int box;
-  double sum_level =  0.0;
-  for(box=0;box<level->num_boxes;box++){
-    int i,j,k;
-    int jStride = level->jStride;
-    int kStride = level->kStride;
-    int  ghosts = NUM_GHOSTS;
-    int     dim = level->box_dim;
-    double * __restrict__ grid_a = (double*)(((char*)level->temp[box])+ id_a) + ghosts*(1+jStride+kStride); // i.e. [0] = first non ghost zone point
-    double sum_box = 0.0;
-    for(k=0;k<dim;k++){
-    for(j=0;j<dim;j++){
-    for(i=0;i<dim;i++){
-      int ijk = i + j*jStride + k*kStride;
-      sum_box += grid_a[ijk];
-    }}}
-    sum_level+=sum_box;
-  }
-
-  double ncells_level = (double)level->dim.i*(double)level->dim.j*(double)level->dim.k;
-  double mean_level = sum_level / ncells_level;
-  return(mean_level);
-}
-
-
-void shift_vector(level_type * level, int id_c, int id_a, double shift_a){
-
-  int box;
-  for(box=0;box<level->num_boxes;box++){
-    int i,j,k;
-    int jStride = level->jStride;
-    int kStride = level->kStride;
-    int  ghosts = NUM_GHOSTS;
-    int     dim = level->box_dim;
-    double * __restrict__ grid_c = (double*)(((char*)level->temp[box])+ id_c) + ghosts*(1+jStride+kStride); // i.e. [0] = first non ghost zone point
-    double * __restrict__ grid_a = (double*)(((char*)level->temp[box])+ id_a) + ghosts*(1+jStride+kStride); // i.e. [0] = first non ghost zone point
-
-    for(k=0;k<dim;k++){
-    for(j=0;j<dim;j++){
-    for(i=0;i<dim;i++){
-      int ijk = i + j*jStride + k*kStride;
-      grid_c[ijk] = grid_a[ijk] + shift_a;
-    }}}
-  }
-}
-
-double dot(level_type * level, int id_a, int id_b){
-
-  int box;
-  double a_dot_b_level =  0.0;
-  for(box=0;box<level->num_boxes;box++){
-    int i,j,k;
-    int jStride = level->jStride;
-    int kStride = level->kStride;
-    int  ghosts = NUM_GHOSTS;
-    int     dim = level->box_dim;
-    double * __restrict__ grid_a = (double*)(((char*)level->temp[box])+ id_a) + ghosts*(1+jStride+kStride); // i.e. [0] = first non ghost zone point
-    double * __restrict__ grid_b = (double*)(((char*)level->temp[box])+ id_b) + ghosts*(1+jStride+kStride);
-    double a_dot_b_box = 0.0;
-    for(k=0;k<dim;k++){
-    for(j=0;j<dim;j++){
-    for(i=0;i<dim;i++){
-      int ijk = i + j*jStride + k*kStride;
-      a_dot_b_box += grid_a[ijk]*grid_b[ijk];
-    }}}
-    a_dot_b_level+=a_dot_b_box;
-  }
-
-  return(a_dot_b_level);
-}
 
 
 
@@ -299,38 +227,6 @@ void get_fine_boxes(level_type *fine, level_type *coarse, int coarse_box_id, ocr
   }
   ocrAssert(count == num_boxes);
 }
-
-void get_fine_box_ids(level_type *fine, level_type *coarse, int coarse_box_id, int *fine_box_ids) {
-
-  int fi,fj,fk,fdim_i,fdim_j,fdim_k, fine_box_id;
-  int cdim_i,cdim_j,cdim_k,ci,cj,ck;
-
-  cdim_i = coarse->boxes_in.i; cdim_j = coarse->boxes_in.j; cdim_k = coarse->boxes_in.k;
-  fdim_i = fine->boxes_in.i; fdim_j = fine->boxes_in.j; fdim_k = fine->boxes_in.k;
-
-  int num_boxes =   (fdim_i/cdim_i) * (fdim_j/cdim_j) * (fdim_k/cdim_k);
-
-  check_fine_box_count(fine, coarse, num_boxes);
-
-  get_tuple(coarse_box_id, cdim_i, cdim_j, cdim_k, &ci, &cj, &ck);
-
-  int i,j,k, count=0;
-  for (k=0;k<fdim_k/cdim_k;k++) {
-    for (j=0;j<fdim_j/cdim_j;j++) {
-      for (i=0;i<fdim_i/cdim_i;i++) {
-        fi = (fdim_i/cdim_i) * ci + i;
-        fj = (fdim_j/cdim_j) * cj + j;
-        fk = (fdim_k/cdim_k) * ck + k;
-
-        fine_box_id = fi + fj*fdim_i + fk*fdim_i*fdim_j;
-        fine_box_ids[count++] = fine_box_id;
-      }
-    }
-  }
-  ocrAssert(count == num_boxes);
-}
-
-
 
 void residual_coarse(level_type * level, box_type *box, double *res_id, double *x_id, double *rhs_id, double a, double b) {
 
@@ -864,49 +760,4 @@ ocrPrintf("L %f, B %d :: %15f, %15f, %15f, %15f, %15f, %15f, %15f\n",level->h,bo
 //ocrPrintf("L %f, B %d :: %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f\n",level->h,box->global_box_id, sum[0], sum[1], sum[2], sum[3], sum[4], sum[5],sum[6], sum[7], sum[8], sum[9], sum[10], sum[11]);
 }
 
-void print_vectors(level_type *level) {
-
-  int ghosts = NUM_GHOSTS;
-  int jStride = level->jStride;
-  int kStride = level->kStride;
-
-  int b;
-  box_type *box;
-  for (b = 0; b < level->num_boxes; b++) {
-
-    box = level->temp[b];
-
-    const double * __restrict__ alpha  = (double*)(((char*)box)+ level->alpha) + ghosts*(1+jStride+kStride);
-    const double * __restrict__ beta_i = (double*)(((char*)box)+ level->beta_i) + ghosts*(1+jStride+kStride);
-    const double * __restrict__ beta_j = (double*)(((char*)box)+ level->beta_j) + ghosts*(1+jStride+kStride);
-    const double * __restrict__ beta_k = (double*)(((char*)box)+ level->beta_k) + ghosts*(1+jStride+kStride);
-    const double * __restrict__  valid = (double*)(((char*)box)+ level->valid) + ghosts*(1+jStride+kStride);
-
-    const double * __restrict__ f  = (double*)(((char*)box)+ level->f) + ghosts*(1+jStride+kStride);
-    const double * __restrict__ f_Av = (double*)(((char*)box)+ level->f_Av) + ghosts*(1+jStride+kStride);
-    const double * __restrict__ u_true = (double*)(((char*)box)+ level->u_true) + ghosts*(1+jStride+kStride);
-    const double * __restrict__ u = (double*)(((char*)box)+ level->u) + ghosts*(1+jStride+kStride);
-    const double * __restrict__  Dinv = (double*)(((char*)box)+ level->Dinv) + ghosts*(1+jStride+kStride);
-    const double * __restrict__  L1inv = (double*)(((char*)box)+ level->L1inv) + ghosts*(1+jStride+kStride);
-    const double * __restrict__ temp = (double*)(((char*)box)+ level->vec_temp) + ghosts*(1+jStride+kStride);
-
-    int i,j,k;
-    double sum[12] = {0.0};
-    int dim = level->box_dim;
-    for (k = 0; k < dim; k++) {
-      for (j = 0; j < dim; j++) {
-        for (i = 0; i < dim; i++) {
-          int ijk = i + j*jStride + k*kStride;
-          sum[0] += alpha[ijk]; sum[1] += beta_i[ijk]; sum[2] += beta_j[ijk]; sum[3] += beta_k[ijk];
-          sum[4] += valid[ijk]; sum[5] += f[ijk]; sum[6] += f_Av[ijk]; sum[7] += u_true[ijk];
-          sum[8] += u[ijk]; sum[9] += Dinv[ijk]; sum[10] += L1inv[ijk]; sum[11] += temp[ijk];
-        }
-      }
-    }
-    if (b==0)
-      ocrPrintf("sum0-10:: %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f, %15f\n", sum[0], sum[1], sum[2], sum[3], sum[4], sum[5],sum[6], sum[7], sum[8], sum[9], sum[10], sum[11]);
-      //ocrPrintf("sum0-10:: %10f, %10f, %10f, %10f, %10f, %10f, %10f, %10f, %10f, %10f, %10f, %10f\n", sum[0], sum[1], sum[2], sum[3], sum[4], sum[5],sum[6], sum[7], sum[8], sum[9], sum[10], sum[11]);
-
-  }
-}
 

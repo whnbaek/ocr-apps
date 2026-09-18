@@ -25,7 +25,6 @@ Copyright Intel Corporation 2016
 #include "cilktime.h" // timing library
 
 //#define PRINT
-//#define CHECK_RESULTS
 
 #define MAX(a, b) ((a > b) ? a : b)
 #define MIN(a, b) ((a < b) ? a : b)
@@ -40,31 +39,18 @@ typedef struct {
     int N, xi, xj, n; // input and base case size, top-left corner index
 } LCS_base_params;
 
-void serial_lcs(int* X, int* S, int* T, int xi, int xj, int n)
+/* Content-sensitive digest of a computed score tile: an FNV-1a walk over the
+ * cells in memory order, folded to 31 bits so the value is exact in every
+ * consumer's numeric type.  Every cell contributes, so a wrong string, a
+ * dropped task or a lost write changes it. */
+static u64 lcsChecksum(const int* v, long n)
 {
-    int N = n;
-    int Nplus1 = N + 1;
-    // Finish computation
-
-    // Conditions to handle non powers of 2.
-    long int endi = (xi + n > N) ? (Nplus1 - xi) : n;
-    long int endj = (xj + n > N) ? (Nplus1 - xj) : n;
-
-    endi = xi + endi;
-    endj = xj + endj;
-
-    for (int i = xi; i < endi; i++) {
-        for (int j = xj; j < endj; j++) {
-            long int idx = (i - 1) * Nplus1;
-            //Optimize
-            int del = X[idx + j];
-            int ins = X[idx + Nplus1 + (j - 1)];
-            int del_ins = MAX(del, ins) + GAP_PENALTY;
-            int match = X[idx + (j - 1)] + (S[i] != T[j]);
-            X[idx + Nplus1 + j] = MIN(match, del_ins);
-        }
+    u64 h = 1469598103934665603ULL;
+    for (long k = 0; k < n; k++) {
+        h ^= (u64)(u32)v[k];
+        h *= 1099511628211ULL;
     }
-    // Copy back to original location
+    return h & 0x7fffffffULL;
 }
 
 //base case kernel
@@ -170,28 +156,49 @@ ocrGuid_t seqLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     return NULL_GUID;
 }
-// Contiguous row-band placement for wavefront leaves: rows are split into
-// one contiguous band per rank.  A block's West neighbor shares its row and
-// therefore its rank; North/NW share its band for every row except the
-// nranks-1 band-boundary rows, so the heavy north-south payload stays
-// rank-local almost everywhere.  The anti-diagonal frontier still spreads:
-// once it is at least one band tall it has blocks in every band.  A striped
-// map (row % nranks) spreads the frontier sooner but makes EVERY north
-// neighbor remote, shipping each block's payload across ranks once per
-// south-facing read — bandwidth, not spread, is what limits the wavefront.
-/* Bands per rank: 1 = one contiguous band per rank (longest pipeline
- * fill/drain, fewest band-boundary rows); k = k cyclic bands per rank
- * (pipeline fills after rows/(nranks*k) rows at the cost of k times the
- * boundary crossings). */
-#ifndef LCS_ROW_BANDS_PER_RANK
-#define LCS_ROW_BANDS_PER_RANK 1
+// Contiguous row-band placement for wavefront leaves: the block rows in play
+// are split into one contiguous band per rank, so every rank owns a band and
+// the bands differ in height by at most one row.  A block's West neighbor
+// shares its row and therefore its rank; North/NW share its band for every
+// row except the nranks-1 band-boundary rows, so the heavy north-south
+// payload stays rank-local almost everywhere.  The anti-diagonal frontier
+// still spreads: once it is at least one band tall it has blocks in every
+// band.  A striped map (row % nranks) spreads the frontier sooner but makes
+// EVERY north neighbor remote, shipping each block's payload across ranks
+// once per south-facing read -- bandwidth, not spread, is what limits the
+// wavefront.
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+/* Band of a block row.  Callers pass the grid side (L+1) while only rows
+ * 0..L-1 carry leaves and interior blocks, so the partition is taken over
+ * those L rows: every rank gets floor or ceil of L/nranks of them and none
+ * is left without work. */
+static u64 bandOfRow(u64 row, int gridSide)
+{
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    u64 rows = (gridSide > 1) ? (u64)(gridSide - 1) : 1;
+    if (row >= rows)
+        row = rows - 1;
+    u64 band = (row * nranks) / rows;
+    return (band < nranks) ? band : nranks - 1;
+}
+
+static ocrHint_t * rankHint(ocrHint_t * h, u64 rank)
+{
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, rank, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
 #endif
+
 /* Labeled-range index for a score block (row-major linear index t over the
  * block grid).  The runtimes distribute a labeled range's homes round-robin
  * by index (home = index mod nranks), so under the optimized placement the
  * index is re-encoded as band(row) + nranks*t: the low residue steers each
  * block's home onto its wavefront band's rank while distinct t stay distinct
- * (label uniqueness) — pure index arithmetic, agreed on by every producer
+ * (label uniqueness) -- pure index arithmetic, agreed on by every producer
  * and consumer of the range. */
 static u64 scoreIdx(int t, int gridSide)
 {
@@ -200,11 +207,7 @@ static u64 scoreIdx(int t, int gridSide)
     ocrAffinityCount(AFFINITY_PD, &nranks);
     int bi = t / gridSide;
     u64 row = (bi > 0) ? (u64)(bi - 1) : 0;
-    u64 rows = (gridSide > 0) ? (u64)gridSide : 1;
-    u64 band_total = nranks * (u64)LCS_ROW_BANDS_PER_RANK;
-    u64 hgt = (rows + band_total - 1) / band_total;
-    u64 band = (row / hgt) % nranks;
-    return band + nranks * (u64)t;
+    return bandOfRow(row, gridSide) + nranks * (u64)t;
 #else
     (void)gridSide;
     return (u64)t;
@@ -221,11 +224,7 @@ static u64 sIdx(int row, int blockRows)
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
     u64 nranks;
     ocrAffinityCount(AFFINITY_PD, &nranks);
-    u64 rows = (blockRows > 0) ? (u64)blockRows : 1;
-    u64 band_total = nranks * (u64)LCS_ROW_BANDS_PER_RANK;
-    u64 hgt = (rows + band_total - 1) / band_total;
-    u64 band = ((u64)row / hgt) % nranks;
-    return band + nranks * (u64)row;
+    return bandOfRow((u64)row, blockRows) + nranks * (u64)row;
 #else
     (void)blockRows;
     return (u64)row;
@@ -235,21 +234,24 @@ static u64 sIdx(int row, int blockRows)
 static ocrHint_t * blockRowHint(ocrHint_t * h, int blockRow, int blockRows)
 {
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
-    u64 nranks;
-    ocrAffinityCount(AFFINITY_PD, &nranks);
     u64 row = (blockRow > 0) ? (u64)(blockRow - 1) : 0;
-    u64 rows = (blockRows > 0) ? (u64)blockRows : 1;
-    u64 band_total = nranks * (u64)LCS_ROW_BANDS_PER_RANK;
-    u64 hgt = (rows + band_total - 1) / band_total;
-    u64 band = (row / hgt) % nranks;
-    if (band >= nranks) band = nranks - 1;
-    ocrGuid_t aff;
-    ocrAffinityGetAt(AFFINITY_PD, band, &aff);
-    ocrHintInit(h, OCR_HINT_EDT_T);
-    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
-    return h;
+    return rankHint(h, bandOfRow(row, blockRows));
 #else
     (void)h; (void)blockRow; (void)blockRows;
+    return NULL_HINT;
+#endif
+}
+
+/* A T string tile is read by every band, so its home stays the range's own
+ * round-robin (index j); the task that fills it is placed there. */
+static ocrHint_t * tileRankHint(ocrHint_t * h, int index)
+{
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    return rankHint(h, (u64)index % nranks);
+#else
+    (void)h; (void)index;
     return NULL_HINT;
 #endif
 }
@@ -330,6 +332,12 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
         //ocrPrintf("Working on size: %lu\n", nn);
 
+        /* A quadrant creates the leaves of its own block rows, so placing it
+         * on the band of its first row keeps those creates and their
+         * dependence registrations rank-local. */
+        int block_grid_size = (p->N / base + 1);
+        ocrHint_t quadHint;
+
         //--Call for x11-------------------------------------------
         LCS_task_params p1;
 
@@ -358,7 +366,7 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             NULL,
             EDT_PROP_FINISH,
-            NULL_HINT,
+            blockRowHint(&quadHint, (p1.xi - 1) / base + 1, block_grid_size),
             &x11outputEventGuidOnce);
         ocrAddDependence(x11outputEventGuidOnce, x11outputEventGuid, 0, DB_MODE_NULL);
         ocrAddDependence(NULL_GUID, x11Edt, 0, DB_MODE_NULL);
@@ -372,17 +380,21 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
         p1.xi = p->xi + nn, p1.xj = p->xj;
 
+        /* A task's output event is chained to its consumer before the task
+         * can become runnable: a once event that fires with no waiter is
+         * gone.  The input is therefore added last. */
         ocrEdtCreate(&x12Edt,
             LCSGuidTmp_X12_x21,
             EDT_PARAM_DEF,
             (u64*)&p1,
             EDT_PARAM_DEF,
-            &x11outputEventGuid,
+            NULL,
             EDT_PROP_FINISH,
-            NULL_HINT,
+            blockRowHint(&quadHint, (p1.xi - 1) / base + 1, block_grid_size),
             &x12outputEventGuidOnce);
 
         ocrAddDependence(x12outputEventGuidOnce, x12outputEventGuid, 0, DB_MODE_NULL);
+        ocrAddDependence(x11outputEventGuid, x12Edt, 0, DB_DEFAULT_MODE);
 
         //---------------------------Call for x21-------------------------------------------
         ocrGuid_t x21Edt, x21outputEventGuid, x21outputEventGuidOnce;
@@ -395,12 +407,13 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             (u64*)&p1,
             EDT_PARAM_DEF,
-            &x11outputEventGuid,
+            NULL,
             EDT_PROP_FINISH,
-            NULL_HINT,
+            blockRowHint(&quadHint, (p1.xi - 1) / base + 1, block_grid_size),
             &x21outputEventGuidOnce);
 
         ocrAddDependence(x21outputEventGuidOnce, x21outputEventGuid, 0, DB_MODE_NULL);
+        ocrAddDependence(x11outputEventGuid, x21Edt, 0, DB_DEFAULT_MODE);
 
         //---------------------------Call for x22-------------------------------------------
 
@@ -419,7 +432,7 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             NULL,
             EDT_PROP_FINISH,
-            NULL_HINT,
+            blockRowHint(&quadHint, (p1.xi - 1) / base + 1, block_grid_size),
             &x22outputEventGuid);
 
         ocrAddDependence(x21outputEventGuid, x22Edt, 0, DB_DEFAULT_MODE);
@@ -428,37 +441,51 @@ ocrGuid_t recLCSEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     return NULL_GUID;
 }
 
-ocrGuid_t shutDownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+ocrGuid_t wrapupEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
     int* score = (int*)depv[1].ptr;
     int len = (int)paramv[0];
 
     long end = cilk_getticks();
-    ocrPrintf("runtime: %f\n", cilk_ticks_to_seconds(end - (long)paramv[2]));
+    ocrPrintf("runtime: %f\n", cilk_ticks_to_seconds(end - (long)paramv[1]));
 
     // Bottom-right cell of the last score tile is the final LCS length.
     ocrPrintf("LCS length: %d\n", score[len * len - 1]);
+    ocrPrintf("LCS checksum: %lu\n",
+        (unsigned long)lcsChecksum(score, (long)len * (long)len));
 
-#ifdef CHECK_RESULTS
-    if (score[len * len - 1] != (int)paramv[1])
-        printf("Result did not match! :(\n");
-    else
-        printf("Result matched! We are good :)\n");
-#endif
-
-    ocrPrintf("\nShutting down OCR runtime\n");
-
-    ocrShutdown(); // This is the last EDT to execute, terminate
     return NULL_GUID;
 }
+
+/* Shutdown in its own task, gated on the wrapup's completion, so the measured
+ * run never truncates the wrapup's release work. */
+ocrGuid_t shutDownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    ocrPrintf("\nShutting down OCR runtime\n");
+    ocrShutdown();
+    return NULL_GUID;
+}
+/* Character of the input strings: a pure function of (tile index, position)
+ * built from a self-contained mixer, so the instance is a property of the
+ * program alone -- no shared generator state, no library generator whose
+ * sequence is defined by the host's C library, and the same characters at
+ * every node count and in every tier. */
+static int lcsChar(u64 tile, u64 pos)
+{
+    u64 z = tile * 0x9E3779B97F4A7C15ULL + pos * 0xBF58476D1CE4E5B9ULL
+          + 0x165667B19E3779F9ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    z ^= z >> 31;
+    return (int)(z % 4) + 'A';
+}
+
 ocrGuid_t randInitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
     int* Ti = (int*)depv[0].ptr;
     int len = (int)paramv[0];
     int base = (int)paramv[1];
-    // Seed a reentrant generator from the tile index so each tile's data is
-    // reproducible regardless of the concurrent init EDTs' order or location.
-    unsigned int seed = (unsigned int)paramv[2] * 2654435761u + 12345u;
+    u64 tile = (u64)paramv[2];
     if (len == base + 1) {
         Ti[0] = 32;
         Ti++;
@@ -467,7 +494,7 @@ ocrGuid_t randInitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     }
 
     for (int l = 0; l < len; l++) {
-        Ti[l] = rand_r(&seed) % 4 + 'A'; // Initialize T
+        Ti[l] = lcsChar(tile, (u64)l);
     }
     return NULL_GUID;
 }
@@ -519,6 +546,11 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     int grid_block_size = num_labels + 1;
     int num_blocks = (grid_block_size) * (grid_block_size);
 
+    /* Each fill task is placed on the home of the block it writes, so the
+     * init phase writes locally instead of pulling every block to whichever
+     * rank the round-robin picked. */
+    ocrHint_t initHint;
+
     ////////////////////////Initialize T ///////////////////////
 
     //case0:
@@ -560,7 +592,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         EDT_PARAM_DEF,
         NULL,
         EDT_PROP_NONE,
-        NULL_HINT,
+        tileRankHint(&initHint, 0),
         NULL);
     ocrAddDependence(T_ij, randInitTEdt, 0, DB_MODE_RW);
 
@@ -593,7 +625,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             NULL,
             EDT_PROP_NONE,
-            NULL_HINT,
+            tileRankHint(&initHint, j),
             NULL);
 
         ocrAddDependence(T_ij, randInitTEdt, 0, DB_MODE_RW);
@@ -629,7 +661,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         EDT_PARAM_DEF,
         NULL,
         EDT_PROP_NONE,
-        NULL_HINT,
+        blockRowHint(&initHint, 1, grid_block_size),
         NULL);
 
     ocrAddDependence(S_ij, randInitSEdt, 0, DB_MODE_RW);
@@ -662,7 +694,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             NULL,
             EDT_PROP_NONE,
-            NULL_HINT,
+            blockRowHint(&initHint, i + 1, grid_block_size),
             NULL);
 
         ocrAddDependence(S_ij, randInitSEdt, 0, DB_MODE_RW);
@@ -700,7 +732,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         EDT_PARAM_DEF,
         NULL,
         EDT_PROP_NONE,
-        NULL_HINT,
+        blockRowHint(&initHint, 0, grid_block_size),
         NULL);
 
     ocrAddDependence(lcs_score_ij, scoreEdt, 0, DB_MODE_RW);
@@ -732,7 +764,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             NULL,
             EDT_PROP_NONE,
-            NULL_HINT,
+            blockRowHint(&initHint, 0, grid_block_size),
             NULL);
 
         ocrAddDependence(lcs_score_ij, scoreEdt, 0, DB_MODE_RW);
@@ -762,7 +794,7 @@ ocrGuid_t InitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
             EDT_PARAM_DEF,
             NULL,
             EDT_PROP_NONE,
-            NULL_HINT,
+            blockRowHint(&initHint, i, grid_block_size),
             NULL);
 
         ocrAddDependence(lcs_score_ij, scoreEdt, 0, DB_MODE_RW);
@@ -802,25 +834,33 @@ extern "C" ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     int N = 1024; // string length
     int base = 256; // basecase
 
-    if (argc < 1) {
+    if (argc != 3) {
         ocrPrintf("USAGE: please run the program as follows:\n"
-               "executable input_string_length number_of_cores basecase\n");
-        exit(1);
+               "executable input_string_length basecase\n");
+        ocrShutdown();
+        return NULL_GUID;
     }
 
-    if (argc > 1) {
-        N = (int)atol(ocrGetArgv(PTR_cmdLineArgs, 1));
-    }
-    if (argc > 2) {
-        base = (int)atol(ocrGetArgv(PTR_cmdLineArgs, 2));
-    }
+    N = (int)atol(ocrGetArgv(PTR_cmdLineArgs, 1));
+    base = (int)atol(ocrGetArgv(PTR_cmdLineArgs, 2));
 
     // base can not be > N.
-    if (N < base)
+    if (N > 0 && N < base)
         base = N;
 
+    /* The recursion halves the problem until it is <= base while the leaf
+     * addresses its tile as (xi-1)/base, so a leaf covers exactly one tile
+     * only when the ratio is a power of two; any other ratio silently
+     * computes a different, wrong table. */
+    if (N <= 0 || base <= 0 || N % base != 0 || ((N / base) & (N / base - 1)) != 0) {
+        ocrPrintf("input_string_length (%d) / basecase (%d) must be a power of two\n",
+               N, base);
+        ocrShutdown();
+        return NULL_GUID;
+    }
+
     ocrPrintf("\n");
-    ocrPrintf("Running LCS.\nStrings len: %ld  basecase: %ld\n", N, base);
+    ocrPrintf("Running LCS.\nStrings len: %d  basecase: %d\n", N, base);
     fflush(stdout);
 
     // Create mapguids for S, T and lcs_score matrix.
@@ -913,123 +953,6 @@ extern "C" ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     ocrAddDependence(T_guid, initDataEdt, 1, DB_MODE_RW);
     ocrAddDependence(score_guid, initDataEdt, 2, DB_MODE_RW);
 
-#ifdef CHECK_RESULTS
-    int Nplus1 = N + 1;
-
-    int* _S = (int*)malloc(Nplus1 * sizeof(int));
-    int* _T = (int*)malloc(Nplus1 * sizeof(int));
-
-    _S[0] = _T[0] = 32;
-
-    // Linear space array. Computation is going to happen row by row.
-    int* score = (int*)malloc((Nplus1 * Nplus1) * sizeof(int));
-
-    // Initialize the matrix.
-    for (int i = 0; i < Nplus1; i++) {
-        score[i] = i;
-    }
-    //score[Nplus1]=1; //first value for the second row
-    for (int i = 0; i < Nplus1; i++) {
-        score[i * Nplus1] = i;
-    }
-#endif
-
-#ifdef CHECK_RESULTS
-    int* Ti = T[0];
-    for (int l = 1; l < block_size; l++) {
-        _T[l] = Ti[l];
-    }
-#endif
-
-#ifdef CHECK_RESULTS
-    int* _Ti = _T + block_size;
-#endif
-
-#ifdef CHECK_RESULTS
-    Ti = T[j];
-    for (int l = 0; l < block_size; l++) {
-        _Ti[l] = Ti[l];
-    }
-    _Ti = _Ti + block_size;
-#endif
-
-#ifdef CHECK_RESULTS
-    int* Si = S[0];
-    Si[0] = 32;
-    for (int l = 1; l < block_size; l++) {
-        _S[l] = Si[l];
-    }
-#endif
-
-#ifdef CHECK_RESULTS
-    int* _Si = _S + block_size;
-#endif
-
-#ifdef CHECK_RESULTS
-    Si = S[i];
-    for (int l = 0; l < block_size; l++) {
-        _Si[l] = Si[l];
-    }
-    _Si = _Si + block_size;
-#endif
-
-    int final_value = 0;
-////////////////////////////////////////////////////////////
-// Print values for debug purpose
-#ifdef PRINT
-    ocrPrintf("\nS: ");
-    for (int i = 0; i < num_labels; i++) {
-        int* Si = S[i];
-        int block_size = (i == 0) ? (base + 1) : base;
-        for (int j = 0; j < block_size; j++) {
-            ocrPrintf("%ld ", Si[j]);
-        }
-    }
-    ocrPrintf("\nT: ");
-    for (int i = 0; i < num_labels; i++) {
-        int* Ti = T[i];
-        int block_size = (i == 0) ? (base + 1) : base;
-        for (int j = 0; j < block_size; j++) {
-            ocrPrintf("%ld ", Ti[j]);
-        }
-    }
-
-    ocrPrintf("\n");
-#endif
-
-#ifdef CHECK_RESULTS
-#ifdef PRINT
-    ocrPrintf("\n_S: ");
-    for (int i = 0; i < Nplus1; i++) {
-
-        ocrPrintf("%ld ", _S[i]);
-    }
-    ocrPrintf("\n_T: ");
-    for (int i = 0; i < Nplus1; i++) {
-
-        ocrPrintf("%ld ", _T[i]);
-    }
-    ocrPrintf("\n");
-#endif
-
-    serial_lcs(score, _S, _T, 1, 1, N);
-
-#ifdef PRINT
-    for (int i = 1; i < Nplus1; i++) {
-        for (int j = 1; j < Nplus1; j++) {
-            ocrPrintf("%d ", score[i * Nplus1 + (j)]);
-        }
-        ocrPrintf("\n");
-    }
-#endif
-
-    final_value = score[Nplus1 * Nplus1 - 1];
-
-    free(_S);
-    free(_T);
-    free(score);
-#endif
-
     //Create a new finish EDT
     //params are N, base, xi, xj, and the guids.
 
@@ -1070,33 +993,43 @@ extern "C" ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     ocrAddDependence(outputEventGuid, recLCSEdt, 0, DB_MODE_NULL);
 
     // Create the task template
-    ocrGuid_t shutDown_tmp;
-    u64 paramv2[3];
+    ocrGuid_t wrapup_tmp;
+    u64 paramv2[2];
     paramv2[0] = base;
-    paramv2[1] = final_value;
-    paramv2[2] = start;
+    paramv2[1] = start;
 
-    ocrEdtTemplateCreate(&shutDown_tmp, shutDownEdt, 3, 2);
+    ocrEdtTemplateCreate(&wrapup_tmp, wrapupEdt, 2, 2);
 
     // Create the task
-    ocrGuid_t shutDown_taskGuid;
-    ocrEdtCreate(&shutDown_taskGuid,
-        shutDown_tmp,
+    ocrGuid_t wrapup_taskGuid, wrapupEventGuid;
+    ocrEdtCreate(&wrapup_taskGuid,
+        wrapup_tmp,
         EDT_PARAM_DEF,
         (u64*)paramv2,
         EDT_PARAM_DEF,
         NULL,
         EDT_PROP_NONE,
         NULL_HINT,
+        &wrapupEventGuid);
+
+    ocrGuid_t shutDown_tmp, shutDown_taskGuid;
+    ocrEdtTemplateCreate(&shutDown_tmp, shutDownEdt, 0, 1);
+    ocrEdtCreate(&shutDown_taskGuid,
+        shutDown_tmp,
+        EDT_PARAM_DEF,
+        NULL,
+        EDT_PARAM_DEF,
+        NULL,
+        EDT_PROP_NONE,
+        NULL_HINT,
         NULL);
+    ocrAddDependence(wrapupEventGuid, shutDown_taskGuid, 0, DB_MODE_NULL);
 
     ocrGuid_t lcs_score_ij;
     ocrGuidFromIndex(&lcs_score_ij, score_matrix_labels, scoreIdx(num_blocks - 1, grid_block_size));
 
-    ocrAddDependence(outputEventGuid2, shutDown_taskGuid, 0, DB_MODE_NULL);
-    ocrAddDependence(lcs_score_ij, shutDown_taskGuid, 1, DB_MODE_RO);
+    ocrAddDependence(outputEventGuid2, wrapup_taskGuid, 0, DB_MODE_NULL);
+    ocrAddDependence(lcs_score_ij, wrapup_taskGuid, 1, DB_MODE_RO);
 
-    printf("shutting down OCR\n");
-    //	ocrShutdown();
     return NULL_GUID;
 }

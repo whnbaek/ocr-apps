@@ -54,7 +54,6 @@ void init(blockClone_Params_t * myParams, ocrEdtDep_t depv[]) {
 
    SUSPENDABLE_FUNCTION_PROLOGUE(meta, Frame__init_t)
 //printf ("Function %36s, File %30s, line %4d, for block at (lvl=%d, xPos=%d, yPos=%d, zPos=%d)\n", __func__, __FILE__, __LINE__, meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos); fflush(stdout);
-   unsigned int seed = (unsigned int) (meta->xPos + (meta->yPos * control->npx) + (meta->zPos * control->npx * control->npy));
    int var, i, j, k, l;
    l = 0;
    for (var = 0; var < control->num_vars; var++) {
@@ -69,7 +68,6 @@ void init(blockClone_Params_t * myParams, ocrEdtDep_t depv[]) {
       for (i = 1; i <= control->x_block_size; i++) {
          for (j = 1; j <= control->y_block_size; j++) {
             for (k = 1; k <= control->z_block_size; k++) {
-               pCells[var][i][j][k] = ((double) rand_r(&seed))/((double) RAND_MAX);
                pCells[var][i][j][k] = ((double) ((meta->xPos * 2 + i) * 100 + (meta->yPos * 2 + j) * 10 + (meta->zPos * 4 + k)));
             }
          }

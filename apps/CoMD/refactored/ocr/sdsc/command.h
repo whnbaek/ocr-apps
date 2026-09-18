@@ -40,6 +40,6 @@ typedef struct
    struct option long_opt[MAXOPTIONS+1];
 } command;
 
-void parse_command(int argc, char** argv, void* c);
+u8 parse_command(int argc, char** argv, void* c);
 
 #endif

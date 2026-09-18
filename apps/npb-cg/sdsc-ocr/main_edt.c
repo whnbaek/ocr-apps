@@ -4,13 +4,21 @@
 #include <ocr.h>
 
 #include "cg_ocr.h"
+#include "cg_gen.h"
 #include "la_ocr.h"
 
+ocrGuid_t makea_join_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t head_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t loop_top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t loop_bottom_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t tail_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+
+static void cg_usage(void)
+{
+    ocrPrintf("cg [-t class] [-b blocking] [-i niter]"
+              " (class=T|S|W|A|B|C|D|E; default: -t S, -b 1)\n");
+}
 
 ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
@@ -18,31 +26,42 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     classdb_t* class; ocrGuid_t classid;
     u32 niter_override = 0;
-    if(argc>1) {
-        if(argc!=3 && argc != 5 && argc != 7) {
-            ocrPrintf("cg [-t class] [-b blocking ] [-i niter] (class=T|S|W|A|B|C|D|E; default: -t S, -b 1)\n");
+    u32 blocking = 1;
+    char classt = 'S';
+    u64 ai;
+    /* Flag/value pairs, every flag recognised: an argument the program does
+       not know is a mis-specified run, not something to walk past. */
+    for(ai = 1; ai < argc; ai += 2) {
+        const char* f = ocrGetArgv(depv[0].ptr, ai);
+        const char* v;
+        if(ai+1 >= argc) {
+            ocrPrintf("cg: %s takes a value\n", f);
+            cg_usage();
             ocrShutdown();
             return NULL_GUID;
         }
-        u32 blocking = 1;
-        char classt = 'S';
-        while(--argc) {
-            if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-t")==0)
-                classt = *ocrGetArgv(depv[0].ptr,argc--);
-            else if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-b")==0)
-                blocking = atoi(ocrGetArgv(depv[0].ptr,argc--));
-            else if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-i")==0)
-                niter_override = atoi(ocrGetArgv(depv[0].ptr,argc--));
-        }
-        class_init(&class, &classid, classt, blocking);
-        if(class->c == 'U') {
-            ocrPrintf("cg [-t] [T,S,W,A,B,C,D,E] (default: S -t)\n");
+        v = ocrGetArgv(depv[0].ptr, ai+1);
+        if(strcmp(f, "-t") == 0)
+            classt = *v;
+        else if(strcmp(f, "-b") == 0)
+            blocking = atoi(v);
+        else if(strcmp(f, "-i") == 0)
+            niter_override = atoi(v);
+        else {
+            ocrPrintf("cg: unknown argument %s\n", f);
+            cg_usage();
             ocrShutdown();
             return NULL_GUID;
         }
     }
-    else
-        class_init(&class, &classid, 'S', 1);
+
+    class_init(&class, &classid, classt, blocking);
+    if(class->c == 'U') {
+        ocrPrintf("cg: unknown class %c\n", classt);
+        cg_usage();
+        ocrShutdown();
+        return NULL_GUID;
+    }
     if(niter_override >= 1)
         class->niter = niter_override;
 
@@ -62,32 +81,99 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     timer_start(timer);
 
-    ocrGuid_t aid, xid;
+    u64 na = class->na, blk = class->blk, nb = na/blk;
+    u32 nonzer = class->nonzer;
+    double shift = class->shift;
+
+    ocrGuid_t xid;
     double* x;
-    ocrDbCreate(&xid, (void**)&x, sizeof(double)*class->na, 0, NULL_HINT, NO_ALLOC);
-
-    if(makea(class, &aid) == -1)
-        return NULL_GUID;
-
-    u32 i;
-    for(i=0; i<class->na; ++i)
+    ocrDbCreate(&xid, (void**)&x, sizeof(double)*na, 0, NULL_HINT, NO_ALLOC);
+    u64 i;
+    for(i = 0; i < na; ++i)
         x[i] = 1;
+
+    /* The generated entries and the inverse index over them: the part of the
+       construction that is a sequential stream, and the only part of it that
+       is not handed to the tasks that own the rows.  One scanner, because
+       this decomposition declares no affinity: scanners write disjoint
+       ranges of one index datablock, which is only a disjoint write while
+       they share a policy domain. */
+    cg_gen_t gen; cg_gen_ptr_t gp;
+    if(cg_gen_draw(na, nonzer, &gen, &gp) == -1) {
+        ocrShutdown();
+        return NULL_GUID;
+    }
+    cg_gen_index_alloc(&gen, &gp, 0, na, nb, 1);
+    cg_gen_index_range(&gen, &gp, 0);
+    cg_gen_release(&gen);
 
     /* Writes are only visible to other EDTs after release: release before
        wiring the consumers. */
     ocrDbRelease(xid);
     ocrDbRelease(timerid);
-    ocrGuid_t tmp,edt;
-    ocrEdtTemplateCreate(&tmp, head_edt, 0, 6);
-    ocrEdtCreate(&edt, tmp, 0, NULL, 6, NULL, 0, NULL_HINT, NULL);
-    ocrAddDependence(classid, edt, 0, DB_MODE_CONST);
-    ocrAddDependence(timerid, edt, 1, DB_MODE_RW);
-    ocrAddDependence(aid, edt, 2, DB_MODE_CONST);
-    ocrAddDependence(xid, edt, 3, DB_MODE_RW);
-    conj_grad(class->na, class->blk, aid, xid, edt, 4);
-    ocrEdtTemplateDestroy(tmp);
+    ocrDbRelease(classid);
+
+    u64 jpv[CG_GEN_FULL_PARAMC];
+    cg_gen_pack_full(&gen, 0, shift, jpv);
+    ocrGuid_t joinTML, join;
+    /* One join dependence per row block: the count follows the blocking, so
+       it can exceed what the runtime accepts as a dependence count.  Both
+       calls leave their guid untouched when they refuse, so neither return
+       may be dropped. */
+    if(ocrEdtTemplateCreate(&joinTML, makea_join_edt, CG_GEN_FULL_PARAMC, 3+nb) != 0
+    || ocrEdtCreate(&join, joinTML, CG_GEN_FULL_PARAMC, jpv, 3+nb, NULL, 0,
+                    NULL_HINT, NULL) != 0) {
+        ocrPrintf("cg: construction of %lu row blocks exceeds the runtime's limit"
+                  " on dependences per EDT; raise the blocking (-b)\n", nb);
+        ocrAbort(1);
+    }
+    ocrEdtTemplateDestroy(joinTML);
+    /* The join only forwards the timer and x to their next writer, so it
+       declares neither as written. */
+    ocrAddDependence(classid, join, 0, DB_MODE_CONST);
+    ocrAddDependence(timerid, join, 1, DB_MODE_CONST);
+    ocrAddDependence(xid, join, 2, DB_MODE_CONST);
+    cg_gen_spawn(&gen, shift, cg_block_build_edt, join, 3, NULL_HINT);
 
     ocrDbDestroy(depv[0].guid);
+
+    return NULL_GUID;
+}
+
+//     0        1  2  3..
+// class, timerdb, x, one reference per row block
+ocrGuid_t makea_join_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    classdb_t* class = (classdb_t*)depv[0].ptr;
+    u64 nb = class->na/class->blk;
+    cg_gen_t gen; double shift;
+    cg_gen_unpack_full(&gen, &shift, paramv);
+
+    ocrGuid_t aid; ocrGuid_t* a_ptr;
+    ocrDbCreate(&aid, (void**)&a_ptr, sizeof(ocrGuid_t)*nb, 0, NULL_HINT, NO_ALLOC);
+    u64 nza = 0, e;
+    for(e = 0; e < nb; ++e) {
+        cg_gen_ref_t* ref = (cg_gen_ref_t*)depv[3+e].ptr;
+        a_ptr[e] = ref->guid;
+        nza += ref->nnz;
+        ocrDbDestroy(depv[3+e].guid);
+    }
+    ocrPrintf("number of nonzeros = %lu\n", nza);
+    cg_gen_destroy(&gen);
+
+    /* Writes are only visible to other EDTs after release: release before
+       wiring the consumers. */
+    ocrDbRelease(aid);
+
+    ocrGuid_t tmp, edt;
+    ocrEdtTemplateCreate(&tmp, head_edt, 0, 6);
+    ocrEdtCreate(&edt, tmp, 0, NULL, 6, NULL, 0, NULL_HINT, NULL);
+    ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
+    ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
+    ocrAddDependence(aid, edt, 2, DB_MODE_CONST);
+    ocrAddDependence(depv[2].guid, edt, 3, DB_MODE_RW);
+    conj_grad(class->na, class->blk, aid, depv[2].guid, edt, 4);
+    ocrEdtTemplateDestroy(tmp);
 
     return NULL_GUID;
 }

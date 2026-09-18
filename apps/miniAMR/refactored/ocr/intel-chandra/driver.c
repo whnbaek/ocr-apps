@@ -675,9 +675,15 @@ _OCR_TASK_FNC_( FNC_print )
           ocrPrintf("ts %d CHECKSUM sum %f old %f diff %f tol 10^(-%f) ilevel %d id_l %d istage %d var %d \n", ts,sum, grid_sum[var], fabs(sum - grid_sum[var]), log(1.0/PTR_rankH->tol)/log(10), ilevel, PTR_rankH->myRank, istage, var );
         }
 
-        if (fabs(sum - grid_sum[var])/grid_sum[var] > PTR_rankH->tol) {
+        // The 7-point average with a mirror boundary condition conserves the
+        // grid sum exactly, so a drift beyond rounding is a wrong ghost value:
+        // the comparison is the program's own oracle and must reach the exit
+        // verdict, not only the log.
+        PTR_rankH->checksum_checks += 1;
+        if (fabs(sum - grid_sum[var]) > PTR_rankH->tol*fabs(grid_sum[var])) {
+           PTR_rankH->checksum_divergences += 1;
            if (!PTR_rankH->seqRank)
-              ocrPrintf("Time step %d sum %f (old %f) variable %d difference too large\n", ts, sum, grid_sum[var], var);
+              ocrPrintf("CHECKSUM DIVERGENCE ts %d variable %d sum %f old %f\n", ts, var, sum, grid_sum[var]);
         }
     }
     else {
@@ -806,6 +812,15 @@ _OCR_TASK_FNC_( FNC_finalizeBarrier )
             ocrPrintf("ts %d level %d #blocks %d\n", PTR_rankH->ts, j, PTR_rankH->num_blocks[j] );
 
         ocrPrintf("\n" );
+
+        if( PTR_rankH->checksum_divergences )
+            ocrPrintf( "VERIFICATION FAILED: %d of %d checksum comparisons diverged\n",
+                       PTR_rankH->checksum_divergences, PTR_rankH->checksum_checks );
+        else if( PTR_rankH->checksum_checks )
+            ocrPrintf( "VERIFICATION PASSED: %d checksum comparisons within tolerance\n",
+                       PTR_rankH->checksum_checks );
+        else
+            ocrPrintf( "VERIFICATION FAILED: no checksum comparison was made\n" );
 
         ocrAddDependence( NULL_GUID,  wrapUpEVT, 0, DB_MODE_NULL ); //wrapUpEdt
     }

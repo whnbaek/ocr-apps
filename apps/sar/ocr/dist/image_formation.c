@@ -1,9 +1,11 @@
 /* The dist decomposition's copy of the image-formation wiring.  It differs
  * from the shared source in one respect: the two tasks below bind the images
  * only to hand their GUIDs on -- neither reads a pixel -- so they take them
- * as DB_MODE_NULL.  A whole-image RO dependence on a task that forwards it
- * costs a full copy on whatever node the task lands on, and the pipeline has
- * several such hand-offs in a row. */
+ * as DB_MODE_NULL and receive the GUIDs themselves through paramv.  A
+ * whole-image RO dependence on a task that forwards it costs a full copy on
+ * whatever node the task lands on, and the pipeline has several such
+ * hand-offs in a row; a NULL-mode slot orders nothing and does not carry
+ * the block's identity. */
 #include "ocr.h"
 #include "rag_ocr.h"
 #include "common.h"
@@ -23,11 +25,11 @@ ocrPrintf("//// enter post_FormImage_edt\n");RAG_FLUSH;
 #endif
 RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,image_params_dbg,0);
 RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,radar_params_dbg,1);
-RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,curImage_dbg,2);
-RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,refImage_dbg,3);
-RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,X_dbg,4);
-RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,Pt_dbg,5);
-RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,Tp_dbg,6);
+	ocrGuid_t curImage_dbg = postFormImageParamvIn->curImage_dbg;
+	ocrGuid_t refImage_dbg = postFormImageParamvIn->refImage_dbg;
+	ocrGuid_t X_dbg  = postFormImageParamvIn->X_dbg;
+	ocrGuid_t Pt_dbg = postFormImageParamvIn->Pt_dbg;
+	ocrGuid_t Tp_dbg = postFormImageParamvIn->Tp_dbg;
 #ifdef RAG_DIG_SPOT
 RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,dig_spot_dbg,7);
 #endif
@@ -71,8 +73,8 @@ ocrPrintf("//// enter FormImage_edt\n");RAG_FLUSH;
 
 RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,0);
 RAG_REF_MACRO_SPAD(struct RadarParams,radar_params,radar_params_ptr,radar_params_lcl,radar_params_dbg,1);
-RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,2);
-RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,3);
+	ocrGuid_t curImage_dbg = formImageParamvIn->curImage_dbg;
+	ocrGuid_t refImage_dbg = formImageParamvIn->refImage_dbg;
 RAG_REF_MACRO_BSM( struct complexData **,Xin,NULL,NULL,Xin_dbg,4);
 RAG_REF_MACRO_BSM( float **,Pt,NULL,NULL,Pt_dbg,5);
 RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,6);
@@ -103,6 +105,11 @@ ocrPrintf("//// create an edt for post_FormImage\n");RAG_FLUSH;
 	ocrGuid_t post_FormImage_scg;
     postFormImagePRM_t postFormImageParamv;
     postFormImageParamv.arg_scg = arg_scg;
+    postFormImageParamv.curImage_dbg = curImage_dbg;
+    postFormImageParamv.refImage_dbg = refImage_dbg;
+    postFormImageParamv.X_dbg  = Xin_dbg;
+    postFormImageParamv.Pt_dbg = Pt_dbg;
+    postFormImageParamv.Tp_dbg = Tp_dbg;
 	retval = ocrEdtCreate(
 			&post_FormImage_scg,	// *created_edt_guid
 			 post_FormImage_clg,	// edt_template_guid
@@ -125,38 +132,10 @@ RAG_DEF_MACRO_GUID_ONLY(post_FormImage_scg,Tp_dbg,6);
 #ifdef RAG_DIG_SPOT
 RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,dig_spot_dbg,7);
 #endif
-	// curImage is written below (memset, and the copy into refImage); rebuild
-	// its row-pointer table in case this block was relocated to this node.
-	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
-#ifdef RAG_TG_ARCH_NULL_GUID_WORKAROUND
-	if(refImage != curImage) {	// RAG NULL_GUID FSIM BUG WORKAROUND
-#else
-	if(refImage != NULL) {		// RAG NULL_GUID FSIM BUG WORKAROUND
-#endif
-	RAG_REMAP_2D(refImage, image_params->Iy, image_params->Ix, struct complexData);
-#ifdef TRACE_LVL_2
-ocrPrintf("//// Copy curImage to refImage\n");RAG_FLUSH;
-#endif
-		for(int m=0; m<image_params->Iy; m++) {
-// RAG refImage should be in DRAM
-#ifdef RAG_DRAM
-			DRAMtoDRAM(refImage[m], curImage[m], image_params->Ix*sizeof(struct complexData));
-#else
-			BSMtoBSM(  refImage[m], curImage[m], image_params->Ix*sizeof(struct complexData));
-#endif
-		} // for m
-	} // if !NULL
-
-#ifdef TRACE_LVL_2
-ocrPrintf("//// Zero curImage\n");RAG_FLUSH;
-#endif
-	for(int n=0; n<image_params->Iy; n++) {
-#ifdef RAG_DRAM
-		dram_memset(curImage[n], 0, image_params->Ix*sizeof(struct complexData));
-#else
-		 bsm_memset(curImage[n], 0, image_params->Ix*sizeof(struct complexData));
-#endif
-	}
+	/* Each generation has its own stripe set and its projection writes every
+	 * pixel of it, so there is nothing to carry over and nothing to zero: the
+	 * base program's whole-image copy and memset were both consequences of the
+	 * two generations sharing one block. */
 
 	if(image_params->TF > 1) {
 #ifndef RAG_DIG_SPOT
@@ -244,7 +223,7 @@ ocrPrintf("//// create a template for BackProj function\n");RAG_FLUSH;
 				&BackProj_clg,		// ocrGuid_t *new_guid
 			 	 BackProj_edt,		// ocr_edt_ptr func_ptr
 				PRMNUM(backProj), // paramc
-				7);			// depc
+				8);			// depc
 		assert(retval==0);
 		RAG_TEMPLATE_REGISTER(BackProj_clg);
 
@@ -256,6 +235,7 @@ ocrPrintf("//// create an edt for BackProj\n");RAG_FLUSH;
         backProjParamv.corners = corners;
         /* Which stripe set this image's gather fills. */
         backProjParamv.stripes_dbg = formImageParamvIn->stripes_dbg;
+        backProjParamv.Xin_dbg = Xin_dbg;
 		retval = ocrEdtCreate(
 				&BackProj_scg,		// *created_edt_guid
 				 BackProj_clg,		// edt_template_guid
@@ -267,6 +247,14 @@ ocrPrintf("//// create an edt for BackProj\n");RAG_FLUSH;
 				NULL_HINT,		// affinity
 				&BackProj_evg);		// *outputEvent
 		assert(retval==0);
+
+/* The scope's completion is wired to its consumer before the scope can
+ * start: a once event that fires with no waiter is gone. */
+#ifdef RAG_DIG_SPOT
+RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,BackProj_evg,8);
+#else
+RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,BackProj_evg,7);
+#endif
 
 RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
 RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
@@ -282,11 +270,9 @@ if(image_params->F > 1) {
 }
 RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,Pt_dbg,5);
 RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,Tp_dbg,6);
-#ifdef RAG_DIG_SPOT
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,BackProj_evg,8);
-#else
-RAG_DEF_MACRO_PASS(post_FormImage_scg,NULL,NULL,NULL,NULL,BackProj_evg,7);
-#endif
+/* The stripe layout: the projection cuts its own gathers along it and places
+   each of them, and its tiles, on the stripe they fill. */
+RAG_DEF_MACRO_PASS_RO(BackProj_scg,NULL,NULL,NULL,NULL,formImageParamvIn->stripes_dbg,7);
 	} // endif digital spot light
 #ifdef TRACE_LVL_2
 ocrPrintf("//// leave FormImage_edt\n");RAG_FLUSH;

@@ -91,6 +91,12 @@ struct ImageParams {
 	float *yr;		// y-axis vectors
 	int   Ncor;             // CCD/CFAR correlation neighborhood size
 	int imageNumber;	// Image number that is being processed RAG
+	/* Blocking factors of the decomposed phases and the switch for the
+	   detections file.  They reach every phase because this block already
+	   does; a phase reads the one it blocks by. */
+	int blk_tile;		// tile edge of the backprojection-blocked phases
+	int blk_cfar;		// detection block edge
+	int blk_affine;		// resample block edge
 };
 
 struct DigSpotVars {
@@ -144,11 +150,13 @@ struct ctrlpt_res_s {
  * resample's block) is far shorter than a stripe, so a task needs its own
  * stripe and at most the next one -- which its neighbours on the same rank
  * need too, so the rank fetches it once.  Boundaries fall on multiples of the
- * projection's tile so that a tile never straddles two stripes. */
+ * projection's tile so that a tile never straddles two stripes.
+ *
+ * The bound is a fixed array because the descriptor travels as one datablock to
+ * every placed task, so its size is paid once per task: it is set to the largest
+ * machine the layout is meant to serve, and a larger rank count is refused by
+ * the layout rather than served by a descriptor everybody pays for. */
 #define IMG_MAX_STRIPES 64
-/* No stripe shorter than this: every consumer's footprint must fit inside two
-   adjacent stripes, and the tallest is the detection window (Ncfar + Ncor). */
-#define IMG_MIN_STRIPE 512
 
 struct img_stripes_s {
 	int ns;                       /* how many stripes */
@@ -162,18 +170,47 @@ struct img_stripes_s {
 	ocrGuid_t g[IMG_MAX_STRIPES]; /* the stripe blocks, once the producer fills them */
 };
 
-/* Lay out ns stripes over iy rows with every boundary a multiple of `align`. */
-void img_stripes_layout(struct img_stripes_s *st, int ns, int nr, int iy, int ix, int align);
+/* Lay out ns stripes over iy rows with every boundary a multiple of `align`.
+   No stripe is shorter than min_rows -- every consumer's footprint has to fit
+   inside two adjacent stripes -- and every rank owns at least one, or the
+   layout refuses the instance rather than silently leaving ranks out. */
+void img_stripes_layout(struct img_stripes_s *st, int ns, int nr, int iy, int ix,
+                        int align, int min_rows);
 /* Which stripe holds row y. */
 static inline int img_stripe_of(const struct img_stripes_s *st, int y) {
 	int s = 0;
 	while(s + 1 < st->ns && y >= st->y0[s+1]) s++;
 	return s;
 }
-/* The rank a stripe lives on, and an EDT hint for it. */
+/* The rank a stripe lives on, and hints for it. */
+static inline u64 img_stripe_rank(const struct img_stripes_s *st, int s) {
+	return ((u64)s * (u64)st->nr) / (u64)st->ns;
+}
+ocrHint_t *rank_edt_hint(ocrHint_t *h, u64 r);
+ocrHint_t *rank_db_hint(ocrHint_t *h, u64 r);
 ocrHint_t *img_stripe_hint(ocrHint_t *h, const struct img_stripes_s *st, int s);
-/* Cut `image` into freshly created stripe blocks, each homed on its rank. */
-void img_stripes_scatter(struct img_stripes_s *st, struct complexData **image);
+ocrHint_t *img_stripe_db_hint(ocrHint_t *h, const struct img_stripes_s *st, int s);
+
+/* One stripe assembled out of the full-width row bands that cover it.  A band
+ * whose rows fall in two stripes is copied by both, each taking its own rows,
+ * so a phase's band height need not divide the stripe boundaries.  The stripe
+ * block is created on the stripe's rank and returned as the task's result; a
+ * single collector then writes the produced blocks into the stripe set. */
+typedef struct { u64 y0, y1, iy, ix, bh, j0, nb, rank; } stGatherPRM_t;
+/* What a stripe gather reports: the block it created.  Reported through a
+   block of its own rather than as the task's own result, so the collector can
+   take it read-only without acquiring a stripe's worth of pixels. */
+struct img_stripe_res_s { ocrGuid_t g; };
+ocrGuid_t img_stripe_gather_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv);
+ocrGuid_t img_stripes_collect_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv);
+/* Bands [j0, j0+nb) of height bh are the ones that intersect stripe s. */
+static inline void img_stripe_bands(const struct img_stripes_s *st, int s, int bh,
+                                    int *j0, int *nb) {
+	const int a = st->y0[s] / bh;
+	const int b = (st->y0[s+1] - 1) / bh;
+	*j0 = a;
+	*nb = b - a + 1;
+}
 /* Copy rows [y0,y1) x cols [x0,x1) out of the stripes wired at depv[slot0...]
  * -- the covering stripes in order -- into dst (row-major, stride x1-x0). */
 void img_stripes_read(const struct img_stripes_s *st, ocrEdtDep_t *depv, int slot0,
@@ -232,9 +269,10 @@ typedef struct {
 	ocrGuid_t Xin_dbg, Pt_dbg, Tp_dbg;
 	ocrGuid_t tile_clg;   /* template the stripe instantiates */
 	ocrGuid_t row_clg;    /* template of this stripe's own gather */
-	int m, m2, n1, n2;    /* this stripe's row band and column range */
+	int m, m2, n1, n2;    /* this band's rows and column range */
 	int bm, bn;           /* tile dimensions */
-	int slot;             /* the slot this stripe's slab occupies on the image gather */
+	int slot;             /* the slot this band's slab occupies on its stripe's gather */
+	int rank;             /* the rank the stripe this band fills lives on */
 } bpStripePRM_t;
 
 /* One row-band of tiles, assembled into a slab before the image gather sees
@@ -243,6 +281,7 @@ typedef struct {
  * shipped ladder's top rung it serialises past the transport's bound.  Two
  * levels keep both fan-ins at the grid's side length. */
 typedef struct { u64 m1, m2, n1, n2, bn; } bpRowPRM_t;
+ocrGuid_t bp_row_gather_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv);
 
 /* Why two levels and not one dependence per tile: a dependence costs about
  * forty bytes in the EDT's control message and the transport bounds that
@@ -286,6 +325,7 @@ struct file_args_t {
 #else
 	void *pInFile, *pInFile2, *pInFile3, *pOutFile;
 #endif
+	int write_detects;                // write the detections file at all
 };
 
 struct corners_t {
@@ -295,6 +335,10 @@ struct corners_t {
 /* Paramv for main_body_edt */
 typedef struct{
     ocrGuid_t post_main_scg;
+    /* The image tokens the stages hand on.  A GUID a task only forwards
+       travels in paramv: a dependence slot in NULL mode carries no block and
+       is not a carrier of the block's identity either. */
+    ocrGuid_t curImage_dbg, refImage_dbg;
 } mainBodyPRM_t;
 
 /* Paramv for ReadData_edt */
@@ -309,11 +353,14 @@ typedef struct{
        paramv freely; only a task that ACCESSES the block needs a dependence,
        which is added where the access happens. */
     ocrGuid_t stripes_dbg;
+    ocrGuid_t curImage_dbg, refImage_dbg;   /* forwarded, never read */
 } formImagePRM_t;
 
 /* Paramv for post_FormImage_edt */
 typedef struct{
     ocrGuid_t arg_scg;
+    ocrGuid_t curImage_dbg, refImage_dbg;   /* forwarded, never read */
+    ocrGuid_t X_dbg, Pt_dbg, Tp_dbg;        /* the pulse history, handed to its next reader */
 } postFormImagePRM_t;
 
 /* Paramv for Affine_edt */
@@ -345,6 +392,33 @@ typedef struct{
     char out_detects[RAG_PATH_MAX];
 } cfarWritePRM_t;
 
+/* Paramv for cfar_row_edt: one row band of detection blocks, created and
+   reduced by its own task so that neither the creation nor the fan-in ever
+   passes through a single one. */
+typedef struct{
+    ocrGuid_t post_CFAR_scg;
+    ocrGuid_t blk_clg;
+    ocrGuid_t red_clg;
+    u64 m1, m2;
+    u64 nwins, bn;
+    u64 row;
+    int write_detects;
+} cfarRowPRM_t;
+
+/* Paramv for cfar_row_reduce_edt.  The block count is not carried: the reducer
+   sizes and fills from its own depc, and a second copy of the same number is a
+   trap for a later edit that trusts it. */
+typedef struct{
+    u64 write_detects;
+} cfarRowReducePRM_t;
+
+/* Paramv for cfar_row_write_edt */
+typedef struct{
+    u64 base;
+    ocrGuid_t write_clg;
+    char out_detects[RAG_PATH_MAX];
+} cfarRowWritePRM_t;
+
 /* Paramv for post_CFAR_edt */
 typedef struct{
 #ifdef TG_ARCH
@@ -354,6 +428,9 @@ typedef struct{
     // it executes on (a FILE* would be process-local).
     char out_detects[RAG_PATH_MAX];
 #endif
+    /* The detections file is the program's bulk output, not its result: the
+       detection count is.  Writing it is therefore opt-in. */
+    int write_detects;
 } postCFARPRM_t;
 
 /* Paramv for CFAR_edt: it creates post_CFAR_edt itself, so it carries that
@@ -365,12 +442,14 @@ typedef struct{
 /* Paramv for cfar_async_edt */
 typedef struct{
     struct corners_t corners;
+    int write_detects;
 } CFARAsyncPRM_t;
 
 /* Paramv for BackProj_edt */
 typedef struct{
     struct corners_t corners;
     ocrGuid_t stripes_dbg;      /* the stripe set its gather fills */
+    ocrGuid_t Xin_dbg;          /* the pulse history its tiles read */
 } backProjPRM_t;
 
 /* Paramv for backproject_async_edt */

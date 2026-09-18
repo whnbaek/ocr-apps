@@ -60,9 +60,18 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
        DEBUG_PRINTF(("argv[%d] %s\n", a, argv[a]));
     }
 
-    Command cmd = parseCommandLine(argc, argv);
+    int bail = 0;
+    Command cmd = parseCommandLine(argc, argv, &bail);
 
     ocrDbDestroy(DBK_argv);
+
+    // An argument error must end the whole run, not only the process that
+    // parsed the arguments: a peer left running outlives its launcher.
+    if (bail)
+    {
+        ocrShutdown();
+        return NULL_GUID;
+    }
 
     u64 nRanks = (cmd.npx)*(cmd.npy)*(cmd.npz);
     DEBUG_PRINTF(("nRanks %d\n", nRanks ));
@@ -101,7 +110,24 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     forkSpmdEdts_staticScheduler_Cart3D( initEdt, edtGridDims, spmdDepv );
 #else
     ocrPrintf("NOT Using STATIC scheduler\n");
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    {
+        //A rank owns a contiguous 3-D box of blocks, so the domain grid the
+        //ranks are cut into is also the partition of the mesh, and its cost is
+        //the mesh area it cuts.  Derive it from that instead of from the domain
+        //count alone; the fork is otherwise the generic one.
+        u64 blocksPerRank[3] = { cmd.init_block_x, cmd.init_block_y, cmd.init_block_z };
+        u64 pdGridDims[3];
+        u64 nPDs = 1;
+#ifdef ENABLE_EXTENSION_AFFINITY
+        ocrAffinityCount( AFFINITY_PD, &nPDs );
+#endif
+        haloSurfacePdGrid_Cart3D( nPDs, edtGridDims, blocksPerRank, pdGridDims );
+        forkSpmdEdts_onPdGrid_Cart3D( initEdt, edtGridDims, pdGridDims, spmdDepv );
+    }
+#else
     forkSpmdEdts_Cart3D( initEdt, edtGridDims, spmdDepv );
+#endif
 #endif
 
     return NULL_GUID;
@@ -190,11 +216,11 @@ void initCommand(Command* cmd)
     cmd->refine_ghost       = REFINE_GHOST;
 }
 
-Command parseCommandLine(int argc, char** argv)
+Command parseCommandLine(int argc, char** argv, int* PTR_bail)
 {
    Command cmd;
 
-   int i, object_num;
+   int i, object_num = 0;
 
    initCommand( &cmd );
 
@@ -272,14 +298,21 @@ Command parseCommandLine(int argc, char** argv)
       else if (!strcmp(argv[i], "--num_objects"))
       {
          cmd.num_objects = atoi(argv[++i]);
+         if (cmd.num_objects < 0 || cmd.num_objects > MAX_OBJECTS)
+         {
+            ocrPrintf("** Error ** --num_objects %d must be between 0 and %d\n", cmd.num_objects, MAX_OBJECTS);
+            *PTR_bail = 1;
+            return cmd;
+         }
          object_num = 0;
       }
       else if (!strcmp(argv[i], "--object"))
       {
          if (object_num >= cmd.num_objects)
          {
-            ocrPrintf("object number greater than num_objects\n");
-            exit(-1);
+            ocrPrintf("** Error ** --object number %d exceeds the %d declared by --num_objects; --num_objects must precede every --object\n", object_num, cmd.num_objects);
+            *PTR_bail = 1;
+            return cmd;
          }
          cmd.objects[object_num].type = atoi(argv[++i]);
          cmd.objects[object_num].bounce = atoi(argv[++i]);
@@ -300,18 +333,23 @@ Command parseCommandLine(int argc, char** argv)
       else if (!strcmp(argv[i], "--help"))
       {
          print_help_message();
-         ocrShutdown();
+         *PTR_bail = 1;
+         return cmd;
       }
       else
       {
          ocrPrintf("** Error ** Unknown input parameter %s\n", argv[i]);
          print_help_message();
-         ocrShutdown();
+         *PTR_bail = 1;
+         return cmd;
       }
    }
 
    if (check_input(cmd))
-      exit(-1);
+   {
+      *PTR_bail = 1;
+      return cmd;
+   }
 
    if (cmd.comm_vars == 0 || cmd.comm_vars > cmd.num_vars) {
       cmd.comm_vars = cmd.num_vars;
@@ -837,39 +875,46 @@ void sharedOcrObjCreate( rankH_t* PTR_rankH )
 
 }
 
-ocrGuid_t initEdt( EDT_ARGS )
+typedef struct {
+    u64 id;
+    s32 edtGridDims[3];
+    s32 ilevel;
+    s32 iblock;
+    s32 jblock;
+    s32 kblock;
+} PRM_blockSetupEdt_t;
+
+// Build one block: its handles, its channel and rendezvous events, and the
+// dependences of its setup task.  Neighbours meet through labeled events
+// rather than through the order in which they were built, so the blocks a
+// process owns are independent of one another and each is built by the task
+// that will own it.
+ocrGuid_t blockSetupEdt( EDT_ARGS )
 {
-    PRM_init3dEdt_t* PTR_PRM_initEdt = (PRM_init3dEdt_t*) paramv;
+    PRM_blockSetupEdt_t* PTR_PRM_blockSetup = (PRM_blockSetupEdt_t*) paramv;
 
-    u64 id = PTR_PRM_initEdt->id;
+    u64 id = PTR_PRM_blockSetup->id;
 
-    ocrGuid_t DBK_cmdLineArgs = depv[0].guid;
-    ocrGuid_t DBK_globalParamH = depv[1].guid;
-
-    void *PTR_cmdLineArgs = depv[0].ptr;
-    globalParamH_t *PTR_globalParamH = (globalParamH_t *) depv[1].ptr;
+    globalParamH_t *PTR_globalParamH = (globalParamH_t *) depv[0].ptr;
 
     Command* PTR_cmd = &(PTR_globalParamH->cmdParamH);
-
-    DEBUG_PRINTF(("%s ID %d\n", __func__, id ));
 
     ocrHint_t myEdtAffinityHNT, myDbkAffinityHNT;
     getAffinityHintsForDBandEdt( &myDbkAffinityHNT, &myEdtAffinityHNT );
 
-    s32 npx = PTR_PRM_initEdt->edtGridDims[0];
-    s32 npy = PTR_PRM_initEdt->edtGridDims[1];
-    s32 npz = PTR_PRM_initEdt->edtGridDims[2];
+    s32 npx = PTR_PRM_blockSetup->edtGridDims[0];
+    s32 npy = PTR_PRM_blockSetup->edtGridDims[1];
+    s32 npz = PTR_PRM_blockSetup->edtGridDims[2];
 
     int ix0, iy0, iz0, ix, iy, iz;
 
     globalCoordsFromRank_Cart3D( id, npx, npy, npz, &ix0, &iy0, &iz0 );
 
-#if 1
-   int ilevel, iblock, jblock, kblock;
+   int ilevel = PTR_PRM_blockSetup->ilevel;
+   int iblock = PTR_PRM_blockSetup->iblock;
+   int jblock = PTR_PRM_blockSetup->jblock;
+   int kblock = PTR_PRM_blockSetup->kblock;
    int iblock_g, jblock_g, kblock_g;
-   int p2 = 1;
-   int p8 = 1;
-   int offset = 0;
    int num_refine = PTR_cmd->num_refine;
    int init_block_x = PTR_cmd->init_block_x;
    int init_block_y = PTR_cmd->init_block_y;
@@ -889,6 +934,16 @@ ocrGuid_t initEdt( EDT_ARGS )
 
    int ievent;
 
+   int p2 = 1;
+   int p8 = 1;
+   int offset = 0;
+   int l;
+   for (l = 0; l < ilevel; l++) {
+      offset += p8*npx*npy*npz*init_block_x*init_block_y*init_block_z;
+      p2 *= 2;
+      p8 *= 8;
+   }
+
     ocrHint_t dbHint;
     ocrHintInit( &dbHint, OCR_HINT_DB_T );
     dbHint = myDbkAffinityHNT;
@@ -897,15 +952,12 @@ ocrGuid_t initEdt( EDT_ARGS )
     ocrSetHintValue(&dbHint, OCR_HINT_DB_LAZY, 1);
 #endif
 
-   for (ilevel = 0; ilevel <= num_refine; ilevel++)
-   {
         gz = p2*npz*init_block_z; //global blocks in z at this level
         gy = p2*npy*init_block_y;
         gx = p2*npx*init_block_x;
 
-        for (kblock = 0; kblock < p2*init_block_z; kblock++)
-        for (jblock = 0; jblock < p2*init_block_y; jblock++)
-        for (iblock = 0; iblock < p2*init_block_x; iblock++) {
+        {
+
             kblock_g = p2*iz0*init_block_z + kblock;
             jblock_g = p2*iy0*init_block_y + jblock;
             iblock_g = p2*ix0*init_block_x + iblock;
@@ -1195,13 +1247,68 @@ ocrGuid_t initEdt( EDT_ARGS )
             ocrAddDependence( DBK_rankH, channelSetupEDT, 6*nNbrs+9+9, DB_MODE_RW );
         }
 
-        offset += p8*npx*npy*npz*init_block_x*init_block_y*init_block_z;
+    return NULL_GUID;
+}
+
+
+ocrGuid_t initEdt( EDT_ARGS )
+{
+    PRM_init3dEdt_t* PTR_PRM_initEdt = (PRM_init3dEdt_t*) paramv;
+
+    u64 id = PTR_PRM_initEdt->id;
+
+    ocrGuid_t DBK_globalParamH = depv[1].guid;
+
+    globalParamH_t *PTR_globalParamH = (globalParamH_t *) depv[1].ptr;
+
+    Command* PTR_cmd = &(PTR_globalParamH->cmdParamH);
+
+    DEBUG_PRINTF(("%s ID %d\n", __func__, id ));
+
+    ocrHint_t myEdtAffinityHNT, myDbkAffinityHNT;
+    getAffinityHintsForDBandEdt( &myDbkAffinityHNT, &myEdtAffinityHNT );
+
+    s32 npx = PTR_PRM_initEdt->edtGridDims[0];
+    s32 npy = PTR_PRM_initEdt->edtGridDims[1];
+    s32 npz = PTR_PRM_initEdt->edtGridDims[2];
+
+   int ilevel, iblock, jblock, kblock;
+   int p2 = 1;
+   int num_refine = PTR_cmd->num_refine;
+   int init_block_x = PTR_cmd->init_block_x;
+   int init_block_y = PTR_cmd->init_block_y;
+   int init_block_z = PTR_cmd->init_block_z;
+
+   ocrGuid_t blockSetupTML;
+   ocrEdtTemplateCreate( &blockSetupTML, blockSetupEdt, PARAMC_U64(PRM_blockSetupEdt_t), 1 );
+
+   for (ilevel = 0; ilevel <= num_refine; ilevel++)
+   {
+        for (kblock = 0; kblock < p2*init_block_z; kblock++)
+        for (jblock = 0; jblock < p2*init_block_y; jblock++)
+        for (iblock = 0; iblock < p2*init_block_x; iblock++) {
+
+            PRM_blockSetupEdt_t PRM_blockSetup;
+            PRM_blockSetup.id = id;
+            PRM_blockSetup.edtGridDims[0] = npx;
+            PRM_blockSetup.edtGridDims[1] = npy;
+            PRM_blockSetup.edtGridDims[2] = npz;
+            PRM_blockSetup.ilevel = ilevel;
+            PRM_blockSetup.iblock = iblock;
+            PRM_blockSetup.jblock = jblock;
+            PRM_blockSetup.kblock = kblock;
+
+            ocrEDT_t blockSetupEDT;
+            ocrEdtCreate( &blockSetupEDT, blockSetupTML, EDT_PARAM_DEF, (u64*)&PRM_blockSetup,
+                          EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
+
+            ocrAddDependence( DBK_globalParamH, blockSetupEDT, 0, DB_MODE_RO );
+        }
 
         p2 *= 2;
-        p8 *= 8;
     }
 
-#endif
+   ocrEdtTemplateDestroy( blockSetupTML );
 
     return NULL_GUID;
 }
@@ -1304,8 +1411,19 @@ int check_input(Command cmd)
       ocrPrintf("illegal value for target_min\n");
       error = 1;
    }
+   if (cmd.npx < 1 || cmd.npy < 1 || cmd.npz < 1) {
+      ocrPrintf("process grid dimensions must be positive\n");
+      error = 1;
+   }
    if (cmd.num_refine < 0) {
       ocrPrintf("number of refinement levels must be non-negative\n");
+      error = 1;
+   }
+   // The refinement-level and variable counts index fixed-size members of the
+   // rank and command structures, so a value past the cap is a silent overrun
+   // rather than a shortage.
+   if (cmd.num_refine > MAX_REFINE_LEVELS) {
+      ocrPrintf("number of refinement levels must be at most %d\n", MAX_REFINE_LEVELS);
       error = 1;
    }
    if (cmd.block_change < 0) {
@@ -1314,6 +1432,34 @@ int check_input(Command cmd)
    }
    if (cmd.num_vars < 1) {
       ocrPrintf("number of variables must be positive\n");
+      error = 1;
+   }
+   if (cmd.num_vars > MAX_NUM_VARS) {
+      ocrPrintf("number of variables must be at most %d\n", MAX_NUM_VARS);
+      error = 1;
+   }
+   if (cmd.comm_vars < 0) {
+      ocrPrintf("comm_vars must be non-negative\n");
+      error = 1;
+   }
+   if (cmd.num_tsteps < 1) {
+      ocrPrintf("number of timesteps must be positive\n");
+      error = 1;
+   }
+   if (cmd.stages_per_ts < 1) {
+      ocrPrintf("number of stages per timestep must be positive\n");
+      error = 1;
+   }
+   if (cmd.checksum_freq < 0) {
+      ocrPrintf("checksum frequency must be non-negative\n");
+      error = 1;
+   }
+   if (cmd.error_tol < 0) {
+      ocrPrintf("error tolerance exponent must be non-negative\n");
+      error = 1;
+   }
+   if (cmd.refine_freq < 1) {
+      ocrPrintf("refinement frequency must be positive\n");
       error = 1;
    }
    //if (num_pes != npx*npy*npz) {

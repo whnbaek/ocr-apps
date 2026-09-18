@@ -35,11 +35,11 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   }
 
   if(target_boxes<1){
-    ocrPrintf("target_boxes_per_rank must be at least 1\n");
+    ocrPrintf("target_boxes must be at least 1\n");
     ocrShutdown(); return NULL_GUID;
   }
 
-  // calculate the problem size...
+  // calculate the problem size...  target_boxes caps the TOTAL box count
   int box_dim=1<<log2_box_dim;
   int boxes_in_i = 1000;
   int total_boxes = boxes_in_i*boxes_in_i*boxes_in_i;
@@ -47,12 +47,14 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     boxes_in_i--;
     total_boxes = boxes_in_i*boxes_in_i*boxes_in_i;
   }
+  hpgmg_check_geometry(box_dim, boxes_in_i);
 
   ocrGuid_t mg; mg_type* mg_ptr;
   ocrDbCreate(&mg, (void**)&mg_ptr, sizeof(mg_type), 0, NULL_HINT, NO_ALLOC);
 
   // distributed initialization: the solve starts when its chain completes
-  ocrGuid_t initDone = dist_init(mg_ptr, box_dim, boxes_in_i);
+  ocrGuid_t startEvt;
+  ocrGuid_t initDone = dist_init(mg_ptr, box_dim, boxes_in_i, &startEvt);
   ocrDbRelease(mg);
 
   ocrGuid_t tmp,edt;
@@ -62,6 +64,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrAddDependence(mg, edt, 0, DB_MODE_CONST);
   ocrAddDependence(initDone, edt, 1, DB_MODE_NULL);
   ocrEdtTemplateDestroy(tmp);
+
+  ocrEventSatisfy(startEvt, NULL_GUID);
 
   ocrDbDestroy(depv[0].guid);
 

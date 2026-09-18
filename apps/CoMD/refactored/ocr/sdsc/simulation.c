@@ -11,7 +11,7 @@
 
 static u8 sanity_checks(command* cmd, double cutoff, double lattice_const, char lattice_type[8]);
 
-u8 init_simulation(command* cmd, simulation* sim, timer* t, ocrGuid_t** list)
+u8 init_simulation(command* cmd, simulation* sim, ocrGuid_t** list)
 {
   sim->step = 0;
   sim->steps = cmd->steps;
@@ -33,14 +33,7 @@ u8 init_simulation(command* cmd, simulation* sim, timer* t, ocrGuid_t** list)
   insane = sanity_checks(cmd, sim->pot.cutoff, lattice_const, sim->pot.lattice_type);
   if(insane) return insane;
 
-  ocrGuid_t box_tmp;
-  box** box_ptr = init_lattice(sim, cmd, lattice_const, list, &box_tmp);
-
-  profile_start(redistribute_timer,t);
-  redistribute_atoms(sim, box_ptr, sim->bxs.boxes_num);
-  profile_stop(redistribute_timer,t);
-
-  ocrDbDestroy(box_tmp);
+  init_lattice(sim, cmd, lattice_const, list);
 
   return 0;
 }
@@ -124,6 +117,14 @@ u8 sanity_checks(command* cmd, double cutoff, double lattice_const, char lattice
   if (strcasecmp(lattice_type, "FCC") != 0) {
      failure |= 4;
      ocrPrintf("\nOnly FCC Lattice type supported, not %s. Fatal Error.\n", lattice_type);
+  }
+  /* An FCC site sits a quarter of a lattice spacing from the nearest domain
+   * face and a displaced position is never wrapped, so a larger displacement
+   * would place an atom outside the box grid entirely. */
+  if(cmd->initial_delta < 0.0 || cmd->initial_delta >= 0.25*lattice_const) {
+     failure |= 8;
+     ocrPrintf("\nInitial delta must lie in [0, %3.2f) Angstroms.\n",
+               0.25*lattice_const);
   }
   return failure;
 }

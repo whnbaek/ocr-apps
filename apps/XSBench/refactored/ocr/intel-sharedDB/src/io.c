@@ -40,7 +40,7 @@ void center_print(const char *s, int width)
 }
 
 void print_results( Inputs in, int mype, double runtime, int nprocs,
-    u64 vhash )
+    u64 checksum )
 {
     // Calculate Lookups per sec
     int lookups_per_sec = (int) ((double) in.lookups / runtime);
@@ -67,10 +67,8 @@ void print_results( Inputs in, int mype, double runtime, int nprocs,
         ocrPrintf("Runtime:     %.3f seconds\n", runtime);
         ocrPrintf("Lookups:     "); fancy_int(in.lookups);
         ocrPrintf("Lookups/s:   "); fancy_int(lookups_per_sec);
+        ocrPrintf("XS Checksum:   %"PRIu64"\n", checksum);
         print_throughput_custom("Lookups", (unsigned long long) in.lookups, runtime, (double)lookups_per_sec);
-        #endif
-        #ifdef VERIFICATION
-        ocrPrintf("Verification checksum: %llu\n", vhash);
         #endif
         border_print();
 
@@ -84,9 +82,6 @@ void print_inputs(Inputs in, int nprocs, int version )
     logo(version);
     center_print("INPUT SUMMARY", 79);
     border_print();
-    #ifdef VERIFICATION
-    ocrPrintf("Verification Mode:            on\n");
-    #endif
     ocrPrintf("Materials:                    %d\n", in.n_mats);
     ocrPrintf("H-M Benchmark Size:           %s\n", in.HM);
     ocrPrintf("Total Nuclides:               %ld\n", in.n_isotopes);
@@ -141,43 +136,42 @@ void fancy_int( long a )
     ocrPrintf("%ld\n",a);
 }
 
-void print_CLI_error(void)
+void print_CLI_error(const char * reason)
 {
+    ocrPrintf("ERROR: %s\n", reason);
     ocrPrintf("Usage: ./XSBench <options>\n");
     ocrPrintf("Options include:\n");
     ocrPrintf("  -t <threads>     Number of OpenMP threads to run\n");
     ocrPrintf("  -s <size>        Size of H-M Benchmark to run (small, large, XL, XXL)\n");
     ocrPrintf("  -g <gridpoints>  Number of gridpoints per nuclide (overrides -s defaults)\n");
     ocrPrintf("  -l <lookups>     Number of Cross-section (XS) lookups\n");
+    ocrPrintf("  -p <nprocs>      Number of SPMD instances\n");
     ocrPrintf("Default is equivalent to: -s large -l 15000000\n");
     ocrPrintf("See readme for full description of default run values\n");
-    ocrShutdown();
-    //exit(4);
 }
 
-Inputs read_CLI( int argc, char * argv[] )
+// Fills *input from argv.  Returns non-zero when the arguments are rejected;
+// the caller must not build the run in that case.
+int read_CLI( int argc, char * argv[], Inputs * input )
 {
-    Inputs input;
-
-    input.nprocs = 1;
+    input->nprocs = 1;
 
     // defaults to max threads on the system
-    input.nthreads = 1; //omp_get_num_procs();
+    input->nthreads = 1; //omp_get_num_procs();
 
     // defaults to 355 (corresponding to H-M Large benchmark)
-    input.n_isotopes = 355;
+    input->n_isotopes = 355;
 
-    input.n_mats = 12;
+    input->n_mats = 12;
 
     // defaults to 11303 (corresponding to H-M Large benchmark)
-    input.n_gridpoints = 11303;
+    input->n_gridpoints = 11303;
 
     // defaults to 15,000,000
-    input.lookups = 15000;
+    input->lookups = 15000;
 
     // defaults to H-M Large benchmark
-    //input.HM = (char *) malloc( 6 * sizeof(char) );
-    strcpy( input.HM, "small" );
+    strcpy( input->HM, "small" );
 
     // Check if user sets these
     int user_g = 0;
@@ -190,85 +184,115 @@ Inputs read_CLI( int argc, char * argv[] )
         // nthreads (-t)
         if( strcmp(arg, "-t") == 0 )
         {
-            if( ++i < argc )
-                input.nthreads = atoi(argv[i]);
-            else
-                print_CLI_error();
+            if( ++i >= argc )
+            {
+                print_CLI_error("-t needs a chain count");
+                return 1;
+            }
+            input->nthreads = atoi(argv[i]);
         }
         // nprocs (-p)
         else if( strcmp(arg, "-p") == 0 )
         {
-            if( ++i < argc )
-                input.nprocs = atoi(argv[i]);
-            else
-                print_CLI_error();
+            if( ++i >= argc )
+            {
+                print_CLI_error("-p needs an SPMD instance count");
+                return 1;
+            }
+            input->nprocs = atoi(argv[i]);
         }
         // n_gridpoints (-g)
         else if( strcmp(arg, "-g") == 0 )
         {
-            if( ++i < argc )
+            if( ++i >= argc )
             {
-                user_g = 1;
-                input.n_gridpoints = atoi(argv[i]); //TODO: we need atol here but we don't have it yet
+                print_CLI_error("-g needs a gridpoint count");
+                return 1;
             }
-            else
-                print_CLI_error();
+            user_g = 1;
+            input->n_gridpoints = atoi(argv[i]); //TODO: we need atol here but we don't have it yet
         }
         // lookups (-l)
         else if( strcmp(arg, "-l") == 0 )
         {
-            if( ++i < argc )
-                input.lookups = atoi(argv[i]);
-            else
-                print_CLI_error();
+            if( ++i >= argc )
+            {
+                print_CLI_error("-l needs a lookup count");
+                return 1;
+            }
+            input->lookups = atoi(argv[i]);
         }
         // HM (-s)
         else if( strcmp(arg, "-s") == 0 )
         {
-            if( ++i < argc )
-                strcpy(input.HM, argv[i]);
-            else
-                print_CLI_error();
+            if( ++i >= argc )
+            {
+                print_CLI_error("-s needs a size class");
+                return 1;
+            }
+            if( strlen(argv[i]) >= sizeof(input->HM) )
+            {
+                print_CLI_error("-s takes small, large, XL or XXL");
+                return 1;
+            }
+            strcpy(input->HM, argv[i]);
         }
-        else {
-            print_CLI_error();
+        else
+        {
+            ocrPrintf("Unrecognized option: %s\n", arg);
+            print_CLI_error("unrecognized option");
+            return 1;
         }
     }
 
     // Validate Input
 
     // Validate nthreads
-    if( input.nthreads < 1 )
-        print_CLI_error();
+    if( input->nthreads < 1 )
+    {
+        print_CLI_error("-t must be at least 1");
+        return 1;
+    }
 
-    // Validate n_isotopes
-    if( input.n_isotopes < 1 )
-        print_CLI_error();
+    // Validate nprocs
+    if( input->nprocs < 1 )
+    {
+        print_CLI_error("-p must be at least 1");
+        return 1;
+    }
 
     // Validate n_gridpoints
-    if( input.n_gridpoints < 1 )
-        print_CLI_error();
+    if( input->n_gridpoints < 1 )
+    {
+        print_CLI_error("-g must be at least 1");
+        return 1;
+    }
 
     // Validate lookups
-    if( input.lookups < 1 )
-        print_CLI_error();
+    if( input->lookups < 1 )
+    {
+        print_CLI_error("-l must be at least 1");
+        return 1;
+    }
 
     // Validate HM size
-    if( strcasecmp(input.HM, "small") != 0 &&
-        strcasecmp(input.HM, "large") != 0 &&
-        strcasecmp(input.HM, "XL") != 0 &&
-        strcasecmp(input.HM, "XXL") != 0 )
-        print_CLI_error();
+    if( strcasecmp(input->HM, "small") != 0 &&
+        strcasecmp(input->HM, "large") != 0 &&
+        strcasecmp(input->HM, "XL") != 0 &&
+        strcasecmp(input->HM, "XXL") != 0 )
+    {
+        print_CLI_error("-s takes small, large, XL or XXL");
+        return 1;
+    }
 
     // Set HM size specific parameters
     // (defaults to large)
-    if( strcasecmp(input.HM, "small") == 0 )
-        input.n_isotopes = 68;
-    else if( strcasecmp(input.HM, "XL") == 0 && user_g == 0 )
-        input.n_gridpoints = 238847; // sized to make 120 GB XS data
-    else if( strcasecmp(input.HM, "XXL") == 0 && user_g == 0 )
-        input.n_gridpoints = 238847 * 2.1; // 252 GB XS data
+    if( strcasecmp(input->HM, "small") == 0 )
+        input->n_isotopes = 68;
+    else if( strcasecmp(input->HM, "XL") == 0 && user_g == 0 )
+        input->n_gridpoints = 238847; // sized to make 120 GB XS data
+    else if( strcasecmp(input->HM, "XXL") == 0 && user_g == 0 )
+        input->n_gridpoints = 238847 * 2.1; // 252 GB XS data
 
-    // Return input struct
-    return input;
+    return 0;
 }

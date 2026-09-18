@@ -63,6 +63,9 @@ void getAffinityHintsForDBandEdtAtPD( ocrHint_t* PTR_myDbkAffinityHNT, ocrHint_t
 
 }
 
+/* Blocks are compared half-open: with fewer items than parts the leading
+ * blocks are empty, and an empty block must be skipped rather than closed at
+ * one below its own start, which in unsigned arithmetic spans everything. */
 void getPartitionID(u64 i, u64 lb_g, u64 ub_g, u64 R, u64* id)
 {
     u64 N = ub_g - lb_g + 1;
@@ -73,8 +76,8 @@ void getPartitionID(u64 i, u64 lb_g, u64 ub_g, u64 R, u64* id)
     for( r = 0; r < R; r++ )
     {
         s = r*N/R + lb_g;
-        e = (r+1)*N/R + lb_g - 1;
-        if( s <= i && i <= e )
+        e = (r+1)*N/R + lb_g;
+        if( s <= i && i < e )
             break;
     }
 
@@ -340,6 +343,18 @@ void forkSpmdEdts_Cart2D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u6
 
 void forkSpmdEdts_Cart3D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u64* edtGridDims, ocrGuid_t* spmdDepv )
 {
+    u64 affinityCount=1;
+#ifdef ENABLE_EXTENSION_AFFINITY
+    ocrAffinityCount( AFFINITY_PD, &affinityCount );
+#endif
+    u64 pdGridDims[3];
+    splitDimension_Cart3D( affinityCount, &pdGridDims[0], &pdGridDims[1], &pdGridDims[2] );
+
+    forkSpmdEdts_onPdGrid_Cart3D( initEdt, edtGridDims, pdGridDims, spmdDepv );
+}
+
+void forkSpmdEdts_onPdGrid_Cart3D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u64* edtGridDims, u64* pdGridDims, ocrGuid_t* spmdDepv )
+{
     u64 i;
     u64 nRanks = edtGridDims[0]*edtGridDims[1]*edtGridDims[2];
 
@@ -364,7 +379,6 @@ void forkSpmdEdts_Cart3D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u6
     PRM_init3dEdt.edtGridDims[1] = edtGridDims[1];
     PRM_init3dEdt.edtGridDims[2] = edtGridDims[2];
 
-    //Query the number of policy domains (nodes) available for the run
     //Map the SPMD EDTs onto the policy domains
     u64 affinityCount=1;
 #ifdef ENABLE_EXTENSION_AFFINITY
@@ -373,11 +387,7 @@ void forkSpmdEdts_Cart3D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u6
 #else
     ocrPrintf("NOT Using affinity API\n\n");
 #endif
-    u64 PD_X, PD_Y, PD_Z;
-    splitDimension_Cart3D( affinityCount, &PD_X, &PD_Y, &PD_Z ); //Split available PDs into a 3-D grid
-    DEBUG_PRINTF(("PD_X PD_Y PD_Z %d %d %d\n", PD_X, PD_Y, PD_Z));
-
-    u64 pdGridDims[3] = { PD_X, PD_Y, PD_Z };
+    DEBUG_PRINTF(("PD_X PD_Y PD_Z %d %d %d\n", pdGridDims[0], pdGridDims[1], pdGridDims[2]));
 
     for( i = 0; i < nRanks; ++i )
     {

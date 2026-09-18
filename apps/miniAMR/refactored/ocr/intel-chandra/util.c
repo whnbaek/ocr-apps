@@ -573,3 +573,81 @@ _OCR_TASK_FNC_( FNC_accumulator )
 }
 
 
+
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+
+/* Area, in blocks, of the interior cut planes a policy-domain grid draws
+ * through the mesh: one plane per interior partition boundary on an axis,
+ * each of the area of the mesh face normal to it.  Every block pair the plane
+ * separates exchanges a halo every stage, so this is the halo traffic the
+ * partition forces off-node. */
+static u64 pdGridCutArea( u64* pdGrid, u64* mesh )
+{
+    return (pdGrid[0]-1)*mesh[1]*mesh[2]
+         + (pdGrid[1]-1)*mesh[0]*mesh[2]
+         + (pdGrid[2]-1)*mesh[0]*mesh[1];
+}
+
+/* Ranks held by the busiest domain.  Splitting an axis of n into p parts gives
+ * parts of floor(n/p) and ceil(n/p); a factor above the axis extent leaves
+ * some domain with no rank at all, which this reports as the whole extent. */
+static u64 pdGridBusiestDomain( u64* pdGrid, u64* rankGrid )
+{
+    return ((rankGrid[0]+pdGrid[0]-1)/pdGrid[0])
+         * ((rankGrid[1]+pdGrid[1]-1)/pdGrid[1])
+         * ((rankGrid[2]+pdGrid[2]-1)/pdGrid[2]);
+}
+
+/* Choose the policy-domain grid by what the partition costs the mesh rather
+ * than by the domain count alone.  The generic split factors the count into a
+ * near-cube, which is the cheapest partition only when the mesh it cuts is
+ * near-cubic too: on an anisotropic mesh another factorization of the same
+ * count draws its planes through smaller faces and separates strictly fewer
+ * neighbour pairs at the same balance.  Balance comes first and the generic
+ * split is the incumbent, so a geometry it already suits keeps exactly the
+ * map it had. */
+void haloSurfacePdGrid_Cart3D( u64 nPDs, u64* rankGrid, u64* blocksPerRank, u64* pdGrid )
+{
+    u64 mesh[3];
+    u64 cand[3];
+    u64 bestCut, bestBusiest;
+    u64 px, py;
+
+    mesh[0] = rankGrid[0]*blocksPerRank[0];
+    mesh[1] = rankGrid[1]*blocksPerRank[1];
+    mesh[2] = rankGrid[2]*blocksPerRank[2];
+
+    splitDimension_Cart3D( nPDs, &pdGrid[0], &pdGrid[1], &pdGrid[2] );
+
+    bestBusiest = pdGridBusiestDomain( pdGrid, rankGrid );
+    bestCut = pdGridCutArea( pdGrid, mesh );
+
+    for( px = 1; px <= nPDs; px++ ) {
+        if( nPDs % px ) continue;
+        for( py = 1; py <= nPDs/px; py++ ) {
+            u64 busiest, cut;
+
+            if( (nPDs/px) % py ) continue;
+
+            cand[0] = px;
+            cand[1] = py;
+            cand[2] = nPDs/px/py;
+
+            if( cand[0] > rankGrid[0] || cand[1] > rankGrid[1] || cand[2] > rankGrid[2] )
+                continue;
+
+            busiest = pdGridBusiestDomain( cand, rankGrid );
+            cut = pdGridCutArea( cand, mesh );
+
+            if( busiest < bestBusiest || ( busiest == bestBusiest && cut < bestCut ) ) {
+                bestBusiest = busiest;
+                bestCut = cut;
+                pdGrid[0] = cand[0];
+                pdGrid[1] = cand[1];
+                pdGrid[2] = cand[2];
+            }
+        }
+    }
+}
+
+#endif

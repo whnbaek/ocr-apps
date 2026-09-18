@@ -8,17 +8,18 @@
 #include <extensions/ocr-affinity.h>
 #include <stdlib.h>
 
-/* Top tree levels (queens placed) whose partial-board EDTs are round-robin
- * distributed across policy domains; deeper levels pin to the creating rank so
- * each independent subtree runs wire-free. */
-/* How many levels of the search tree get scattered across ranks before the
- * subtree is pinned to whatever rank it landed on.  Too few and the ranks
- * starve; too many and every level pays a migration the subtree would have
- * amortised locally.  The value is calibrated by measurement, not derived,
- * so it is an argument; this is only the default when it is absent. */
+/* Default for the scatter argument: a partial-board EDT with fewer queens
+ * placed than this is spread across policy domains by key, and one at or
+ * beyond it stays on its creating rank.  Too small and the deep majority of
+ * the tree is confined to whichever rank its ancestor landed on; too large and
+ * every level pays a migration the subtree would have amortised locally. */
 #ifndef NQUEENS_RR_LEVELS
 #define NQUEENS_RR_LEVELS 3
 #endif
+
+/* A scatter depth below this places only the empty board, so every descendant
+ * pins to the rank the root landed on and the search never leaves it. */
+#define NQUEENS_MIN_RR_LEVELS 2
 
 struct nqueens_sum_args
 {
@@ -26,16 +27,26 @@ struct nqueens_sum_args
 };
 
 
-/* Finalizer-style bit mix: the column bitmask's low bits are semantically
- * special (column 0 is the only odd single-bit residue), so a raw modulus is
- * parity-biased toward one rank — mixing first makes the residue uniform
- * across sibling subtrees. */
+/* Finalizer-style bit mix: sibling boards differ in a few bits, so a raw
+ * modulus of a board mask is biased toward one rank — mixing first makes the
+ * residue uniform across siblings. */
 static inline u64 mixKey( u64 x )
 {
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
     x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
     x ^= x >> 33;
     return x;
+}
+
+/* A partial board is the triple (cols, ldiag, rdiag), and the column mask
+ * alone is an order-INDEPENDENT set: every permutation of one column set
+ * shares it, so keying on it collapses all of them onto one rank.  The two
+ * diagonal masks are order-dependent, so the triple is the canonical
+ * identity of a subtree and all three have to enter the key. */
+static inline u64 nqStateKey( const struct nqueens_args * args )
+{
+    return mixKey( mixKey( ((u64)args->ldiag << 32) | (u64)args->rdiag )
+                   ^ (u64)args->cols );
 }
 
 /* Pin the summing continuation to the creating rank. */
@@ -53,23 +64,27 @@ static ocrHint_t * nqLocalEdtHint( ocrHint_t * h )
 #endif
 }
 
-/* Static placement: the column bitmask is a distinct key per subtree, and
- * its set-bit count is the number of queens placed (the tree level). */
-static ocrHint_t * nqPlaceEdtHint( ocrHint_t * h, u64 cols, u32 rr_levels )
+/* Static placement: the set-bit count of the column mask is the number of
+ * queens already placed (the tree level).  A task whose count is LESS than the
+ * scatter depth is placed by its board's canonical key; at or beyond that depth
+ * the task stays on the rank that created it, so the subtree below runs where
+ * its root landed.  The whole board state is passed so the key can use all of
+ * it. */
+static ocrHint_t * nqPlaceEdtHint( ocrHint_t * h, const struct nqueens_args * args )
 {
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
     u64 nranks;
     ocrAffinityCount( AFFINITY_PD, &nranks );
     ocrGuid_t aff;
-    if( NumberOfSetBits( cols ) < rr_levels )
-        ocrAffinityGetAt( AFFINITY_PD, mixKey( cols ) % nranks, &aff );
+    if( NumberOfSetBits( args->cols ) < args->rr_levels )
+        ocrAffinityGetAt( AFFINITY_PD, nqStateKey( args ) % nranks, &aff );
     else
         ocrAffinityGetCurrent( &aff );
     ocrHintInit( h, OCR_HINT_EDT_T );
     ocrSetHintValue( h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue( aff ) );
     return h;
 #else
-    (void)h; (void)cols; (void)rr_levels;
+    (void)h; (void)args;
     return NULL_HINT;
 #endif
 }
@@ -83,7 +98,7 @@ static inline void create_task( struct nqueens_args* args )
     ocrGuid_t edt;
     ocrHint_t hint;
     err  = ocrEdtCreate( &edt, args->find_template, paramc, paramv, 0, NULL,
-              EDT_PROP_NONE, nqPlaceEdtHint(&hint, args->cols, args->rr_levels), NULL );
+              EDT_PROP_NONE, nqPlaceEdtHint(&hint, args), NULL );
     ocrAssert( err == 0 );
 }
 
@@ -276,27 +291,48 @@ ocrGuid_t shutdownEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     return NULL_GUID;
 }
 
+/* An out-of-range argument is rejected, never clamped: a silently corrected
+ * value makes a run report on a workload nobody asked for. */
+static void nqReject( void * argsPtr, const char * problem )
+{
+    ocrPrintf( "nqueens: %s\nUsage: %s size cutoff [rounds [scatter-levels]]\n",
+               problem, ocrGetArgv( argsPtr, 0 ) );
+    ocrAbort( EXIT_FAILURE );
+}
+
 ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 {
     u64 argc = ocrGetArgc(depv[0].ptr);
-    if( argc < 3 || argc > 5 ) {
-        ocrPrintf("Usage %s size cutoff [rounds [scatter-levels]]",
-                  ocrGetArgv(depv[0].ptr,0) );
-        ocrAbort(EXIT_FAILURE);
-    }
+    if( argc < 3 || argc > 5 )
+        nqReject( depv[0].ptr, "wrong number of arguments" );
 
-    u32 n = atoi( ocrGetArgv(depv[0].ptr,1) );
-    u32 cutoff = atoi( ocrGetArgv(depv[0].ptr,2) );
-    u32 rounds = 1;
-    if( argc >= 4 ) {
-        u32 r = atoi( ocrGetArgv(depv[0].ptr,3) );
-        if( r >= 1 ) rounds = r;
-    }
-    u32 rr_levels = NQUEENS_RR_LEVELS;
+    /* signed while they are checked, so a negative argument is rejected
+     * instead of wrapping into a plausible unsigned value */
+    int n_arg = atoi( ocrGetArgv(depv[0].ptr,1) );
+    int cutoff_arg = atoi( ocrGetArgv(depv[0].ptr,2) );
+    int rounds_arg = 1;
+    if( argc >= 4 )
+        rounds_arg = atoi( ocrGetArgv(depv[0].ptr,3) );
+    int rr_arg = NQUEENS_RR_LEVELS;
     if( argc == 5 )
-        rr_levels = atoi( ocrGetArgv(depv[0].ptr,4) );
-    ocrAssert( 0 < n && n < 31 );
-    ocrAssert( cutoff < n );
+        rr_arg = atoi( ocrGetArgv(depv[0].ptr,4) );
+
+    if( n_arg < 1 || n_arg > 30 )
+        nqReject( depv[0].ptr, "size must be in [1,30]" );
+    if( cutoff_arg < 0 || cutoff_arg >= n_arg )
+        nqReject( depv[0].ptr, "cutoff must be in [0,size)" );
+    if( rounds_arg < 1 )
+        nqReject( depv[0].ptr, "rounds must be at least 1" );
+    if( rr_arg < NQUEENS_MIN_RR_LEVELS )
+        nqReject( depv[0].ptr,
+                  "scatter-levels must be at least 2, or every subtree pins"
+                  " to the rank the root landed on and one rank runs the"
+                  " whole search" );
+
+    u32 n = (u32)n_arg;
+    u32 cutoff = (u32)cutoff_arg;
+    u32 rounds = (u32)rounds_arg;
+    u32 rr_levels = (u32)rr_arg;
 
     u8 err;
     ocrGuid_t find_template, shutdown_template;

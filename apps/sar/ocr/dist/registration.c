@@ -66,36 +66,6 @@ int gauss_elim(float *AA[], float *x, int N);
 struct point corr2D(struct point ctrl_pt, int Nwin, int R,
     const struct ctrlpt_win_s *, struct ImageParams*);
 
-/* Tiles are a regular grid over the image, so a tile's rectangle is
- * recoverable from its slot: the dependences are added in creation order. */
-typedef struct { u64 by, bx; } afGatherPRM_t;
-
-/* The registered image replaces the current one, so the tiles land directly in
- * curImage and the whole-image intermediate the base program writes and then
- * copies from never has to exist.  Every block has read curImage before this
- * runs -- the gather waits on all of them. */
-ocrGuid_t affine_gather_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
-	afGatherPRM_t *p = (afGatherPRM_t *)paramv;
-	RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,0);
-	RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,1);
-	RAG_REF_MACRO_BSM( struct img_stripes_s *,stripes,NULL,NULL,stripes_dbg,2);
-	RAG_REMAP_2D(curImage, image_params->Iy, image_params->Ix, struct complexData);
-	int t = 0;
-	for(int m = 0; m < image_params->Iy; m += (int)p->by) {
-		const int mhi = (m + (int)p->by) < image_params->Iy ? (m + (int)p->by) : image_params->Iy;
-		for(int n = 0; n < image_params->Ix; n += (int)p->bx, ++t) {
-			const int nhi = (n + (int)p->bx) < image_params->Ix ? (n + (int)p->bx) : image_params->Ix;
-			struct complexData *tile = (struct complexData *)depv[3+t].ptr;
-			if(tile == NULL) continue;
-			for(int r = m; r < mhi; ++r)
-				memcpy(&curImage[r][n], &tile[(r-m)*(nhi-n)], (nhi-n)*sizeof(struct complexData));
-		}
-	}
-	/* Cut the registered image into the stripes its detection blocks read. */
-	img_stripes_scatter(stripes, curImage);
-	return NULL_GUID;
-}
-
 ocrGuid_t post_affine_async_1_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
 	int retval;
     postAffineAsyncPRM_t *postAffineAsyncParamvIn  = (postAffineAsyncPRM_t *)paramv;
@@ -108,12 +78,12 @@ ocrPrintf("////// enter post_affine_async_1_edt\n");RAG_FLUSH;
 RAG_REF_MACRO_SPAD(struct async_1_args_t,post_affine_async_1_args,post_affine_async_1_args_ptr,post_affine_async_1_args_lcl,post_affine_async_1_args_dbg,0);
 RAG_REF_MACRO_SPAD(struct AffineParams,affine_params,affine_params_ptr,affine_params_lcl,affine_params_dbg,1);
 RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,2);
-RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,3);
+RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,curImage_dbg,3);
 RAG_REF_MACRO_BSM( int *,Fx,NULL,NULL,Fx_dbg,4);
 RAG_REF_MACRO_BSM( int *,Fy,NULL,NULL,Fy_dbg,5);
 RAG_REF_MACRO_BSM( int **,A,NULL,NULL,A_dbg,6);
 RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_cur,NULL,NULL,st_cur_dbg,CTRLPT_ST_CUR_SLOT);
-RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,st_reg_dbg,CTRLPT_ST_REG_SLOT);
+RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_reg,NULL,NULL,st_reg_dbg,CTRLPT_ST_REG_SLOT);
 
 	// Rebuild A's row-pointer table against this node's copy before the
 	// A[k][*] reads in the least-squares accumulation below.
@@ -295,13 +265,13 @@ fprintf(stderr,"Wcy %f %f %f %f %f %f\n",Wcy[0],Wcy[1],Wcy[2],Wcy[3],Wcy[4],Wcy[
 	 * blocking factor rather than sharing the projection's. */
 	int Xend = image_params->Ix;
 	int Yend = image_params->Iy;
-	int AFFINE_ASYNC_2_BLOCK_SIZE_X = RAG_AFFINE_BLK_SIZE;
-	int AFFINE_ASYNC_2_BLOCK_SIZE_Y = RAG_AFFINE_BLK_SIZE;
+	int AFFINE_ASYNC_2_BLOCK_SIZE_X = image_params->blk_affine;
+	int AFFINE_ASYNC_2_BLOCK_SIZE_Y = image_params->blk_affine;
 #elif defined(RAG_NEW_BLK_SIZE)
 	int Xend = image_params->Ix;
 	int Yend = image_params->Iy;
-	int AFFINE_ASYNC_2_BLOCK_SIZE_X = RAG_NEW_BLK_SIZE;
-	int AFFINE_ASYNC_2_BLOCK_SIZE_Y = RAG_NEW_BLK_SIZE;
+	int AFFINE_ASYNC_2_BLOCK_SIZE_X = image_params->blk_tile;
+	int AFFINE_ASYNC_2_BLOCK_SIZE_Y = image_params->blk_tile;
 #else
 	int Xend = image_params->Ix;
 	int Yend = image_params->Iy;
@@ -324,36 +294,101 @@ ocrGuid_t affine_async_2_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, o
 	assert(retval==0);
 	RAG_TEMPLATE_REGISTER(affine_async_2_clg);
 
+	const int _by = AFFINE_ASYNC_2_BLOCK_SIZE_Y;
+	const int _bx = AFFINE_ASYNC_2_BLOCK_SIZE_X;
 	int _nty = 0, _ntx = 0;
-	for(int m=0; m<Yend; m+=AFFINE_ASYNC_2_BLOCK_SIZE_Y) _nty++;
-	for(int n=0; n<Xend; n+=AFFINE_ASYNC_2_BLOCK_SIZE_X) _ntx++;
-	const int _ntiles = _nty * _ntx;
-	/* This task does not touch the current image -- it fits the transform and
-	 * hands the resampling out -- so it takes the block by GUID only and has
-	 * nothing to acquire, and nothing to release before queuing its writer. */
-	ocrGuid_t _gather_clg, _gather_scg;
-	afGatherPRM_t _gp;
-	_gp.by = AFFINE_ASYNC_2_BLOCK_SIZE_Y; _gp.bx = AFFINE_ASYNC_2_BLOCK_SIZE_X;
-	retval = ocrEdtTemplateCreate(&_gather_clg, affine_gather_edt,
-	                              (sizeof(afGatherPRM_t)+sizeof(u64)-1)/sizeof(u64),
-	                              3 + _ntiles);
+	for(int m=0; m<Yend; m+=_by) _nty++;
+	for(int n=0; n<Xend; n+=_bx) _ntx++;
+
+	/* The registered image is produced as stripes, exactly as the projection
+	 * produces its own: each row band of blocks is assembled into a full-width
+	 * slab and each stripe assembles the bands that overlap it, on its own
+	 * rank.  No task ever holds the picture whole. */
+	struct img_stripes_s _st;
+	memcpy(&_st, st_reg, sizeof(_st));
+	ocrDbRelease(st_reg_dbg);
+
+	ocrGuid_t _row_clg;
+	retval = ocrEdtTemplateCreate(&_row_clg, bp_row_gather_edt,
+	                              (sizeof(bpRowPRM_t)+sizeof(u64)-1)/sizeof(u64),
+	                              1 + _ntx);
 	assert(retval==0);
-	RAG_TEMPLATE_REGISTER(_gather_clg);
-	ocrGuid_t _gather_evg;
-	retval = ocrEdtCreate(&_gather_scg, _gather_clg, EDT_PARAM_DEF, (u64 *)&_gp,
-	                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, &_gather_evg);
+	RAG_TEMPLATE_REGISTER(_row_clg);
+
+	int _maxb = 1;
+	for(int s = 0; s < _st.ns; s++) {
+		int _j0, _nb; img_stripe_bands(&_st, s, _by, &_j0, &_nb);
+		if(_nb > _maxb) _maxb = _nb;
+	}
+	ocrGuid_t _sg_clg;
+	retval = ocrEdtTemplateCreate(&_sg_clg, img_stripe_gather_edt, PRMNUM(stGather), _maxb);
 	assert(retval==0);
-	/* The registered image's consumer waits on the gather's own event.  An
-	   enclosing finish scope is not the right edge here: the consumer needs
-	   the image, which is exactly what this task publishes. */
-	retval = ocrAddDependence(_gather_evg, postAffineAsyncParamvIn->image_consumer_scg,
+	RAG_TEMPLATE_REGISTER(_sg_clg);
+	ocrGuid_t _coll_clg, _coll_scg, _coll_evg;
+	retval = ocrEdtTemplateCreate(&_coll_clg, img_stripes_collect_edt, 0, 1 + _st.ns);
+	assert(retval==0);
+	RAG_TEMPLATE_REGISTER(_coll_clg);
+	retval = ocrEdtCreate(&_coll_scg, _coll_clg, EDT_PARAM_DEF, NULL,
+	                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, &_coll_evg);
+	assert(retval==0);
+	/* The registered image's consumer waits on the collector's own event: what
+	   it needs is the stripe set, which is exactly what that task publishes. */
+	retval = ocrAddDependence(_coll_evg, postAffineAsyncParamvIn->image_consumer_scg,
 	                          AFFINE_IMAGE_CONSUMER_SLOT, DB_MODE_NULL);
 	assert(retval==0);
-	RAG_DEF_MACRO_PASS_RO(_gather_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-	RAG_DEF_MACRO_PASS(_gather_scg,NULL,NULL,NULL,NULL,curImage_dbg,1);
-	/* The registered image's stripes, cut by the one task that holds it. */
-	RAG_DEF_MACRO_PASS(_gather_scg,NULL,NULL,NULL,NULL,st_reg_dbg,2);
-	int _tidx = 0;
+	RAG_DEF_MACRO_PASS(_coll_scg,NULL,NULL,NULL,NULL,st_reg_dbg,0);
+
+	ocrGuid_t _sg_scg[IMG_MAX_STRIPES];
+	for(int s = 0; s < _st.ns; s++) {
+		int _j0, _nb; img_stripe_bands(&_st, s, _by, &_j0, &_nb);
+		stGatherPRM_t _gp;
+		_gp.y0 = (u64)_st.y0[s];   _gp.y1 = (u64)_st.y0[s+1];
+		_gp.iy = (u64)image_params->Iy; _gp.ix = (u64)image_params->Ix;
+		_gp.bh = (u64)_by;         _gp.j0 = (u64)_j0;
+		_gp.nb = (u64)_nb;         _gp.rank = img_stripe_rank(&_st, s);
+		ocrHint_t _sh;
+		ocrGuid_t _sg_evg;
+		retval = ocrEdtCreate(&_sg_scg[s], _sg_clg, EDT_PARAM_DEF, (u64 *)&_gp,
+		                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
+		                      img_stripe_hint(&_sh, &_st, s), &_sg_evg);
+		assert(retval==0);
+		retval = ocrAddDependence(_sg_evg, _coll_scg, 1 + s, DB_MODE_RO);
+		assert(retval==0);
+		for(int k = _nb; k < _maxb; k++) {
+			RAG_DEF_MACRO_GUID_ONLY(_sg_scg[s],st_cur_dbg,k);
+		}
+	}
+
+	/* One band gather per row of blocks, on the stripe the band starts in; a
+	   band whose rows fall in two stripes is wired to both, each taking the
+	   rows it owns. */
+	ocrGuid_t _rows_dbg;
+	ocrGuid_t *_row_scg = (ocrGuid_t *)spad_malloc(&_rows_dbg, (size_t)_nty*sizeof(ocrGuid_t));
+	if(_row_scg == NULL) {
+		ocrPrintf("Error allocating the resample's band table.\n");RAG_FLUSH;
+		xe_exit(1);
+	}
+	for(int j = 0; j < _nty; j++) {
+		const int _m0 = j*_by;
+		const int _m1 = (_m0 + _by) < Yend ? (_m0 + _by) : Yend;
+		bpRowPRM_t _rp;
+		_rp.m1 = (u64)_m0; _rp.m2 = (u64)_m1;
+		_rp.n1 = 0;        _rp.n2 = (u64)Xend; _rp.bn = (u64)_bx;
+		const int _rs0 = img_stripe_of(&_st, _m0);
+		const int _rs1 = img_stripe_of(&_st, _m1 - 1);
+		ocrHint_t _rh;
+		ocrGuid_t _row_evg;
+		retval = ocrEdtCreate(&_row_scg[j], _row_clg, EDT_PARAM_DEF, (u64 *)&_rp,
+		                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
+		                      img_stripe_hint(&_rh, &_st, _rs0), &_row_evg);
+		assert(retval==0);
+		for(int s = _rs0; s <= _rs1; s++) {
+			int _j0, _nb; img_stripe_bands(&_st, s, _by, &_j0, &_nb);
+			retval = ocrAddDependence(_row_evg, _sg_scg[s], j - _j0, DB_MODE_RO);
+			assert(retval==0);
+		}
+		RAG_DEF_MACRO_PASS_RO(_row_scg[j],NULL,NULL,NULL,NULL,image_params_dbg,0);
+	}
 
 	struct async_2_args_t *async_2_args_ptr; ocrGuid_t async_2_args_dbg;
 	async_2_args_ptr = bsm_malloc(&async_2_args_dbg,sizeof(struct async_2_args_t));
@@ -408,15 +443,18 @@ ocrPrintf("////// create an edt for affine_async_2\n");RAG_FLUSH;
 			affineAsyncParamv.corners = async_corners;
 			affineAsyncParamv.sy0 = _sy0; affineAsyncParamv.sy1 = _sy1;
 			affineAsyncParamv.sx0 = _sx0; affineAsyncParamv.sx1 = _sx1;
-			if(_sy1 - _sy0 > RAG_AFFINE_MAX_SRC || _sx1 - _sx0 > RAG_AFFINE_MAX_SRC) {
-				ocrPrintf("resample source %dx%d exceeds RAG_AFFINE_MAX_SRC %d\n",
-				          _sy1-_sy0, _sx1-_sx0, RAG_AFFINE_MAX_SRC);RAG_FLUSH;
+			/* The bound the stripe layout was cut for, and the bound the
+			   block's own storage is sized for, are the same number. */
+			if(_sy1 - _sy0 > image_params->blk_affine + 64
+			|| _sx1 - _sx0 > image_params->blk_affine + 64) {
+				ocrPrintf("resample source %dx%d exceeds the bounded window %d\n",
+				          _sy1-_sy0, _sx1-_sx0, image_params->blk_affine + 64);RAG_FLUSH;
 				xe_exit(1);
 			}
 			const int _ss0 = img_stripe_of(st_cur, _sy0);
 			const int _ss1 = img_stripe_of(st_cur, _sy1 - 1);
 			if(_ss1 - _ss0 > 1) {
-				ocrPrintf("resample source spans %d stripes; widen IMG_MIN_STRIPE\n", _ss1-_ss0+1);RAG_FLUSH;
+				ocrPrintf("resample source spans %d stripes\n", _ss1-_ss0+1);RAG_FLUSH;
 				xe_exit(1);
 			}
 			ocrHint_t _hnt;
@@ -432,9 +470,8 @@ ocrPrintf("////// create an edt for affine_async_2\n");RAG_FLUSH;
 					img_stripe_hint(&_hnt, st_cur, _ss0), // affinity
 					&_tile_evg);		// *outputEvent
 			assert(retval==0);
-			retval = ocrAddDependence(_tile_evg, _gather_scg, 3 + _tidx, DB_MODE_RO);
+			retval = ocrAddDependence(_tile_evg, _row_scg[m/_by], 1 + n/_bx, DB_MODE_RO);
 			assert(retval==0);
-			_tidx++;
 
 RAG_DEF_MACRO_PASS_RO(affine_async_2_scg,NULL,NULL,NULL,NULL,affine_params_dbg,0);
 RAG_DEF_MACRO_PASS_RO(affine_async_2_scg,NULL,NULL,NULL,NULL,image_params_dbg,1);
@@ -553,7 +590,7 @@ ocrPrintf("////// enter post_affine_async_2_edt\n");RAG_FLUSH;
 	assert(depc==9); // 9th post_affine_async_1_evg
 RAG_REF_MACRO_PASS(struct AffineParams,affine_params,affine_params_ptr,affine_params_lcl,affine_params_dbg,0);
 RAG_REF_MACRO_PASS(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,1);
-RAG_REF_MACRO_BSM( struct complexData **,curImage,NULL,NULL,curImage_dbg,2);
+RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,curImage_dbg,2);
 RAG_REF_MACRO_SPAD(struct async_1_args_t,post_affine_async_1_args,post_affine_async_1_args_ptr,post_affine_async_1_args_lcl,post_affine_async_1_args_dbg,3);
 RAG_REF_MACRO_SPAD(struct async_2_args_t,async_2_args,async_2_args_ptr,async_2_args_lcl,async_2_args_dbg,4);
 RAG_REF_MACRO_BSM( int *,Fx,NULL,NULL,Fx_dbg,5);
@@ -670,7 +707,7 @@ ocrPrintf("////// leave affine_async_2_edt\n");RAG_FLUSH;
 ocrGuid_t Affine(
     const struct img_stripes_s *st_cur,	ocrGuid_t st_cur_dbg,
     const struct img_stripes_s *st_ref,	ocrGuid_t st_ref_dbg,
-    ocrGuid_t curImage_dbg,   /* forwarded to the resample, which writes it */
+    ocrGuid_t curImage_dbg,   /* the generation token, forwarded, never read */
     struct AffineParams *affine_params,	ocrGuid_t affine_params_dbg, struct AffineParams *affine_params_ptr,
     struct ImageParams *image_params,	ocrGuid_t image_params_dbg,
     ocrGuid_t post_affine_async_1_scg)
@@ -817,7 +854,17 @@ ocrPrintf("//// create an edt for affine_async_1 m=%d n=%d\n",m,n);RAG_FLUSH;
 			const int _cs1 = img_stripe_of(st_cur, _cy0 + _win_cur_n - 1);
 			const int _rs0 = img_stripe_of(st_ref, _ry0);
 			const int _rs1 = img_stripe_of(st_ref, _ry0 + _win_ref_n - 1);
-			assert(_cs1 - _cs0 <= 1 && _rs1 - _rs0 <= 1);
+			/* Two stripe slots per image are wired below, so a window that
+			   reaches a third stripe would be read out of a slot holding
+			   another image's piece. */
+			if(_cs1 - _cs0 > 1 || _rs1 - _rs0 > 1) {
+				ocrPrintf("control-point windows of %d and %d rows at row %d span"
+				          " stripes %d..%d and %d..%d (stripe height %d); a window"
+				          " must fit in two adjacent stripes\n",
+				          _win_cur_n, _win_ref_n, ctrl_pt.y, _cs0, _cs1, _rs0, _rs1,
+				          st_cur->y0[_cs0+1] - st_cur->y0[_cs0]);RAG_FLUSH;
+				xe_exit(1);
+			}
 			ocrHint_t _hnt;
 			ocrGuid_t affine_async_1_scg, affine_async_1_evg;
 			retval = ocrEdtCreate(

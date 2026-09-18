@@ -40,6 +40,71 @@
 #define MIN(x,y) ((x)<(y)?(x):(y))
 #endif
 
+// Counter-based generation.  A generated value is a pure function of its
+// stream key and of the position it occupies in the array being filled, so the
+// data is the same whatever order, concurrency or process produces it, and no
+// generator state is shared between producers.
+static inline u64 rs_mix64( u64 x )
+{
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
+static inline u64 rs_stream( u64 seed, u64 stream )
+{
+    return rs_mix64( seed ^ (stream * 0xD1B54A32D192ED03ULL) );
+}
+
+static inline u64 rs_draw( u64 key, u64 index )
+{
+    return rs_mix64( key + index );
+}
+
+// Uniform on [0,1) over the 53 bits a double holds exactly.
+static inline double rs_draw_unit( u64 key, u64 index )
+{
+    return (double)(rs_draw(key, index) >> 11) * (1.0 / 9007199254740992.0);
+}
+
+// A non-finite accumulation has no quantization; it is mapped to a value the
+// digest cannot otherwise produce so that it propagates instead of being
+// converted out of range.
+#define RS_DIGEST_NONFINITE ((u64)1 << 62)
+
+// Magnitude-relative quantization: a digest built on it is insensitive to
+// differences below the kept mantissa bits and moves on anything larger.
+static inline u64 rs_quantize( double v )
+{
+    if( !isfinite( v ) )
+        return RS_DIGEST_NONFINITE;
+
+    int e = 0;
+    double m = frexp( v, &e );
+    return (u64)( (s64)e * 2097152 + (s64)(m * 1048576.0) );
+}
+
+// The printed digest is compared after a conversion to double, which is exact
+// only below 2^53.
+#define RS_DIGEST_BITS 53
+#define RS_DIGEST_MASK ((((u64)1) << RS_DIGEST_BITS) - 1)
+
+// The words the lookup phase folds, first over an instance's lanes and then
+// over the instances.
+#define RS_NRESULT 3
+
+#define RS_DATA_SEED 42
+
+enum rs_stream_id {
+    RS_STREAM_N_POLES = 1,
+    RS_STREAM_N_WINDOWS,
+    RS_STREAM_POLES,
+    RS_STREAM_WINDOWS,
+    RS_STREAM_K0RS,
+    RS_STREAM_CONCS
+};
+
 // typedefs
 typedef enum __hm{SMALL, LARGE, XL, XXL} HM_size;
 
@@ -112,6 +177,7 @@ typedef struct
 typedef struct
 {
     ocrGuid_t perfTimerReductionRangeGUID;
+    ocrGuid_t xsReductionRangeGUID;
     ocrEVT_t finalOnceEVT;
 } globalOcrParamH_t;
 
@@ -129,6 +195,8 @@ typedef struct
     rankTemplateH_t rankTemplateH;
     ocrDBK_t rpPerfTimerDBK;
     ocrEVT_t rpPerfTimerEVT;
+    ocrDBK_t rpXsReductionDBK;
+    ocrEVT_t rpXsReductionEVT;
     ocrGuid_t loopReductionRangeGUID;
     ocrEVT_t rpLoopReductionEVT;
     ocrEVT_t loopCompletionLatchEVT;
@@ -143,16 +211,16 @@ void center_print(const char *s, int width);
 void border_print(void);
 void fancy_int( int a );
 Inputs read_CLI( int argc, char * argv[] );
-void print_CLI_error(void);
+void print_CLI_error(const char * reason);
 void print_input_summary(Inputs input);
-void print_results(Inputs input, int mype, double runtime, int nprocs, u64 g_abrarov, u64 g_alls);
+void print_results(Inputs input, int mype, double runtime, int nprocs, u64 g_abrarov, u64 g_alls, u64 g_xsDigest);
 
 // init.c
-int* generate_n_poles( ocrDBK_t* DBK_n_poles, Inputs input );
-int * generate_n_windows( ocrDBK_t* DBK_n_windows, Inputs input );
-Pole ** generate_poles( ocrDBK_t* DBK_poles, ocrDBK_t* DBK_pole_ptrs, Inputs input, int * n_poles );
-Window ** generate_window_params( ocrDBK_t* DBK_windows, ocrDBK_t* DBK_windows_ptrs, Inputs input, int * n_windows, int * n_poles );
-double ** generate_pseudo_K0RS( ocrDBK_t* DBK_pseudo_K0RS, ocrDBK_t* DBK_pseudo_K0RS_ptrs, Inputs input );
+int* generate_n_poles( ocrDBK_t* DBK_n_poles, Inputs input, u64 dataSeed );
+int * generate_n_windows( ocrDBK_t* DBK_n_windows, Inputs input, u64 dataSeed );
+Pole ** generate_poles( ocrDBK_t* DBK_poles, ocrDBK_t* DBK_pole_ptrs, Inputs input, int * n_poles, u64 dataSeed );
+Window ** generate_window_params( ocrDBK_t* DBK_windows, ocrDBK_t* DBK_windows_ptrs, Inputs input, int * n_windows, int * n_poles, u64 dataSeed );
+double ** generate_pseudo_K0RS( ocrDBK_t* DBK_pseudo_K0RS, ocrDBK_t* DBK_pseudo_K0RS_ptrs, Inputs input, u64 dataSeed );
 void assign_pole_ptrs( int n_nuclides, int* n_poles, Pole* contiguous, Pole** R );
 void assign_window_ptrs( int n_nuclides, int* n_windows, Window* contiguous, Window** R );
 void assign_pseudo_K0RS_ptrs( int n_nuclides, int numL, double* contiguous, double** R );
@@ -162,9 +230,9 @@ int * load_num_nucs(ocrDBK_t* DBK_num_nucs, long n_isotopes);
 void assign_mats_ptrs( int* num_nucs, int* mats_all, int** mats );
 void assign_concs_ptrs( int* num_nucs, double* concs_all, double** concs );
 int ** load_mats( rankDataH_t* PTR_rankDataH, int * num_nucs, long n_isotopes );
-double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs );
+double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs, u64 dataSeed );
 int pick_mat( unsigned long * seed );
-Materials get_materials( rankDataH_t* PTR_rankDataH, Inputs input);
+Materials get_materials( rankDataH_t* PTR_rankDataH, Inputs input, u64 dataSeed );
 
 // utils.c
 double rn(unsigned long * seed);

@@ -2,11 +2,10 @@
 
 void assignNuclideGridPtrs( NuclideGridPoint *full, NuclideGridPoint **M, size_t m, size_t n)
 {
-	int i,j;
+	size_t j;
 
-	for( i = 0, j=0; i < m*n; i++ )
-		if( i % n == 0 )
-			M[j++] = &full[i];
+	for( j = 0; j < m; j++ )
+		M[j] = &full[j*n];
 }
 
 // Allocates nuclide matrix
@@ -95,35 +94,6 @@ double rn(u64* seed)
 }
 
 
-
-// RNG Used for Verification Option.
-// This one has a static seed (must be set manually in source).
-// Park & Miller Multiplicative Conguential Algorithm
-// From "Numerical Recipes" Second Edition
-double rn_v(u64* seed)
-{
-    //static unsigned long seed = 1337;
-    double ret;
-    unsigned long n1;
-    unsigned long a = 16807;
-    unsigned long m = 2147483647;
-    n1 = ( a * (*seed) ) % m;
-    *seed = n1;
-    ret = (double) n1 / m;
-    //ocrPrintf("seed %d\n", *seed);
-    return ret;
-}
-
-unsigned long hash(unsigned char *str, int nbins)
-{
-    unsigned int hash = 5381;
-    int c;
-
-    while ((c = *str++) != 0)
-        hash = ((hash << 5) + hash) + c;
-
-    return hash % nbins;
-}
 
 size_t estimate_mem_usage( Inputs in )
 {

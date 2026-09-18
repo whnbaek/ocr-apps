@@ -84,6 +84,13 @@ void forkSpmdEdts_Cart1D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u6
 void forkSpmdEdts_Cart2D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u64* edtGridDims, ocrGuid_t* spmdDepv );
 void forkSpmdEdts_Cart3D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u64* edtGridDims, ocrGuid_t* spmdDepv );
 
+/* The same fork over a caller-supplied policy-domain grid.  A caller that
+ * derives the grid from properties of its own rank grid needs the grid it
+ * derived to be the one the fork maps with, and the mapping is otherwise
+ * identical: same EDTs, same dependences, only the affinity each carries
+ * differs.  forkSpmdEdts_Cart3D is this with the generic near-cubic split. */
+void forkSpmdEdts_onPdGrid_Cart3D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u64* edtGridDims, u64* pdGridDims, ocrGuid_t* spmdDepv );
+
 void forkSpmdEdts_staticScheduler_Cart2D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u64* edtGridDims, ocrGuid_t* spmdDepv );
 void forkSpmdEdts_staticScheduler_Cart3D( ocrGuid_t (*initEdt)(u32, u64*, u32, ocrEdtDep_t*), u64* edtGridDims, ocrGuid_t* spmdDepv );
 

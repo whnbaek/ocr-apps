@@ -9,7 +9,7 @@ static ocrGuid_t timestep_velocity(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_
 static ocrGuid_t timestep_end(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 static ocrGuid_t timestep_redistribute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
-void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont, ocrGuid_t list, ocrGuid_t* list_ptr, u32 boxes_num, real_t dt)
+void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont, ocrGuid_t list, ocrGuid_t* list_ptr, const u32 grid[3], real_t dt)
 {
   profile_start(velocity_timer, timer_ptr);
 
@@ -20,7 +20,7 @@ void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont, o
   ocrAddDependence(timer, edt, 0, DB_MODE_RW);
   ocrAddDependence(sim, edt, 1, DB_MODE_CONST);
   ocrAddDependence(list, edt, 2, DB_MODE_CONST);
-  fork_advance_velocity(sim, edt, 3, list_ptr, boxes_num, 0.5*dt);
+  fork_advance_velocity(sim, edt, 3, list_ptr, grid, 0.5*dt);
   ocrEdtTemplateDestroy(tmp);
 }
 
@@ -37,7 +37,7 @@ ocrGuid_t timestep_position(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
   simulation* sim = (simulation*)depv[1].ptr;
-  fork_advance_position(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.boxes_num);
+  fork_advance_position(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
   ocrEdtTemplateDestroy(tmp);
   return NULL_GUID;
 }
@@ -95,7 +95,7 @@ ocrGuid_t timestep_velocity(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
-  fork_advance_velocity(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.boxes_num, dt);
+  fork_advance_velocity(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid, dt);
   ocrEdtTemplateDestroy(tmp);
   return NULL_GUID;
 }
@@ -103,7 +103,7 @@ ocrGuid_t timestep_velocity(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
 ocrGuid_t timestep_end(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   simulation* sim = (simulation*)depv[1].ptr;
-  fork_kinetic_energy(depv[1].guid, *(ocrGuid_t *)paramv, 2, (ocrGuid_t*)depv[2].ptr, sim->bxs.boxes_num);
+  fork_kinetic_energy(depv[1].guid, *(ocrGuid_t *)paramv, 2, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
   return NULL_GUID;
 }
 
@@ -119,18 +119,12 @@ static inline real_t kinetic_energy_box(box* bxs_ptr, real_t inv_mass_2)
   return e_kinetic;
 }
 
-void kinetic_energy(simulation* sim, box** bxs_ptr, u32 boxes_num)
-{
-  sim->e_kinetic = 0;
-  for(u32 b = 0; b<boxes_num; ++b)
-    sim->e_kinetic += kinetic_energy_box(bxs_ptr[b],sim->pot.inv_mass_2);
-}
-
 static ocrGuid_t ke_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   simulation* sim = (simulation*)depv[0].ptr;
   ocrGuid_t res; real_t* res_ptr;
-  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
+  ocrHint_t homeHNT;
+  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, comdHomeDbHint(&homeHNT), NO_ALLOC);
   *res_ptr = kinetic_energy_box((box*)depv[1].ptr, sim->pot.inv_mass_2);
   ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, paramv[1], DB_MODE_CONST);
 
@@ -150,8 +144,9 @@ static ocrGuid_t ke_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   return NULL_GUID;
 }
 
-void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num)
+void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, const u32 grid[3])
 {
+  u32 boxes_num = grid[0]*grid[1]*grid[2];
   ocrGuid_t f,fdb,*fdb_ptr;
   comdJoinEvt(f);
   ocrAddDependence(f, cont, depc, DB_MODE_CONST);
@@ -173,8 +168,8 @@ void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* lis
   for(u32 b = 0; b < boxes_num; ++b) {
     u64 paramv[2]; paramv[0] = red.guid; paramv[1] = b+1;
     ocrGuid_t edt;
-    ocrHint_t slabHNT;
-    ocrEdtCreate(&edt, tmp, 2, paramv, 2, NULL, 0, comdSlabEdtHint(&slabHNT, b, boxes_num), NULL);
+    ocrHint_t blockHNT;
+    ocrEdtCreate(&edt, tmp, 2, paramv, 2, NULL, 0, comdBlockEdtHint(&blockHNT, b, grid), NULL);
     ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
     ocrAddDependence(list[b], edt, 1, DB_MODE_CONST);
   }
@@ -209,8 +204,9 @@ static ocrGuid_t av_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   return NULL_GUID;
 }
 
-void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num, real_t step)
+void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, const u32 grid[3], real_t step)
 {
+  u32 boxes_num = grid[0]*grid[1]*grid[2];
   ocrGuid_t dt; real_t* dt_ptr;
   ocrHint_t homeHNT;
   ocrDbCreate(&dt, (void**)&dt_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
@@ -230,9 +226,9 @@ void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
   ocrEdtTemplateCreate(&tmp, av_edt, 0, 3);
   for(u32 b = 0; b < boxes_num; ++b) {
     ocrGuid_t edt;
-    ocrHint_t slabHNT;
+    ocrHint_t blockHNT;
     OEVT_COUNTED_PRE(red_event);
-    ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, OEVT_COUNTED_PROP(0), comdSlabEdtHint(&slabHNT, b, boxes_num), &red_event);
+    ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, OEVT_COUNTED_PROP(0), comdBlockEdtHint(&blockHNT, b, grid), &red_event);
     ocrAddDependence(red_event, red, b, DB_MODE_CONST);
     ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
     ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
@@ -270,8 +266,9 @@ ocrGuid_t ap_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   return NULL_GUID;
 }
 
-void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, u32 boxes_num)
+void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, const u32 grid[3])
 {
+  u32 boxes_num = grid[0]*grid[1]*grid[2];
   ocrGuid_t tmp,red,red_event;
   ocrHint_t homeHNT;
   OEVT_COUNTED_PRE(red_event);
@@ -287,9 +284,9 @@ void fork_advance_position(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
   ocrEdtTemplateCreate(&tmp, ap_edt, 0, 2);
   for(u32 b = 0; b < boxes_num; ++b) {
     ocrGuid_t edt;
-    ocrHint_t slabHNT;
+    ocrHint_t blockHNT;
     OEVT_COUNTED_PRE(red_event);
-    ocrEdtCreate(&edt, tmp, 0, NULL, 2, NULL, OEVT_COUNTED_PROP(0), comdSlabEdtHint(&slabHNT, b, boxes_num), &red_event);
+    ocrEdtCreate(&edt, tmp, 0, NULL, 2, NULL, OEVT_COUNTED_PROP(0), comdBlockEdtHint(&blockHNT, b, grid), &red_event);
     ocrAddDependence(red_event, red, b, DB_MODE_CONST);
     ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
     ocrAddDependence(list[b], edt, 1, DB_MODE_RW);

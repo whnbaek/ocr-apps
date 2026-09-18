@@ -91,6 +91,12 @@ struct ImageParams {
 	float *yr;		// y-axis vectors
 	int   Ncor;             // CCD/CFAR correlation neighborhood size
 	int imageNumber;	// Image number that is being processed RAG
+	/* Blocking factors of the decomposed phases and the switch for the
+	   detections file.  They reach every phase because this block already
+	   does; a phase reads the one it blocks by. */
+	int blk_tile;		// tile edge of the backprojection-blocked phases
+	int blk_cfar;		// detection block edge
+	int blk_affine;		// resample block edge
 };
 
 struct DigSpotVars {
@@ -104,6 +110,9 @@ struct DigSpotVars {
 };
 
 #ifndef TG_ARCH
+#ifdef ENABLE_EXTENSION_AFFINITY
+#include <extensions/ocr-affinity.h>
+#endif
 #define RAG_PATH_MAX 1024
 #endif
 
@@ -121,6 +130,7 @@ struct file_args_t {
 #else
 	void *pInFile, *pInFile2, *pInFile3, *pOutFile;
 #endif
+	int write_detects;                // write the detections file at all
 };
 
 struct corners_t {
@@ -188,6 +198,9 @@ typedef struct{
     // it executes on (a FILE* would be process-local).
     char out_detects[RAG_PATH_MAX];
 #endif
+    /* The detections file is the program's bulk output, not its result: the
+       detection count is.  Writing it is therefore opt-in. */
+    int write_detects;
 } postCFARPRM_t;
 
 /* Paramv for BackProj_edt */

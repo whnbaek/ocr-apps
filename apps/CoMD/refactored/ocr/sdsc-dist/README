@@ -1,0 +1,44 @@
+CoMD, link-cell molecular dynamics, distributed decomposition.
+
+Same physics and same problem instance as the sibling port in ../sdsc: an FCC
+copper lattice integrated with velocity Verlet under a Lennard-Jones potential,
+one datablock per link cell, and the same "Final energy" validation scalar.
+What differs is who builds the work and how often a cell is touched:
+
+  - a step is ONE task per cell: it takes in the atoms that drifted into the
+    cell, computes the forces against every atom within reach, kicks, takes
+    the energy point when the block ends, kicks again and drifts.  Each cell
+    keeps two generations of its block; a step reads one generation of its
+    own cell and of its 26 neighbours and writes the other, so no block has a
+    reader and a writer in the same step and a neighbour's block crosses the
+    fabric once per step;
+  - atoms move with the same read: a block holds its atoms where the drift
+    left them, and every reader places each atom by its position, so the
+    ones now inside the reader's cell are its arrivals and the rest are
+    neighbour atoms under their cell's periodic shift;
+  - a neighbour in another brick is read from that brick's halo, never from
+    the cell itself: each brick packs the boundary layer facing a neighbour
+    into runs of at most HALO_CHUNK cells once per step, one task on the
+    reading brick pulls each run once, and the cell tasks take their
+    neighbours out of the run they land in -- so what a boundary costs the
+    fabric is a fixed number of messages per run per step, never one per
+    cell.  A step is therefore two phases where there is more than one rank:
+    the halo of the generation it reads, then its cell tasks;
+  - every phase's fan-out is a spawn tree, so the tasks of a phase are emitted
+    by as many tasks as the machine has room for instead of by one loop;
+  - every phase's fan-in is a reduction tree, so no task ever holds a
+    dependence per cell; the step's tree carries both energies and the atom
+    count;
+  - cells are generated in place by the tasks that will own them, from a
+    generator that is a pure function of the atom's global index;
+  - cells are blocked over a three-dimensional rank grid rather than laid out
+    in index order, and every tree fans over the ranks before it fans over a
+    rank's brick, so a leaf's cells share one owner and the leaf, its tasks
+    and its collector all sit on that rank.
+
+  -w/--width  link cells emitted by one spawn-tree leaf (default 8); a leaf
+              never crosses a brick, so the spawn frontier is the sum over
+              ranks of ceil(brick cells / width).
+
+Build with the parent project; sources: atoms.c cells.c comd.c command.c fan.c
+lj.c simulation.c timers.c timestep.c.

@@ -19,14 +19,21 @@
 #include "XSbench_header.h"
 #include "timers.h"
 
+/* Fixed set of handle blocks the compute phase's tasks acquire: the six
+ * handle arrays built per rank, the two per-rank handle blocks, and the
+ * broadcast settings block.  A lookup task takes eight of the nine -- the
+ * rank data handle is the batch spawner's. */
+#define MC_HANDLE_BLOCKS 9
+
 /* Placement-optimization layer.  Each lookup is a three-task chain --
  * rankLookup spawns macroxs, macroxs spawns the aggregator -- and as-born
  * each link round-robins independently, so a chain's intermediate results
- * cross ranks twice for no reason.  The first link stays round-robin (that
- * is the load balance across lookups); the two links it spawns pin to the
- * rank it landed on, so each chain is internally local.  The energy grids
- * are read-only and replicate per rank on first touch, so chain locality,
- * not data placement, is what there is to win. */
+ * cross ranks twice for no reason and the one gridpoint block the chain
+ * reads is remote at both of its readers.  The first link stays
+ * round-robin (that is the load balance across lookups); the two links it
+ * spawns run where that gridpoint block is homed, which makes both of its
+ * acquires local.  The index is drawn uniformly over the plane, so sending
+ * the chain to it leaves the per-rank share of chains unchanged. */
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
 #include <extensions/ocr-affinity.h>
 static inline ocrHint_t * mcChainEdtHint(ocrHint_t *h) {
@@ -55,7 +62,23 @@ static inline ocrHint_t * mcSpreadDbHint(ocrHint_t *h, u64 i) {
     ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
     return h;
 }
-/* The writer of one spread-homed block runs where that block lives. */
+/* A fixed set of blocks that every task acquires is normally smaller than
+ * the machine.  A singleton's serving load cannot be split by placement, so
+ * the only choice left is which homes the set occupies: distributing them by
+ * stride rather than by low index keeps them from piling into one corner of
+ * the rank space alongside whatever else an index map put there. */
+static inline ocrHint_t * mcStripeDbHint(ocrHint_t *h, u64 i, u64 n) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, ((i % n) * pdCount) / n, &aff);
+    ocrHintInit(h, OCR_HINT_DB_T);
+    ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
+/* The writer of one spread-homed block runs where that block lives; a reader
+ * chain sent to the same index runs where the block it reads lives. */
 static inline ocrHint_t * mcSpreadEdtHint(ocrHint_t *h, u64 i) {
     u64 pdCount;
     ocrAffinityCount(AFFINITY_PD, &pdCount);
@@ -66,10 +89,24 @@ static inline ocrHint_t * mcSpreadEdtHint(ocrHint_t *h, u64 i) {
     ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
     return h;
 }
+/* The same rule for a member of the striped handle set: the task that fills
+ * one of those blocks runs where that block lives. */
+static inline ocrHint_t * mcStripeEdtHint(ocrHint_t *h, u64 i, u64 n) {
+    u64 pdCount;
+    ocrAffinityCount(AFFINITY_PD, &pdCount);
+    if (pdCount <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, ((i % n) * pdCount) / n, &aff);
+    ocrHintInit(h, OCR_HINT_EDT_T);
+    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+}
 #else
 #define mcChainEdtHint(h) NULL_HINT
 #define mcSpreadDbHint(h,i) NULL_HINT
+#define mcStripeDbHint(h,i,n) NULL_HINT
 #define mcSpreadEdtHint(h,i) NULL_HINT
+#define mcStripeEdtHint(h,i,n) NULL_HINT
 #endif
 
 #ifndef MIN
@@ -131,6 +168,9 @@ ocrGuid_t FNC_globalInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
         ocrGuid_t FNC_rankInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
             ocrGuid_t FNC_init_rankH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
                 ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+                    ocrGuid_t FNC_init_gridsSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+                        ocrGuid_t FNC_init_grids_i(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+                    ocrGuid_t FNC_init_uEnergy_union(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
                     ocrGuid_t FNC_init_uEnergy(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
                         ocrGuid_t FNC_init_uEnergy_i(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
                     ocrGuid_t FNC_init_materials(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
@@ -280,7 +320,7 @@ ocrGuid_t FNC_rankInitSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
     {
         Inputs* PTR_InputsH;
         ocrDbCreate( &(PTR_InputsHs[i]), (void **) &PTR_InputsH, sizeof(Inputs),
-                     DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64)(8 + i)), NO_ALLOC );
+                     DB_PROP_NONE, mcStripeDbHint(&spreadHNT, (u64)(8 + i), MC_HANDLE_BLOCKS), NO_ALLOC );
 
         rankH_t *PTR_rankH;
         ocrDbCreate( &(PTR_rankHs[i]), (void **) &PTR_rankH, sizeof(rankH_t),
@@ -342,11 +382,11 @@ ocrGuid_t FNC_rankInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     dataH_t *PTR_dataH;
     ocrDbCreate( &(PTR_rankH->DBK_dataH), (void **) &PTR_dataH, sizeof(dataH_t),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 6), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 6, MC_HANDLE_BLOCKS), NO_ALLOC );
 
     rankTemplateH_t *PTR_rankTemplateH;
     ocrDbCreate( &(PTR_rankH->DBK_templatesH), (void **) &PTR_rankTemplateH, sizeof(rankTemplateH_t),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 7), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 7, MC_HANDLE_BLOCKS), NO_ALLOC );
 
     MyOcrTaskStruct_t TS_init_rankH; _paramc = 1; _depc = 5;
 
@@ -394,26 +434,27 @@ ocrGuid_t FNC_init_rankH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     /* Every lookup acquires this whole handle set; each member is a single
      * DB, so serving cannot be split within one — but homing each member on
-     * a different rank splits the set's aggregate serving load. */
+     * a different rank splits the set's aggregate serving load, and the
+     * stride keeps those homes spread over the whole rank space. */
     ocrHint_t spreadHNT;
     ocrGuid_t *PTR_nuclide_grids, *PTR_uEnergy_grid;
     double* PTR_uEnergy;
     ocrDbCreate( &(PTR_dataH->DBK_nuclide_grids), (void **) &PTR_nuclide_grids, sizeof(ocrGuid_t)*(n_isotopes),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 0), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 0, MC_HANDLE_BLOCKS), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_uEnergy), (void **) &PTR_uEnergy, sizeof(double)*(n_isotopes*n_gridpoints),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 1), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 1, MC_HANDLE_BLOCKS), NO_ALLOC );
     ocrDbCreate( &(PTR_dataH->DBK_uEnergy_grid), (void **) &PTR_uEnergy_grid, sizeof(ocrGuid_t)*(n_isotopes*n_gridpoints),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 2), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 2, MC_HANDLE_BLOCKS), NO_ALLOC );
 
     int *PTR_mat_num_nucs;
     ocrDbCreate( &(PTR_dataH->DBK_mat_num_nucs), (void **) &PTR_mat_num_nucs, sizeof(int)*(n_mats),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 3), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 3, MC_HANDLE_BLOCKS), NO_ALLOC );
     ocrGuid_t *PTR_mat_nucl_index_list_guids;
     ocrDbCreate( &(PTR_dataH->DBK_mat_nucl_index_list_guids), (void **) &PTR_mat_nucl_index_list_guids, sizeof(ocrGuid_t)*(n_mats),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 4), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 4, MC_HANDLE_BLOCKS), NO_ALLOC );
     ocrGuid_t *PTR_nucl_concs_list_guids;
     ocrDbCreate( &(PTR_dataH->DBK_nucl_concs_list_guids), (void **) &PTR_nucl_concs_list_guids, sizeof(ocrGuid_t)*(n_mats),
-                 DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 5), NO_ALLOC );
+                 DB_PROP_NONE, mcStripeDbHint(&spreadHNT, 5, MC_HANDLE_BLOCKS), NO_ALLOC );
 
     _paramc = 2; _depc = 8;
     ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_rankLookup), FNC_rankLookup, _paramc, _depc );
@@ -481,57 +522,21 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     NuclideGridPoint* PTR_nuclide_data;
 
-    int (*cmp) (const void *, const void *);
-    cmp = NGP_compare;
-
-    unsigned long seed = (10+1)*19+17;
-
     s32 i;
 
     ocrHint_t spreadHNT;
 
+    /* The exploded plane of grid blocks is built here, but no element of it is
+     * written here: a block is filled by the task that owns it, from a
+     * generator that is a pure function of the position it fills, so the table
+     * does not depend on how many tasks or processes produce it. */
     for( i = 0; i < n_isotopes; i++ )
     {
         ocrDbCreate( &(PTR_nuclide_grids[i]), (void **) &PTR_nuclide_data, sizeof(NuclideGridPoint)*(n_gridpoints),
                      DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, i), NO_ALLOC );
-
-        for( long j = 0; j < n_gridpoints; j++ )
-        {
-            PTR_nuclide_data[j].energy        = rn(&seed);
-            PTR_nuclide_data[j].total_xs      = rn(&seed);
-            PTR_nuclide_data[j].elastic_xs    = rn(&seed);
-            PTR_nuclide_data[j].absorbtion_xs = rn(&seed);
-            PTR_nuclide_data[j].fission_xs    = rn(&seed);
-            PTR_nuclide_data[j].nu_fission_xs = rn(&seed);
-
-            //ocrPrintf("Init p %d e %f xs_0 %f xs_1 %f xs_2 %f xs_3 %f xs_4 %f\n", i, PTR_nuclide_data[j].energy, PTR_nuclide_data[j].total_xs, PTR_nuclide_data[j].elastic_xs, PTR_nuclide_data[j].absorbtion_xs, PTR_nuclide_data[j].fission_xs, PTR_nuclide_data[j].nu_fission_xs);
-        }
-
-        //sort_nuclide_grids
-
-        qsort( PTR_nuclide_data, n_gridpoints, sizeof(NuclideGridPoint), cmp );
-
-        for( long j = 0; j < n_gridpoints; j++ )
-        {
-            PTR_uEnergy[i*n_gridpoints + j] = PTR_nuclide_data[j].energy;
-        }
-        /* This grid block is fully written: release precedes any exposure. */
+        /* Release precedes any exposure of the block. */
         ocrDbRelease( PTR_nuclide_grids[i] );
     }
-
-    qsort( PTR_uEnergy, n_isotopes*n_gridpoints, sizeof(double), cmp );
-
-    // The kernel discards its lookup results, so the deterministic energy grid
-    // is the only observable answer; summing its IEEE-754 bit patterns is
-    // bit-exact.  This does NOT verify the lookup arithmetic itself.
-    unsigned long long grid_cksum = 0;
-    for( i = 0; i < n_isotopes*n_gridpoints; i++ )
-    {
-        unsigned long long bits;
-        memcpy( &bits, &PTR_uEnergy[i], sizeof(bits) );
-        grid_cksum += bits;
-    }
-    ocrPrintf("XSBench grid checksum: %llu\n", grid_cksum);
 
     int* PTR_xs_indices;
 
@@ -541,7 +546,49 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                      DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, i), NO_ALLOC );
     }
 
-    MyOcrTaskStruct_t TS_init_uEnergy; _paramc = 0; _depc = 5;
+    /* Generation, union and alignment are separate scopes: the union reads
+     * every grid block, so it may not start before the last generator has
+     * released the block it wrote, and the alignment reads the energy array,
+     * so it may not start before the union has sorted it. */
+    ocrGuid_t TS_init_gridsSpawner_OET, TS_init_uEnergy_union_OET;
+    ocrEventCreate( &TS_init_gridsSpawner_OET, OCR_EVENT_STICKY_T, false );
+    ocrEventCreate( &TS_init_uEnergy_union_OET, OCR_EVENT_STICKY_T, false );
+
+    MyOcrTaskStruct_t TS_init_gridsSpawner; _paramc = 0; _depc = 2;
+
+    TS_init_gridsSpawner.FNC = FNC_init_gridsSpawner;
+    ocrEdtTemplateCreate( &TS_init_gridsSpawner.TML, TS_init_gridsSpawner.FNC, _paramc, _depc );
+
+    ocrEdtCreate( &TS_init_gridsSpawner.EDT, TS_init_gridsSpawner.TML,
+                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PROP_FINISH, NULL_HINT, &TS_init_gridsSpawner.OET );
+
+    ocrAddDependence( TS_init_gridsSpawner.OET, TS_init_gridsSpawner_OET, 0, DB_MODE_NULL );
+
+    /* The union of the generated grids stays one task, as in the sequential
+     * program: it reads every grid block once and sorts the flat energy array.
+     * It runs where that array is homed, being the task that fills it. */
+    MyOcrTaskStruct_t TS_init_uEnergy_union; _paramc = 0; _depc = 3 + n_isotopes;
+
+    ocrHint_t unionHNT;
+    TS_init_uEnergy_union.FNC = FNC_init_uEnergy_union;
+    ocrEdtTemplateCreate( &TS_init_uEnergy_union.TML, TS_init_uEnergy_union.FNC, _paramc, _depc );
+
+    ocrEdtCreate( &TS_init_uEnergy_union.EDT, TS_init_uEnergy_union.TML,
+                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PROP_NONE, mcStripeEdtHint(&unionHNT, 1, MC_HANDLE_BLOCKS),
+                  &TS_init_uEnergy_union.OET );
+
+    ocrAddDependence( TS_init_uEnergy_union.OET, TS_init_uEnergy_union_OET, 0, DB_MODE_NULL );
+
+    /* Each grid block was released as it was created, so a reader of one can
+     * be wired while the array of their handles is still held. */
+    for( i = 0; i < n_isotopes; i++ )
+    {
+        ocrAddDependence( PTR_nuclide_grids[i], TS_init_uEnergy_union.EDT, 3 + i, DB_MODE_CONST );
+    }
+
+    MyOcrTaskStruct_t TS_init_uEnergy; _paramc = 0; _depc = 6;
 
     TS_init_uEnergy.FNC = FNC_init_uEnergy;
     ocrEdtTemplateCreate( &TS_init_uEnergy.TML, TS_init_uEnergy.FNC, _paramc, _depc );
@@ -549,20 +596,6 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrEdtCreate( &TS_init_uEnergy.EDT, TS_init_uEnergy.TML,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
                   EDT_PROP_FINISH, NULL_HINT, NULL );
-
-    _idep = 0;
-    /* Release precedes any exposure of the block. */
-    ocrDbRelease( DBK_nuclide_grids );
-    ocrDbRelease( DBK_uEnergy );
-    ocrDbRelease( DBK_uEnergy_grid );
-    ocrDbRelease( DBK_mat_num_nucs );
-    ocrDbRelease( DBK_mat_nucl_index_list_guids );
-    ocrDbRelease( DBK_nucl_concs_list_guids );
-    ocrAddDependence( DBK_InputsH, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
-    ocrAddDependence( DBK_settingsH, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
-    ocrAddDependence( DBK_nuclide_grids, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
-    ocrAddDependence( DBK_uEnergy, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
-    ocrAddDependence( DBK_uEnergy_grid, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
 
     MyOcrTaskStruct_t TS_init_materials; _paramc = 0; _depc = 5;
 
@@ -573,12 +606,133 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
                   EDT_PROP_FINISH, NULL_HINT, NULL );
 
+    /* Release precedes any exposure of the block. */
+    ocrDbRelease( DBK_nuclide_grids );
+    ocrDbRelease( DBK_uEnergy );
+    ocrDbRelease( DBK_uEnergy_grid );
+    ocrDbRelease( DBK_mat_num_nucs );
+    ocrDbRelease( DBK_mat_nucl_index_list_guids );
+    ocrDbRelease( DBK_nucl_concs_list_guids );
+
+    _idep = 0;
+    ocrAddDependence( DBK_InputsH, TS_init_gridsSpawner.EDT, _idep++, DB_MODE_CONST );
+    ocrAddDependence( DBK_nuclide_grids, TS_init_gridsSpawner.EDT, _idep++, DB_MODE_CONST );
+
+    _idep = 0;
+    ocrAddDependence( DBK_InputsH, TS_init_uEnergy_union.EDT, _idep++, DB_MODE_CONST );
+    ocrAddDependence( DBK_uEnergy, TS_init_uEnergy_union.EDT, _idep++, DB_MODE_RW );
+    ocrAddDependence( TS_init_gridsSpawner_OET, TS_init_uEnergy_union.EDT, _idep++, DB_MODE_NULL );
+
+    _idep = 0;
+    ocrAddDependence( DBK_InputsH, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
+    ocrAddDependence( DBK_settingsH, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
+    ocrAddDependence( DBK_nuclide_grids, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
+    ocrAddDependence( DBK_uEnergy, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
+    ocrAddDependence( DBK_uEnergy_grid, TS_init_uEnergy.EDT, _idep++, DB_MODE_CONST );
+    ocrAddDependence( TS_init_uEnergy_union_OET, TS_init_uEnergy.EDT, _idep++, DB_MODE_NULL );
+
     _idep = 0;
     ocrAddDependence( DBK_InputsH, TS_init_materials.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_settingsH, TS_init_materials.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( DBK_mat_num_nucs, TS_init_materials.EDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_mat_nucl_index_list_guids, TS_init_materials.EDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_nucl_concs_list_guids, TS_init_materials.EDT, _idep++, DB_MODE_RW );
+
+    return NULL_GUID;
+}
+
+ocrGuid_t FNC_init_gridsSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    s32 _paramc, _depc, _idep;
+
+    ocrGuid_t DBK_InputsH = depv[0].guid;
+
+    Inputs *PTR_InputsH = (Inputs*) depv[0].ptr;
+    ocrGuid_t *PTR_nuclide_grids = (ocrGuid_t*) depv[1].ptr;
+
+    int n_isotopes = PTR_InputsH->n_isotopes;
+
+    s32 i;
+
+    MyOcrTaskStruct_t TS_init_grids_i; _paramc = 1; _depc = 2;
+    u64 TS_init_grids_i_paramv[1];
+
+    TS_init_grids_i.FNC = FNC_init_grids_i;
+    ocrEdtTemplateCreate( &TS_init_grids_i.TML, TS_init_grids_i.FNC, _paramc, _depc );
+
+    /* One generator per grid block: the fan-out is the number of blocks the
+     * plane has, and each task writes only the block it is given. */
+    for( i = 0; i < n_isotopes; i++ )
+    {
+        ocrHint_t gridHNT;
+        TS_init_grids_i_paramv[0] = (u64) i;
+
+        ocrEdtCreate( &TS_init_grids_i.EDT, TS_init_grids_i.TML,
+                      EDT_PARAM_DEF, TS_init_grids_i_paramv, EDT_PARAM_DEF, NULL,
+                      EDT_PROP_NONE, mcSpreadEdtHint(&gridHNT, (u64) i), NULL );
+
+        _idep = 0;
+        ocrAddDependence( DBK_InputsH, TS_init_grids_i.EDT, _idep++, DB_MODE_CONST );
+        ocrAddDependence( PTR_nuclide_grids[i], TS_init_grids_i.EDT, _idep++, DB_MODE_RW );
+    }
+
+    return NULL_GUID;
+}
+
+ocrGuid_t FNC_init_grids_i(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    Inputs *PTR_InputsH = (Inputs*) depv[0].ptr;
+    NuclideGridPoint *PTR_nuclide_data = (NuclideGridPoint*) depv[1].ptr;
+
+    long j = (long) paramv[0];
+    long n_gridpoints = PTR_InputsH->n_gridpoints;
+    long k;
+
+    for( k = 0; k < n_gridpoints; k++ )
+    {
+        PTR_nuclide_data[k].energy        = rn_indexed( XS_STREAM_GRID, xs_grid_index(j, k, n_gridpoints, 0) );
+        PTR_nuclide_data[k].total_xs      = rn_indexed( XS_STREAM_GRID, xs_grid_index(j, k, n_gridpoints, 1) );
+        PTR_nuclide_data[k].elastic_xs    = rn_indexed( XS_STREAM_GRID, xs_grid_index(j, k, n_gridpoints, 2) );
+        PTR_nuclide_data[k].absorbtion_xs = rn_indexed( XS_STREAM_GRID, xs_grid_index(j, k, n_gridpoints, 3) );
+        PTR_nuclide_data[k].fission_xs    = rn_indexed( XS_STREAM_GRID, xs_grid_index(j, k, n_gridpoints, 4) );
+        PTR_nuclide_data[k].nu_fission_xs = rn_indexed( XS_STREAM_GRID, xs_grid_index(j, k, n_gridpoints, 5) );
+    }
+
+    //sort_nuclide_grids
+
+    qsort( PTR_nuclide_data, n_gridpoints, sizeof(NuclideGridPoint), NGP_compare );
+
+    return NULL_GUID;
+}
+
+ocrGuid_t FNC_init_uEnergy_union(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    Inputs *PTR_InputsH = (Inputs*) depv[0].ptr;
+    double *PTR_uEnergy = (double*) depv[1].ptr;
+
+    int n_isotopes = PTR_InputsH->n_isotopes;
+    int n_gridpoints = PTR_InputsH->n_gridpoints;
+
+    s32 i;
+    long j;
+
+    for( i = 0; i < n_isotopes; i++ )
+    {
+        NuclideGridPoint *PTR_nuclide_data = (NuclideGridPoint*) depv[3+i].ptr;
+        for( j = 0; j < n_gridpoints; j++ )
+        {
+            PTR_uEnergy[i*n_gridpoints + j] = PTR_nuclide_data[j].energy;
+        }
+    }
+
+    qsort( PTR_uEnergy, n_isotopes*n_gridpoints, sizeof(double), NGP_compare );
+
+    // The kernel discards its lookup results, so the deterministic energy grid
+    // is the only observable answer.  The sum is over bit patterns and is
+    // therefore exact and order-independent.  This does NOT verify the lookup
+    // arithmetic itself.
+    ocrPrintf("XSBench grid checksum: %llu\n",
+              xs_grid_checksum( PTR_uEnergy, (long) n_isotopes * (long) n_gridpoints ));
 
     return NULL_GUID;
 }
@@ -657,20 +811,11 @@ ocrGuid_t FNC_init_uEnergy_i(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     int n_isotopes = PTR_InputsH->n_isotopes;
     int n_gridpoints = PTR_InputsH->n_gridpoints;
 
-    s32 i = paramv[0];
-    s32 j;
-
     //double quarry = PTR_uEnergy[i]; //paramv[1];
     u64 quarry_u64 = paramv[1];
     double* PTR_quarry = (double*) &quarry_u64;
     double quarry = *PTR_quarry;
     //ocrPrintf("here2 quarry %f\n", quarry);
-    int thread_id = 0;
-    if( thread_id == 0 && i % 200 == 0 )
-        ocrPrintf("\rAligning Unionized Grid...(%.2f%% complete)",
-               100.0 * (double) i / (n_isotopes*n_gridpoints /
-                                     1/*omp_get_num_threads()*/)     );
-    if( i == n_isotopes*n_gridpoints-1 ) ocrPrintf("\n");
     _idep = 4;
     for( long j = 0; j < n_isotopes; j++ )
     {
@@ -767,9 +912,8 @@ ocrGuid_t FNC_init_materials(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
         ocrDbCreate( &(PTR_nucl_concs_list_guids[j]), (void **) &PTR_nucl_concs_list, sizeof(double)*num_nucs_j,
                      DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, (u64) j), NO_ALLOC );
 
-        unsigned long seed = (j+1)*19+17;
         for( int i = 0; i < num_nucs_j; i++ )
-            PTR_nucl_concs_list[i] = rn(&seed);
+            PTR_nucl_concs_list[i] = rn_indexed( XS_STREAM_CONC, xs_conc_index(j, i) );
 
         switch(j)
         {
@@ -1026,8 +1170,6 @@ ocrGuid_t FNC_rankMultiLookupSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDe
     u64 ilookup_b = (u64) paramv[1];
     u64 ilookup_e = (u64) paramv[2];
 
-    int lookups = PTR_InputsH->lookups;
-
     #if 1
     MyOcrTaskStruct_t TS_rankLookup; _paramc = 2; _depc = 8;
 
@@ -1038,12 +1180,6 @@ ocrGuid_t FNC_rankMultiLookupSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDe
 
     for( u64 ilookup = ilookup_b; ilookup <= ilookup_e; ilookup++ )
     {
-        //ocrPrintf("%d\n", ilookup);
-
-        if( ilookup % 1000 == 0 )
-            ocrPrintf("\rCalculating XS's... (%.02f%% completed)",
-                    (ilookup / ( (double)lookups ) * 100.0 ) );
-
         compute_paramv[0] = (u64) id;
         compute_paramv[1] = (u64) ilookup;
 
@@ -1125,7 +1261,7 @@ ocrGuid_t FNC_rankLookup(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrHint_t chainHNT;
     ocrEdtCreate( &TS_macroxs.EDT, PTR_rankTemplateH->TML_FNC_macroxs,
                   EDT_PARAM_DEF, compute_paramv, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, mcChainEdtHint(&chainHNT), NULL );
+                  EDT_PROP_NONE, mcSpreadEdtHint(&chainHNT, (u64) idx), NULL );
 
     _idep = 0;
     ocrAddDependence( DBK_InputsH, TS_macroxs.EDT, _idep++, DB_MODE_CONST );

@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <proto.h>
 #include <ocr.h>
 #include <ocr-guid-functions.h>
@@ -74,22 +75,45 @@ static void amr_factor3(int P, int * px, int * py, int * pz) {
 
 int amrNumPolicyDomains(void) {
    // The domain count is fixed for the run; resolving it per EDT creation is
-   // pure overhead in a program that creates tens of millions of them.
-   static int cached = 0;
-   if (cached == 0) {
-      u64 n = 1;
-      ocrAffinityCount(AFFINITY_PD, &n);
-      cached = (n < 1) ? 1 : (int) n;
+   // pure overhead in a program that creates tens of millions of them.  The
+   // cache is written concurrently by every worker, so it is a single word and
+   // a racing writer stores the same value it read.
+   static _Atomic int cached = 0;
+   int n = atomic_load_explicit(&cached, memory_order_relaxed);
+   if (n == 0) {
+      u64 count = 1;
+      ocrAffinityCount(AFFINITY_PD, &count);
+      n = (count < 1) ? 1 : (int) count;
+      atomic_store_explicit(&cached, n, memory_order_relaxed);
    }
-   return cached;
+   return n;
 }
+
+#define AMR_PD_FACTOR_BITS 10
+#define AMR_PD_FACTOR_MAX  (1 << AMR_PD_FACTOR_BITS)
 
 int amrBlockHomePD(int x, int y, int z, int level, int npx, int npy, int npz) {
    int P = amrNumPolicyDomains();
    if (P <= 1) return 0;
-   // The factorization depends only on the domain count, so it is done once.
-   static int PDx = 0, PDy = 0, PDz = 0;
-   if (PDx == 0) amr_factor3(P, &PDx, &PDy, &PDz);
+   // The factorization depends only on the domain count.  Every worker shares
+   // the cache, so the three factors are published as one word: a reader that
+   // saw a half-written triple would place against a mixture of two grids.
+   static _Atomic unsigned int packedPD = 0;
+   int PDx, PDy, PDz;
+   unsigned int packed = atomic_load_explicit(&packedPD, memory_order_relaxed);
+   if (packed != 0) {
+      PDx = (int) (packed >> (2 * AMR_PD_FACTOR_BITS));
+      PDy = (int) ((packed >> AMR_PD_FACTOR_BITS) & (AMR_PD_FACTOR_MAX - 1));
+      PDz = (int) (packed & (AMR_PD_FACTOR_MAX - 1));
+   } else {
+      amr_factor3(P, &PDx, &PDy, &PDz);
+      if (PDx < AMR_PD_FACTOR_MAX && PDy < AMR_PD_FACTOR_MAX && PDz < AMR_PD_FACTOR_MAX) {
+         packed = (((unsigned int) PDx) << (2 * AMR_PD_FACTOR_BITS)) |
+                  (((unsigned int) PDy) << AMR_PD_FACTOR_BITS) |
+                   ((unsigned int) PDz);
+         atomic_store_explicit(&packedPD, packed, memory_order_relaxed);
+      }
+   }
    int ex = npx << level, ey = npy << level, ez = npz << level;
    int px = (ex > 0) ? (int) (((long) x * PDx) / ex) : 0;
    int py = (ey > 0) ? (int) (((long) y * PDy) / ey) : 0;
@@ -112,27 +136,42 @@ int amrBlockHomePD(int x, int y, int z, int level, int npx, int npy, int npz) {
 
 ocrHint_t * amrEdtHintForPD(ocrHint_t * hint, int pd) {
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
-   // One hint per domain, built once and thereafter copied.  A domain's
+   // One hint per domain, built once and thereafter shared.  A domain's
    // affinity does not change, and a program that creates tens of millions of
    // EDTs cannot afford a runtime query plus a hint rebuild at every one.
+   // A slot is claimed by one filler and published only when complete; a
+   // concurrent reader that finds it unpublished builds into the caller's own
+   // hint rather than reading a half-built one.
    #define AMR_MAX_CACHED_PD 256
-   static ocrHint_t cache[AMR_MAX_CACHED_PD];
-   static char      cachedPD[AMR_MAX_CACHED_PD];
+   #define AMR_PD_SLOT_EMPTY     0
+   #define AMR_PD_SLOT_FILLING   1
+   #define AMR_PD_SLOT_PUBLISHED 2
+   static ocrHint_t    cache[AMR_MAX_CACHED_PD];
+   static _Atomic char cacheState[AMR_MAX_CACHED_PD];
    ocrGuid_t aff;
+   int owned = 0;
    if (pd >= 0 && pd < AMR_MAX_CACHED_PD) {
-      if (!cachedPD[pd]) {
-         ocrAffinityGetAt(AFFINITY_PD, (u64) pd, &aff);
-         ocrHintInit(&cache[pd], OCR_HINT_EDT_T);
-         ocrSetHintValue(&cache[pd], OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
-         cachedPD[pd] = 1;
+      char state = atomic_load_explicit(&cacheState[pd], memory_order_acquire);
+      if (state == AMR_PD_SLOT_PUBLISHED) return &cache[pd];
+      if (state == AMR_PD_SLOT_EMPTY) {
+         char expected = AMR_PD_SLOT_EMPTY;
+         owned = atomic_compare_exchange_strong_explicit(&cacheState[pd], &expected,
+                                                         AMR_PD_SLOT_FILLING,
+                                                         memory_order_acq_rel,
+                                                         memory_order_relaxed);
       }
-      (void) hint;                 // the create only reads the hint
-      return &cache[pd];
    }
-   ocrAffinityGetAt(AFFINITY_PD, (u64) pd, &aff);
-   ocrHintInit(hint, OCR_HINT_EDT_T);
-   ocrSetHintValue(hint, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
-   return hint;
+   // An index the runtime cannot resolve leaves the affinity unwritten, so it
+   // must degrade to "no preference" rather than to an indeterminate hint.
+   if (ocrAffinityGetAt(AFFINITY_PD, (u64) pd, &aff) != 0) {
+      if (owned) atomic_store_explicit(&cacheState[pd], AMR_PD_SLOT_EMPTY, memory_order_release);
+      return NULL_HINT;
+   }
+   ocrHint_t * built = owned ? &cache[pd] : hint;
+   ocrHintInit(built, OCR_HINT_EDT_T);
+   ocrSetHintValue(built, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+   if (owned) atomic_store_explicit(&cacheState[pd], AMR_PD_SLOT_PUBLISHED, memory_order_release);
+   return built;
 #else
    (void)hint; (void)pd;
    return NULL_HINT;
@@ -186,12 +225,9 @@ void gasket__ocrDbCreate (ocrGuid_t  * guid,     // Guid of created datablock.
                           const char * detail,   // Context of the calling site.
                           const char * name) {   // Name of the datablock being created.
 
-   // Home is left policy-selected, and that is measured rather than assumed:
-   // homing each refined child's blocks on the domain its own tasks run at
-   // changed nothing at 1, 2, 4 or 8 nodes (44.8/26.2/17.0/11.9 s against
-   // 44.7/26.2/17.0/11.9).  A block's datablocks are acquired RW by that
-   // block's task immediately after creation, so the payload moves once
-   // either way and the home is only a directory entry.
+   // Home is left policy-selected: a datablock created here is acquired RW by
+   // the creating chain's own next task, so the payload moves once whatever the
+   // home is, and the home is only a directory entry.
    ocrDbCreate (guid, addr, size, 0, NULL_HINT, NO_ALLOC);
 
 #ifdef NANNY_ON_STEROIDS

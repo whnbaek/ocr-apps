@@ -9,12 +9,11 @@
 // locally and its finish latch counts their completions locally, so a phase
 // costs the spine O(ranks) messages rather than O(boxes).
 //
-// Initialization is distributed the same way: per-rank creators allocate,
-// zero and fill their own boxes (the analytic problem evaluation is the
-// bulk of it, spawned as per-box tasks), a merge assembles the guid tables,
-// and the operator build (coefficient restriction, Gershgorin, ghost
-// exchange of Dinv/L1inv over the face slabs) runs as sliced phases.  The
-// serial preamble this replaces did all of it on one worker.
+// Initialization follows the same shape: per-rank creators allocate their
+// own boxes, a merge assembles the guid tables, and the operator build
+// (coefficient restriction, Gershgorin, ghost exchange of Dinv/L1inv over
+// the face slabs) runs as sliced phases.  The per-box bodies it spawns are
+// the ones every decomposition shares.
 #ifndef OCR_APP_OPTIMIZED_PLACEMENT
 #error "the distributed decomposition builds its placement in"
 #endif
@@ -56,22 +55,12 @@ typedef struct {
 
 #define DIST_MAX_RANKS 64
 
-// The Poisson test problem the port hard-codes (see solve_edt).
-#define DIST_A 0.0
-#define DIST_B 1.0
-
 ocrGuid_t dist_slice_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t dist_subphase_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t dist_reduce_subphase_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t dist_prep_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t dist_coeff_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t dist_gersh_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t dist_norm_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t dist_error_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t dist_max_merge_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t dist_eigen_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t dist_timer_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t dist_norm_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-ocrGuid_t dist_error_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t dist_creator_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t dist_merge_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
@@ -92,14 +81,6 @@ static u64 dist_ranks(void) {
   return n;
 }
 
-// A guid rides paramv as its 64-bit representation.
-static inline u64 dist_guid_bits(ocrGuid_t g) {
-  u64 v; memcpy(&v, &g, sizeof(v)); return v;
-}
-static inline ocrGuid_t dist_guid_from(u64 v) {
-  ocrGuid_t g; memcpy(&g, &v, sizeof(g)); return g;
-}
-
 /* ------------------------------------------------------------------ */
 /* slice fan-out                                                       */
 /* ------------------------------------------------------------------ */
@@ -115,7 +96,7 @@ static void dist_spawn_slices(u64 kind, u64 p0, u64 p1,
   ocrEdtTemplateCreate(&s_t, dist_slice_edt, 6, 2);
   for (r = 0; r < R; r++) {
     u64 pv[6] = { kind, p0, p1, 0, r, 0 };
-    if (evts) pv[3] = dist_guid_bits(evts[r]);
+    if (evts) pv[3] = hpgmg_guid_bits(evts[r]);
     ocrEdtCreate(&s, s_t, 6, pv, 2, NULL, EDT_PROP_FINISH,
                  mgRankEdtHint(&h, r), NULL);
     ocrAddDependence(levelA, s, 0, DB_MODE_CONST);
@@ -148,7 +129,7 @@ ocrGuid_t dist_reduce_subphase_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_
 // worker's serial loop otherwise, parallelizes within the rank.
 ocrGuid_t dist_slice_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
   u64 kind = paramv[0], p0 = paramv[1], p1 = paramv[2];
-  ocrGuid_t evt = dist_guid_from(paramv[3]);
+  ocrGuid_t evt = hpgmg_guid_from(paramv[3]);
   u64 r = paramv[4], sub = paramv[5], R = dist_ranks();
   u64 K = sub ? (sub >> 16) : 1, kk = sub ? (sub & 0xffff) : 0;
   u64 ord = 0;
@@ -323,7 +304,7 @@ ocrGuid_t dist_slice_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
     int count = f->num_boxes / cl->num_boxes;
     ocrGuid_t fine[MAX_FINE_BOXES];
     PRM_restrict_level_edt_t prm;
-    prm.box = dist_guid_from(p1);
+    prm.box = hpgmg_guid_from(p1);
     prm.flag = (s64) p0;
     ocrEdtTemplateCreate(&c_t, restrict_edt,
                          sizeof(PRM_restrict_level_edt_t)/sizeof(u64), 3 + count);
@@ -373,7 +354,7 @@ ocrGuid_t dist_slice_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
     int count = f->num_boxes / cl->num_boxes;
     ocrGuid_t fine[MAX_FINE_BOXES];
     u64 cnt = count;
-    ocrEdtTemplateCreate(&c_t, dist_coeff_edt, 1, 3 + count);
+    ocrEdtTemplateCreate(&c_t, hpgmg_coeff_edt, 1, 3 + count);
     for (b = 0; b < cl->num_boxes; ++b) {
       if (boxHomePD(b, cl->boxes_in.i, R) != (int) r) continue;
       if ((ord++ % K) != kk) continue;
@@ -403,31 +384,31 @@ ocrGuid_t dist_slice_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
 
     if (nlocal == 0) {
       ocrGuid_t dbg; double *dp;
-      ocrDbCreate(&dbg, (void**)&dp, sizeof(double), 0, NULL_HINT, NO_ALLOC);
-      *dp = -1e9;
+      ocrDbCreate(&dbg, (void**)&dp, 2*sizeof(double), 0, NULL_HINT, NO_ALLOC);
+      dp[0] = dp[1] = -1e9;
       ocrDbRelease(dbg);
       ocrEventSatisfy(evt, dbg);
       break;
     }
 
-    u64 mpv[2] = { dist_guid_bits(evt), 0 };
-    ocrEdtTemplateCreate(&m_t, dist_max_merge_edt, 2, nlocal);
-    ocrEdtCreate(&m, m_t, 2, mpv, nlocal, NULL, 0, mgRankEdtHint(&h, r), NULL);
+    u64 mpv = hpgmg_guid_bits(evt);
+    ocrEdtTemplateCreate(&m_t, hpgmg_max_merge_edt, 1, nlocal);
+    ocrEdtCreate(&m, m_t, 1, &mpv, nlocal, NULL, 0, mgRankEdtHint(&h, r), NULL);
     ocrEdtTemplateDestroy(m_t);
 
     if (kind == DK_NORM) ocrEdtTemplateCreate(&c_t, dist_norm_edt, 0, 2);
-    else if (kind == DK_GERSH) ocrEdtTemplateCreate(&c_t, dist_gersh_edt, 0, 2);
-    else ocrEdtTemplateCreate(&c_t, dist_error_edt, 0, 2);
+    else if (kind == DK_GERSH) ocrEdtTemplateCreate(&c_t, hpgmg_gersh_edt, 0, 2);
+    else ocrEdtTemplateCreate(&c_t, hpgmg_error_edt, 0, 2);
 
     int slot = 0;
     for (b = 0; b < lA->num_boxes; ++b) {
       if (boxHomePD(b, lA->boxes_in.i, R) != (int) r) continue;
       if ((ord++ % K) != kk) continue;
       ocrEdtCreate(&c, c_t, 0, NULL, 2, NULL, 0, mgRankEdtHint(&h, r), &fin);
+      ocrAddDependence(fin, m, slot++, DB_MODE_CONST);
       ocrAddDependence(depv[0].guid, c, 0, DB_MODE_CONST);
       ocrAddDependence(boxesA[b], c, 1,
-                       kind == DK_GERSH ? DB_MODE_RW : DB_MODE_CONST);
-      ocrAddDependence(fin, m, slot++, DB_MODE_CONST);
+                       kind == DK_NORM ? DB_MODE_CONST : DB_MODE_RW);
     }
     ocrEdtTemplateDestroy(c_t);
     break;
@@ -438,43 +419,8 @@ ocrGuid_t dist_slice_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
 }
 
 /* ------------------------------------------------------------------ */
-/* per-box bodies the base program does not have                       */
+/* bodies specific to this decomposition                               */
 /* ------------------------------------------------------------------ */
-
-// deps: level - box(RW); pars: fine flag
-// Everything the box needs before the operator build, off the creator's
-// serial loop: zero the vector region, mark the valid cells, and — on the
-// fine level — evaluate the analytic problem.
-ocrGuid_t dist_prep_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-  level_type *l = (level_type*) depv[0].ptr;
-  box_type *bx = (box_type*) depv[1].ptr;
-  bzero((char*)bx + sizeof(box_type), l->volume*NUM_VECTORS*sizeof(double));
-  hpgmg_valid_box(l, bx);
-  if (paramv[0])
-    hpgmg_fill_box(l, bx, DIST_A, DIST_B);
-  return NULL_GUID;
-}
-
-// deps: coarse level - coarse box(RW) - fine level - fine boxes; pars: count
-ocrGuid_t dist_coeff_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-  level_type *cl = (level_type*) depv[0].ptr;
-  level_type *f = (level_type*) depv[2].ptr;
-  box_type *cb = (box_type*) depv[1].ptr;
-  int count = (int) paramv[0];
-  int o;
-  for (o = 3; o < (int) depc; ++o)
-    hpgmg_coeff_restrict_box(cl, cb, f, (box_type*) depv[o].ptr, o - 3, count);
-  return NULL_GUID;
-}
-
-// deps: level - box(RW); returns this box's Gershgorin bound
-ocrGuid_t dist_gersh_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-  ocrGuid_t g; double *d;
-  ocrDbCreate(&g, (void**)&d, sizeof(double), 0, NULL_HINT, NO_ALLOC);
-  *d = hpgmg_gershgorin_box((level_type*) depv[0].ptr, (box_type*) depv[1].ptr,
-                            DIST_A, DIST_B);
-  return g;
-}
 
 // deps: level - box; returns this box's residual norm
 ocrGuid_t dist_norm_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
@@ -482,62 +428,26 @@ ocrGuid_t dist_norm_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
   box_type *bx = (box_type*) depv[1].ptr;
   double *temp = (double*)((char*)bx + l->vec_temp);
   ocrGuid_t g; double *d;
-  ocrDbCreate(&g, (void**)&d, sizeof(double), 0, NULL_HINT, NO_ALLOC);
-  *d = norm_coarse(l, temp);
+  ocrDbCreate(&g, (void**)&d, 2*sizeof(double), 0, NULL_HINT, NO_ALLOC);
+  d[0] = norm_coarse(l, temp);
+  d[1] = -1e9;
   return g;
 }
 
-// deps: level - box; returns this box's max |u - u_true|
-ocrGuid_t dist_error_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+// deps: level(RW) - gates; pars: the operator index to open, or 4 for none
+// The per-operator timing the serial spine writes into the level datablock:
+// close whatever operator was running, then open this phase's.
+ocrGuid_t dist_timer_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
   level_type *l = (level_type*) depv[0].ptr;
-  box_type *bx = (box_type*) depv[1].ptr;
-  int jS = l->jStride, kS = l->kStride, dim = l->box_dim;
-  double *u = (double*)((char*)bx + l->u) + NUM_GHOSTS*(1+jS+kS);
-  double *ut = (double*)((char*)bx + l->u_true) + NUM_GHOSTS*(1+jS+kS);
-  double m = 0.0;
-  int i,j,k;
-  for (k = 0; k < dim; k++)
-    for (j = 0; j < dim; j++)
-      for (i = 0; i < dim; i++) {
-        int ijk = i + j*jS + k*kS;
-        double d = fabs(u[ijk] - ut[ijk]);
-        if (d > m) m = d;
-      }
-  ocrGuid_t g; double *d;
-  ocrDbCreate(&g, (void**)&d, sizeof(double), 0, NULL_HINT, NO_ALLOC);
-  *d = m;
-  return g;
-}
-
-// deps: per-box result DBs; pars: rank event - offset of the double
-ocrGuid_t dist_max_merge_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-  double m = -1e9;
-  u32 i;
-  for (i = 0; i < depc; i++) {
-    double v = *(double*)((char*)depv[i].ptr + paramv[1]);
-    if (v > m) m = v;
-    ocrDbDestroy(depv[i].guid);
-  }
-  ocrGuid_t g; double *d;
-  ocrDbCreate(&g, (void**)&d, sizeof(double), 0, NULL_HINT, NO_ALLOC);
-  *d = m;
-  ocrDbRelease(g);
-  ocrEventSatisfy(dist_guid_from(paramv[0]), g);
-  return NULL_GUID;
-}
-
-// deps: level(RW) - subphase gate - R rank maxima
-ocrGuid_t dist_eigen_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-  level_type *l = (level_type*) depv[0].ptr;
-  double m = -1e9;
-  u32 i;
-  for (i = 2; i < depc; i++) {
-    double v = *(double*) depv[i].ptr;
-    if (v > m) m = v;
-    ocrDbDestroy(depv[i].guid);
-  }
-  l->dominant_eigenvalue_of_DinvA = m;
-  ocrPrintf("eigenvalue_max < %f\n", m);
+  u64 op = paramv[0];
+  int k;
+  for (k = 0; k < 4; k++)
+    if (fabs(l->time_temp[k]) > mu) {
+      l->time_operators[k] += (hpgmg_time() - l->time_temp[k]);
+      l->time_temp[k] = 0.0;
+    }
+  if (op < 4)
+    l->time_temp[op] = hpgmg_time();
   return NULL_GUID;
 }
 
@@ -546,7 +456,7 @@ ocrGuid_t dist_norm_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
   double m = -1e9;
   u32 i;
   for (i = 0; i < depc; i++) {
-    double v = *(double*) depv[i].ptr;
+    double v = ((double*) depv[i].ptr)[0];
     if (v > m) m = v;
     ocrDbDestroy(depv[i].guid);
   }
@@ -554,68 +464,9 @@ ocrGuid_t dist_norm_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
   return NULL_GUID;
 }
 
-// deps: level - subphase gate - R rank maxima
-ocrGuid_t dist_error_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-  level_type *l = (level_type*) depv[0].ptr;
-  double m = 0.0;
-  u32 i;
-  for (i = 2; i < depc; i++) {
-    double v = *(double*) depv[i].ptr;
-    if (v > m) m = v;
-    ocrDbDestroy(depv[i].guid);
-  }
-  ocrPrintf("h = %f  ||error|| = %22.15f\n\n", l->h, m);
-  ocrPrintf("Time = %22f\n", l->time_operators[4]/TIMED);
-  return NULL_GUID;
-}
-
 /* ------------------------------------------------------------------ */
 /* distributed initialization                                          */
 /* ------------------------------------------------------------------ */
-
-// The level table construction mirrored from the serial builder: halve the
-// box dimension down to the agglomeration threshold, then agglomerate the
-// box grid, then halve the last box down to one cell.
-static int dist_level_table(int box_dim0, int boxes_in_i0,
-                            int *box_dim, int *boxes_in_i) {
-  int minCoarseDim = 1;
-  int maxLevels = MG_MAXLEVELS;
-  int level = 1;
-  int coarse_dim = box_dim0 * boxes_in_i0;
-  while ((coarse_dim >= 2*minCoarseDim) && ((coarse_dim & 0x1) == 0)) {
-    level++;
-    coarse_dim = coarse_dim / 2;
-  }
-  if (level < maxLevels) maxLevels = level;
-
-  box_dim[0] = box_dim0;
-  boxes_in_i[0] = boxes_in_i0;
-  int num_levels = 1;
-  int doRestrict = (maxLevels < 2) ? 0 : 1;
-  while (doRestrict) {
-    int lv = num_levels;
-    int fine_box_dim = box_dim[lv-1];
-    int fine_dim_i = box_dim[lv-1] * boxes_in_i[lv-1];
-    int fine_boxes_in_i = boxes_in_i[lv-1];
-    doRestrict = 0;
-    if ((fine_box_dim % 2 == 0) && (fine_box_dim > MG_AGGLOMERATION_START)) {
-      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
-    } else if (fine_boxes_in_i % 2 == 0) {
-      box_dim[lv] = fine_box_dim; boxes_in_i[lv] = fine_boxes_in_i/2; doRestrict = 1;
-    } else if ((coarse_dim != 1) && (fine_dim_i == 2*coarse_dim)) {
-      box_dim[lv] = fine_dim_i/2; boxes_in_i[lv] = 1; doRestrict = 1;
-    } else if ((coarse_dim != 1) && (fine_dim_i == 4*coarse_dim)) {
-      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
-    } else if ((coarse_dim != 1) && (fine_dim_i == 8*coarse_dim)) {
-      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
-    } else if (fine_box_dim % 2 == 0) {
-      box_dim[lv] = fine_box_dim/2; boxes_in_i[lv] = fine_boxes_in_i; doRestrict = 1;
-    }
-    if (doRestrict && box_dim[lv] < NUM_GHOSTS) doRestrict = 0;
-    if (doRestrict) num_levels++;
-  }
-  return num_levels;
-}
 
 // Field-complete level datablock, no boxes yet (the creators bring those).
 static void dist_create_level_db(mg_type *mg, int box_dim, int boxes_in_i,
@@ -634,7 +485,7 @@ static void dist_create_level_db(mg_type *mg, int box_dim, int boxes_in_i,
 
   lp->boundary_condition = BC_DIRICHLET;
   lp->level = level;
-  lp->alpha_is_zero = 0;
+  lp->alpha_is_zero = -1;
   lp->num_boxes = totalBoxes;
   lp->box_dim = box_dim;
   lp->boxes_in.i = lp->boxes_in.j = lp->boxes_in.k = boxes_in_i;
@@ -643,16 +494,11 @@ static void dist_create_level_db(mg_type *mg, int box_dim, int boxes_in_i,
   lp->b_norms = lp->boxes + sizeof(ocrGuid_t)*totalBoxes;
   lp->h = h;
   lp->constant_box_guid = NULL_GUID;
-  lp->tempGuid = NULL_GUID;
-  lp->temp = NULL;
   memset(lp->time_operators, 0, sizeof(lp->time_operators));
   memset(lp->time_temp, 0, sizeof(lp->time_temp));
 
-  // the box memory geometry, exactly as the serial creator computes it
-  int jStride = (box_dim + 2*NUM_GHOSTS);
-  int kStride = jStride * (box_dim + 2*NUM_GHOSTS);
-  if (jStride < 8) kStride += (8 - jStride);   // BOX_PLANE_PADDING
-  u32 boxVolume = (box_dim + 2*NUM_GHOSTS) * kStride;
+  int jStride, kStride;
+  u32 boxVolume = hpgmg_box_geometry(box_dim, &jStride, &kStride);
   lp->jStride = jStride; lp->kStride = kStride; lp->volume = boxVolume;
 
   lp->alpha = sizeof(box_type);
@@ -677,7 +523,7 @@ static void dist_create_level_db(mg_type *mg, int box_dim, int boxes_in_i,
 // fill run as per-box prep tasks, off this loop's one worker.
 ocrGuid_t dist_creator_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
   u64 r = paramv[0];
-  ocrGuid_t resultEvt = dist_guid_from(paramv[1]);
+  ocrGuid_t resultEvt = hpgmg_guid_from(paramv[1]);
   int L = (int) paramv[2];
   u64 R = dist_ranks();
   int l, b, f;
@@ -703,7 +549,7 @@ ocrGuid_t dist_creator_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
 
   ocrGuid_t f_t;
   ocrHint_t eh;
-  ocrEdtTemplateCreate(&f_t, dist_prep_edt, 1, 2);
+  ocrEdtTemplateCreate(&f_t, hpgmg_prep_edt, 1, 2);
 
   u64 w = 0;
   for (l = 0; l < L; l++) {
@@ -774,10 +620,11 @@ ocrGuid_t dist_merge_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
 
 // Builds the whole initialization chain and returns the event the solve
 // spine starts on.
-ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0) {
+ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0,
+                    ocrGuid_t *startEvt) {
   int box_dim[MG_MAXLEVELS], boxes_in_i[MG_MAXLEVELS];
   u64 dinv_off[MG_MAXLEVELS], l1inv_off[MG_MAXLEVELS];
-  int L = dist_level_table(box_dim0, boxes_in_i0, box_dim, boxes_in_i);
+  int L = hpgmg_level_table(box_dim0, boxes_in_i0, box_dim, boxes_in_i);
   u64 R = dist_ranks();
   int l;
   u64 r;
@@ -791,10 +638,7 @@ ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0) {
     dist_create_level_db(mg_ptr, box_dim[l], boxes_in_i[l], l, h0);
     h0 *= 2.0;
     // the diagonal vectors' offsets, from the same creation-time formulas
-    int jS = (box_dim[l] + 2*NUM_GHOSTS);
-    int kS = jS * (box_dim[l] + 2*NUM_GHOSTS);
-    if (jS < 8) kS += (8 - jS);
-    u64 vol = (u64)(box_dim[l] + 2*NUM_GHOSTS) * kS;
+    u64 vol = hpgmg_box_geometry(box_dim[l], NULL, NULL);
     dinv_off[l] = sizeof(box_type) + 4*vol*sizeof(double);
     l1inv_off[l] = dinv_off[l] + vol*sizeof(double);
   }
@@ -802,14 +646,18 @@ ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0) {
   // creators, one per rank
   ocrGuid_t resEvts[DIST_MAX_RANKS], gates[DIST_MAX_RANKS];
   ocrGuid_t c_t, c;
-  ocrEdtTemplateCreate(&c_t, dist_creator_edt, 3, L);
+  /* The chain is only wired when this returns, so it must not be able to run
+   * before its consumer is registered. */
+  ocrEventCreate(startEvt, OCR_EVENT_ONCE_T, 1);
+  ocrEdtTemplateCreate(&c_t, dist_creator_edt, 3, L + 1);
   for (r = 0; r < R; r++) {
     ocrEventCreate(&resEvts[r], OCR_EVENT_ONCE_T, 1);
-    u64 pv[3] = { r, dist_guid_bits(resEvts[r]), (u64) L };
-    ocrEdtCreate(&c, c_t, 3, pv, L, NULL, EDT_PROP_FINISH,
+    u64 pv[3] = { r, hpgmg_guid_bits(resEvts[r]), (u64) L };
+    ocrEdtCreate(&c, c_t, 3, pv, L + 1, NULL, EDT_PROP_FINISH,
                  mgRankEdtHint(&h, r), &gates[r]);
     for (l = 0; l < L; l++)
       ocrAddDependence(mg_ptr->levels[l], c, l, DB_MODE_CONST);
+    ocrAddDependence(*startEvt, c, L, DB_MODE_NULL);
   }
   ocrEdtTemplateDestroy(c_t);
 
@@ -863,7 +711,7 @@ ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0) {
       ocrAddDependence(chain, red, 2, DB_MODE_NULL);
 
       ocrGuid_t fin, finOut, fe_t;
-      ocrEdtTemplateCreate(&fe_t, dist_eigen_final_edt, 0, 2 + R);
+      ocrEdtTemplateCreate(&fe_t, hpgmg_eigen_final_edt, 0, 2 + R);
       ocrEdtCreate(&fin, fe_t, 0, NULL, 2 + R, NULL, 0, mgHomeEdtHint(&h), &finOut);
       ocrEdtTemplateDestroy(fe_t);
       ocrAddDependence(lg, fin, 0, DB_MODE_RW);
@@ -912,8 +760,10 @@ ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0) {
 /* and single-owner phases wait for everyone.  Each rank creates and   */
 /* homes its own phase-completion events, so a hand-off is one direct  */
 /* message from producer to consumer — no relay rank, no serial spine. */
-/* Registration may trail satisfaction across ranks; events linger     */
-/* after firing, so a late registration still sees the satisfy.        */
+/* A once event is gone the moment it fires, so every registration on  */
+/* one precedes its satisfaction by construction: the chains are built */
+/* behind a gate that opens only when every chain has been built, and  */
+/* a task's output event is wired before the task's inputs are.        */
 /* ------------------------------------------------------------------ */
 
 ocrGuid_t dist_evmake_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
@@ -923,7 +773,7 @@ ocrGuid_t dist_notify_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
 // pars: the event to fire; deps: whatever gates it
 ocrGuid_t dist_notify_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-  ocrEventSatisfy(dist_guid_from(paramv[0]), NULL_GUID);
+  ocrEventSatisfy(hpgmg_guid_from(paramv[0]), NULL_GUID);
   return NULL_GUID;
 }
 
@@ -949,7 +799,8 @@ static int dist_rank_nbrs(u64 r, u64 R, int *out) {
 }
 
 // The F-cycle phase sequence, mirrored from the spine construction (one
-// timed solve; the per-operator timer links are no-ops here and dropped).
+// timed solve).  The per-operator timing rides each phase as a task on the
+// rank that homes the level, so it is not a phase of its own.
 static int dist_schedule_build(int L, const int *boxes_in_i, u64 R,
                                dist_phase_t *s) {
   int PX, PY, PZ;
@@ -1016,7 +867,7 @@ ocrGuid_t dist_evmake_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   for (i = 0; i < np; i++)
     ocrEventCreate(&res[i], OCR_EVENT_ONCE_T, 1);
   ocrDbRelease(resGuid);
-  ocrEventSatisfy(dist_guid_from(paramv[1]), resGuid);
+  ocrEventSatisfy(hpgmg_guid_from(paramv[1]), resGuid);
   return NULL_GUID;
 }
 
@@ -1033,17 +884,19 @@ ocrGuid_t dist_evgather_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
     ocrDbDestroy(depv[r].guid);
   }
   ocrDbRelease(tabGuid);
-  ocrEventSatisfy(dist_guid_from(paramv[2]), tabGuid);
+  ocrEventSatisfy(hpgmg_guid_from(paramv[2]), tabGuid);
   return NULL_GUID;
 }
 
-// pars: rank - start event - terminal event - L; deps: event table - levels
+// pars: rank - gate event - terminal event - L; deps: event table - levels
 // Builds this rank's whole chain: every phase's task(s), gated on the
-// previous phase's events per the schedule's gate class.
+// previous phase's events per the schedule's gate class.  Nothing in the
+// chain can run before the gate opens, and the gate opens only after this
+// task has returned.
 ocrGuid_t dist_chain_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
   u64 r = paramv[0], R = dist_ranks();
-  ocrGuid_t startEvt = dist_guid_from(paramv[1]);
-  ocrGuid_t termEvt = dist_guid_from(paramv[2]);
+  ocrGuid_t startEvt = hpgmg_guid_from(paramv[1]);
+  ocrGuid_t termEvt = hpgmg_guid_from(paramv[2]);
   int L = (int) paramv[3];
   ocrGuid_t *tab = (ocrGuid_t*) depv[0].ptr;
 
@@ -1088,7 +941,7 @@ ocrGuid_t dist_chain_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
       // single-owner phases: rank 0 runs the task, everyone else just
       // reports its (empty) phase done
       if (r != 0) {
-        ocrGuid_t nf; u64 evb = dist_guid_bits(ev);
+        ocrGuid_t nf; u64 evb = hpgmg_guid_bits(ev);
         ocrEdtCreate(&nf, n_t, 1, &evb, 1, NULL, 0, mgRankEdtHint(&h, r), NULL);
         ocrAddDependence(i ? tab[r*np + (i-1)] : startEvt, nf, 0, DB_MODE_NULL);
         continue;
@@ -1117,7 +970,7 @@ ocrGuid_t dist_chain_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
           ocrAddDependence(gates[g], t, g, DB_MODE_CONST);
       }
       ocrEdtTemplateDestroy(s_t);
-      ocrGuid_t nf; u64 evb = dist_guid_bits(ev);
+      ocrGuid_t nf; u64 evb = hpgmg_guid_bits(ev);
       ocrEdtCreate(&nf, n_t, 1, &evb, 1, NULL, 0, mgRankEdtHint(&h, r), NULL);
       ocrAddDependence(tOut, nf, 0, DB_MODE_NULL);
       continue;
@@ -1141,22 +994,49 @@ ocrGuid_t dist_chain_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
       break;
     case DK_RESTRICT: pv[1] = (u64) p->p; pv[2] = 0; break;
     case DK_INTERP: pv[1] = (u64) p->p; break;
-    case DK_NORM: pv[3] = dist_guid_bits(ev); break;
+    case DK_NORM: pv[3] = hpgmg_guid_bits(ev); break;
+    }
+
+    // the timing task of the phase, on the rank that homes the level
+    ocrGuid_t sgates[DIST_MAX_RANKS];
+    int sng = ng;
+    if (r == 0) {
+      u64 op = 4;
+      ocrGuid_t tmr, tmr_t, tmrOut;
+      ocrGuid_t tlvl = (p->kind == DK_INTERP) ? lgB : lgA;
+      switch (p->kind) {
+      case DK_SMOOTH:   op = 0; break;
+      case DK_RESIDUAL: op = 1; break;
+      case DK_RESTRICT: op = 2; break;
+      case DK_INTERP:   op = 3; break;
+      default: break;
+      }
+      ocrEdtTemplateCreate(&tmr_t, dist_timer_edt, 1, 1 + ng);
+      ocrEdtCreate(&tmr, tmr_t, 1, &op, 1 + ng, NULL, 0,
+                   mgRankEdtHint(&h, r), &tmrOut);
+      ocrEdtTemplateDestroy(tmr_t);
+      ocrAddDependence(tlvl, tmr, 0, DB_MODE_RW);
+      for (g = 0; g < ng; g++)
+        ocrAddDependence(gates[g], tmr, 1 + g, DB_MODE_NULL);
+      sgates[0] = tmrOut;
+      sng = 1;
+    } else {
+      for (g = 0; g < ng; g++) sgates[g] = gates[g];
     }
 
     ocrGuid_t sl, slOut;
-    ocrEdtTemplateCreate(&s_t, dist_slice_edt, 6, 2 + ng);
-    ocrEdtCreate(&sl, s_t, 6, pv, 2 + ng, NULL, EDT_PROP_FINISH,
+    ocrEdtTemplateCreate(&s_t, dist_slice_edt, 6, 2 + sng);
+    ocrEdtCreate(&sl, s_t, 6, pv, 2 + sng, NULL, EDT_PROP_FINISH,
                  mgRankEdtHint(&h, r), &slOut);
     ocrEdtTemplateDestroy(s_t);
     // restrict/interpolate take (fine, coarse) as (A, B)
     ocrAddDependence(lgA, sl, 0, DB_MODE_CONST);
     ocrAddDependence(lgB, sl, 1, DB_MODE_CONST);
-    for (g = 0; g < ng; g++)
-      ocrAddDependence(gates[g], sl, 2 + g, DB_MODE_NULL);
+    for (g = 0; g < sng; g++)
+      ocrAddDependence(sgates[g], sl, 2 + g, DB_MODE_NULL);
 
     if (p->kind != DK_NORM) {
-      ocrGuid_t nf; u64 evb = dist_guid_bits(ev);
+      ocrGuid_t nf; u64 evb = hpgmg_guid_bits(ev);
       ocrEdtCreate(&nf, n_t, 1, &evb, 1, NULL, 0, mgRankEdtHint(&h, r), NULL);
       ocrAddDependence(slOut, nf, 0, DB_MODE_NULL);
     }
@@ -1164,7 +1044,7 @@ ocrGuid_t dist_chain_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
 
   // rank 0 hangs the terminal on everyone's last phase
   if (r == 0) {
-    ocrGuid_t nf; u64 evb = dist_guid_bits(termEvt);
+    ocrGuid_t nf; u64 evb = hpgmg_guid_bits(termEvt);
     u64 r2;
     ocrGuid_t t_t;
     ocrEdtTemplateCreate(&t_t, dist_notify_edt, 1, R);
@@ -1192,40 +1072,56 @@ ocrGuid_t dist_solves(ocrGuid_t start, mg_type *mg_ptr, int num, int warmup) {
   int np = dist_schedule_build(L, boxes_in_i, R, tmp);
   ocrHint_t h;
 
-  ocrGuid_t resEvts[DIST_MAX_RANKS];
-  ocrGuid_t e_t, e;
-  ocrEdtTemplateCreate(&e_t, dist_evmake_edt, 2, 1);
-  for (r = 0; r < R; r++) {
+  // Every consumer is registered before its producer can exist or run:
+  // the gather before the per-rank event makers, the chains before the
+  // gather's inputs, the gate's opener before the caller's start fires.
+  ocrGuid_t resEvts[DIST_MAX_RANKS], chainOut[DIST_MAX_RANKS];
+  ocrGuid_t tabEvt, termEvt, gateEvt;
+  for (r = 0; r < R; r++)
     ocrEventCreate(&resEvts[r], OCR_EVENT_ONCE_T, 1);
-    u64 pv[2] = { (u64) np, dist_guid_bits(resEvts[r]) };
-    ocrEdtCreate(&e, e_t, 2, pv, 1, NULL, 0, mgRankEdtHint(&h, r), NULL);
-    ocrAddDependence(NULL_GUID, e, 0, DB_MODE_NULL);
-  }
-  ocrEdtTemplateDestroy(e_t);
-
-  ocrGuid_t tabEvt;
   ocrEventCreate(&tabEvt, OCR_EVENT_ONCE_T, 1);
+  ocrEventCreate(&termEvt, OCR_EVENT_ONCE_T, 1);
+  ocrEventCreate(&gateEvt, OCR_EVENT_ONCE_T, 1);
+
   ocrGuid_t g_t, gth;
-  u64 gpv[3] = { (u64) np, R, dist_guid_bits(tabEvt) };
+  u64 gpv[3] = { (u64) np, R, hpgmg_guid_bits(tabEvt) };
   ocrEdtTemplateCreate(&g_t, dist_evgather_edt, 3, R);
   ocrEdtCreate(&gth, g_t, 3, gpv, R, NULL, 0, mgHomeEdtHint(&h), NULL);
-  for (r = 0; r < R; r++)
-    ocrAddDependence(resEvts[r], gth, r, DB_MODE_CONST);
   ocrEdtTemplateDestroy(g_t);
-
-  ocrGuid_t termEvt;
-  ocrEventCreate(&termEvt, OCR_EVENT_ONCE_T, 1);
 
   ocrGuid_t c_t, c;
   ocrEdtTemplateCreate(&c_t, dist_chain_edt, 4, 1 + L);
   for (r = 0; r < R; r++) {
-    u64 pv[4] = { r, dist_guid_bits(start), dist_guid_bits(termEvt), (u64) L };
-    ocrEdtCreate(&c, c_t, 4, pv, 1 + L, NULL, 0, mgRankEdtHint(&h, r), NULL);
+    u64 pv[4] = { r, hpgmg_guid_bits(gateEvt), hpgmg_guid_bits(termEvt), (u64) L };
+    ocrEdtCreate(&c, c_t, 4, pv, 1 + L, NULL, 0, mgRankEdtHint(&h, r), &chainOut[r]);
     ocrAddDependence(tabEvt, c, 0, DB_MODE_CONST);
     for (l = 0; l < L; l++)
       ocrAddDependence(mg_ptr->levels[l], c, 1 + l, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(c_t);
+
+  // the gate opens when the caller's start has fired and every chain has
+  // been built, so no phase event is satisfied before its waiters exist
+  ocrGuid_t o_t, opener;
+  u64 gateBits = hpgmg_guid_bits(gateEvt);
+  ocrEdtTemplateCreate(&o_t, dist_notify_edt, 1, 1 + R);
+  ocrEdtCreate(&opener, o_t, 1, &gateBits, 1 + R, NULL, 0, mgHomeEdtHint(&h), NULL);
+  ocrEdtTemplateDestroy(o_t);
+  ocrAddDependence(start, opener, 0, DB_MODE_NULL);
+  for (r = 0; r < R; r++)
+    ocrAddDependence(chainOut[r], opener, 1 + r, DB_MODE_NULL);
+
+  for (r = 0; r < R; r++)
+    ocrAddDependence(resEvts[r], gth, r, DB_MODE_CONST);
+
+  ocrGuid_t e_t, e;
+  ocrEdtTemplateCreate(&e_t, dist_evmake_edt, 2, 1);
+  for (r = 0; r < R; r++) {
+    u64 pv[2] = { (u64) np, hpgmg_guid_bits(resEvts[r]) };
+    ocrEdtCreate(&e, e_t, 2, pv, 1, NULL, 0, mgRankEdtHint(&h, r), NULL);
+    ocrAddDependence(NULL_GUID, e, 0, DB_MODE_NULL);
+  }
+  ocrEdtTemplateDestroy(e_t);
   (void) warmup;
   return termEvt;
 }
@@ -1265,7 +1161,7 @@ ocrGuid_t finalize_dist(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtTemplateDestroy(red_t);
 
   ocrGuid_t fin, fin_t, finOut;
-  ocrEdtTemplateCreate(&fin_t, dist_error_final_edt, 0, 2 + R);
+  ocrEdtTemplateCreate(&fin_t, hpgmg_error_final_edt, 0, 2 + R);
   ocrEdtCreate(&fin, fin_t, 0, NULL, 2 + R, NULL, 0, mgHomeEdtHint(&h), &finOut);
   ocrEdtTemplateDestroy(fin_t);
   ocrAddDependence(mg_ptr->levels[0], fin, 0, DB_MODE_CONST);

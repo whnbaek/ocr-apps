@@ -1,0 +1,24 @@
+A distributed decomposition of the RSBench OCR port in ../intel.
+
+The lookup range is split into -r contiguous partitions, each with its own
+producer chain and its own -b-wide sync batches, and the cross-section dataset
+is generated in parallel by one task per nuclide and per material -- from the
+same index-seeded value stream as ../intel, so the two describe the same
+instance and the data is the same whatever the partitioning or the node count.
+The per-nuclide pole and window counts are a histogram of one draw stream over
+the whole nuclide index, so they cannot be produced per index: one pre-pass
+task builds them and the per-nuclide generators consume them.  The dataset is summed into "RSBench pole checksum" and the
+lookup results into "RSBench lookup checksum"; both are order-independent
+integer sums.
+
+To build and run
+
+x86:
+make -f Makefile.x86 clean run
+
+x86-mpi:
+make -f Makefile.x86-mpi clean run
+
+Change the problem size WORKLOAD_ARGS argument
+E.g.,
+    make -f Makefile.x86 clean run WORKLOAD_ARGS="-d -s small -l 1000000 -r 64 -b 16"

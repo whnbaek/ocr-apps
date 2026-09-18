@@ -133,9 +133,8 @@ Depv[3]:
     ocrGuid_t bufferInDBK = DEPV(p2p,bufferIn,guid);
     double * bufferInPTR = DEPV(p2p,bufferIn,ptr);
 
-    ocrGuid_t timerDBK = DEPV(p2p,timer,guid);
-    double * timerPTR = DEPV(p2p,timer,ptr);
-
+//the timer slot exists only on the two instances created with four
+//dependences; it is read inside the branches that own it, never here
 
     ocrGuid_t bufferOutDBK;
     double * bufferOutPTR;
@@ -547,6 +546,7 @@ typedef struct {
     u64 n;
     u64 t;
     u64 gf;
+    u64 chunk;
     ;
 } realMainPRM_t;
 
@@ -558,12 +558,13 @@ typedef struct {
 ocrGuid_t realMainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
 
 /*
-paramv[5]:
+paramv[6]:
 0: p  the number of workers
 1: m  the number of columns
 2: n  the number of rows
 3: t  the number of iterations
 4: gf the grouping factor (should be 1)
+5: chunk the placement chunk (used only under OCR_APP_OPTIMIZED_PLACEMENT)
 
 depv[1]:
 0: empty shared block
@@ -596,6 +597,11 @@ realMain initializes the shared block and launches p initEdts
     u64 count, block, myPD;
     ocrAffinityCount(AFFINITY_PD, &count);
     block = (sharedPTR->p + count - 1)/count;
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    u64 chunk = PRM(realMain,chunk);
+//a chunk wider than the contiguous block would leave policy domains empty
+    if(chunk == 0 || chunk > block) chunk = block;
+#endif
 
     // Release once, before the spawn loop: the pointer is dead afterward and
     // a second release of the same acquisition is invalid.
@@ -607,7 +613,9 @@ realMain initializes the shared block and launches p initEdts
 
 //set affinity Hint
 
-#ifdef BLOCK
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+        myPD = (i/chunk) % count;
+#elif defined(BLOCK)
         myPD = i/block;
 #else
         myPD = i%count;
@@ -643,8 +651,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
 
 
 ocrPrintf("argc %d \n", argc);
-    if((argc != 1) && (argc != 5) && (argc != 6)) {
-        bomb("arg count should be 0 (use defaults), 4 (p, m, n, iterations) or 5 (optional group factor) \n");
+    if((argc != 1) && (argc != 5) && (argc != 6) && (argc != 7)) {
+        bomb("arg count should be 0 (use defaults), 4 (p, m, n, iterations), 5 (optional group factor) or 6 (optional placement chunk) \n");
         return NULL_GUID;
     }
 
@@ -653,18 +661,47 @@ ocrPrintf("argc %d \n", argc);
     u64 n = N;
     u64 t = T;
     u64 gf = GF;
+    u64 chunk = 0;
 
     if(argc > 4) {
-       p =  atoi(ocrGetArgv(programArgv, 1));
-       if(p<=0) bomb("p must be positive");
-       m =  atoi(ocrGetArgv(programArgv, 2));
-       if(m<=0) bomb("m must be positive");
-       n =  atoi(ocrGetArgv(programArgv, 3));
-       if(n<=0) bomb("n must be positive");
-       t =  atoi(ocrGetArgv(programArgv, 4));
-       if(t<=0) bomb("t must be positive");
-       if(argc == 6) gf =  atoi(ocrGetArgv(programArgv, 5));
-       if(gf<=0) bomb("gf must be positive");
+       s64 argP = atoi(ocrGetArgv(programArgv, 1));
+       s64 argM = atoi(ocrGetArgv(programArgv, 2));
+       s64 argN = atoi(ocrGetArgv(programArgv, 3));
+       s64 argT = atoi(ocrGetArgv(programArgv, 4));
+       s64 argGF = GF;
+       if(argc >= 6) argGF = atoi(ocrGetArgv(programArgv, 5));
+       s64 argChunk = 0;
+       if(argc == 7) argChunk = atoi(ocrGetArgv(programArgv, 6));
+       if(argP <= 0) {
+           bomb("p must be positive");
+           return NULL_GUID;
+       }
+       if(argM < argP) {
+           bomb("m must be at least p (each rank owns at least one column)");
+           return NULL_GUID;
+       }
+       if(argN < 2) {
+           bomb("n must be at least 2 (a timestep advances at least one row)");
+           return NULL_GUID;
+       }
+       if(argT <= 0) {
+           bomb("t must be positive");
+           return NULL_GUID;
+       }
+       if(argGF <= 0) {
+           bomb("gf must be positive");
+           return NULL_GUID;
+       }
+       if(argChunk < 0) {
+           bomb("placement chunk must not be negative (0 selects the contiguous map)");
+           return NULL_GUID;
+       }
+       p = argP;
+       m = argM;
+       n = argN;
+       t = argT;
+       gf = argGF;
+       chunk = argChunk;
     }
 
     ocrPrintf("number of workers   %d \n", p);
@@ -673,11 +710,12 @@ ocrPrintf("argc %d \n", argc);
     ocrPrintf("number of timesteps %d \n", t);
     ocrPrintf("grouping factor     %d", gf);
     if(gf == 1) ocrPrintf("\n"); else ocrPrintf(" (Cheating)\n");
+    ocrPrintf("placement chunk     %d \n", chunk);
 
     ocrGuid_t realMainTML, realMainEDT, sharedDBK, timerDBK;
 //create realMain
-    ocrEdtTemplateCreate(&realMainTML, realMainEdt, 5, 2);
-    u64 paramvout[5] = {p, m, n, t, gf};
+    ocrEdtTemplateCreate(&realMainTML, realMainEdt, PRMNUM(realMain), DEPVNUM(realMain));
+    u64 paramvout[6] = {p, m, n, t, gf, chunk};
     ocrEdtCreate(&realMainEDT, realMainTML, EDT_PARAM_DEF, paramvout, EDT_PARAM_DEF, NULL,
           EDT_PROP_NONE, NULL_HINT, NULL);
 //launch realMain

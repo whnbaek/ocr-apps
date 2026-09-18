@@ -57,6 +57,7 @@ typedef struct
     ocrGuid_t TML_FNC_rankLookup;
     ocrGuid_t TML_FNC_macroxs;
     ocrGuid_t TML_FNC_microxsAggregator;
+    ocrGuid_t TML_FNC_batchReduce;
 } rankTemplateH_t;
 
 typedef struct
@@ -68,7 +69,6 @@ typedef struct
 
 typedef struct
 {
-    ocrGuid_t DBK_timers;
     ocrGuid_t DBK_InputsH; // Commandline parameters/settings
     ocrGuid_t DBK_InputsHs; //-> Broadcasted parameters/settings Inputs[]
     ocrGuid_t DBK_rankHs; //--> rankH_t[]
@@ -80,7 +80,9 @@ ocrGuid_t FNC_globalInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
         ocrGuid_t FNC_rankInit(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
             ocrGuid_t FNC_init_rankH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
                 ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
-                    //ocrGuid_t FNC_init_materials(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+                    ocrGuid_t FNC_nuclideGen(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+                    ocrGuid_t FNC_materialGen(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+                    ocrGuid_t FNC_initCollect(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
     ocrGuid_t FNC_globalComputeSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
@@ -89,6 +91,7 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
                 ocrGuid_t FNC_rankLookup(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
                     ocrGuid_t FNC_macroxs(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
                         ocrGuid_t FNC_microxsAggregator(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+            ocrGuid_t FNC_batchReduce(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
     ocrGuid_t FNC_timer(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 ocrGuid_t FNC_globalFinalize(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
@@ -359,12 +362,14 @@ ocrGuid_t FNC_init_rankH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrDbCreate( &(PTR_dataH->DBK_nuclideConcs_DBguids_mat), (void **) &PTR_nuclideConcs_DBguids_mat, sizeof(ocrGuid_t)*(n_mats),
                  DB_PROP_NONE, mcSpreadDbHint(&spreadHNT, 7), NO_ALLOC );
 
-    _paramc = 2; _depc = 10;
+    _paramc = 4; _depc = 10;
     ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_rankLookup), FNC_rankLookup, _paramc, _depc );
-    _paramc = 3; _depc = 9;
+    _paramc = 5; _depc = 9;
     ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_macroxs), FNC_macroxs, _paramc, _depc );
-    _paramc = 3; _depc = EDT_PARAM_UNK;
+    _paramc = 5; _depc = EDT_PARAM_UNK;
     ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_microxsAggregator), FNC_microxsAggregator, _paramc, _depc );
+    _paramc = 0; _depc = EDT_PARAM_UNK;
+    ocrEdtTemplateCreate( &(PTR_rankTemplateH->TML_FNC_batchReduce), FNC_batchReduce, _paramc, _depc );
 
     MyOcrTaskStruct_t TS_init_dataH; _paramc = 0; _depc = 10;
 
@@ -419,34 +424,175 @@ ocrGuid_t FNC_init_dataH(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t *PTR_nuclideIDs_DBguids_mat = (ocrGuid_t *) depv[_iparam++].ptr;
     ocrGuid_t *PTR_nuclideConcs_DBguids_mat = (ocrGuid_t *) depv[_iparam++].ptr;
 
-    int n_nuclides = PTR_InputsH->n_nuclides;
-    int n_mats = PTR_InputsH->n_mats;
+    Inputs input = *PTR_InputsH;
 
-    s32 i;
+    int n_nuclides = input.n_nuclides;
+    int n_mats = input.n_mats;
 
-    // Allocate & fill energy grids
+    /* The two count arrays are a histogram of one draw stream over the whole
+     * nuclide index: a bin depends on every draw, so it is not a function of
+     * the index that reads it.  One task builds both -- the same task that
+     * has to know them to size the per-index blocks. */
     ocrPrintf("Generating resonance distributions...\n");
-    generate_n_poles( *PTR_InputsH, PTR_nPoles_nuclide);
+    generate_n_poles( input, PTR_nPoles_nuclide );
 
-    // Allocate & fill Window grids
     ocrPrintf("Generating window distributions...\n");
-    generate_n_windows( *PTR_InputsH, PTR_nWindows_nuclide );
+    generate_n_windows( input, PTR_nWindows_nuclide );
 
     // Get material data
     ocrPrintf("Loading Hoogenboom-Martin material data...\n");
-    get_materials( *PTR_InputsH, PTR_numNucs_mat, PTR_nuclideIDs_DBguids_mat, PTR_nuclideConcs_DBguids_mat);
+    load_num_nucs( input, PTR_numNucs_mat );
 
-    // Prepare full resonance grid
+    ocrGuid_t TML_nuclideGen, TML_materialGen, TML_initCollect;
+    _paramc = 3; _depc = 4;
+    ocrEdtTemplateCreate( &TML_nuclideGen, FNC_nuclideGen, _paramc, _depc );
+    _paramc = 1; _depc = 3;
+    ocrEdtTemplateCreate( &TML_materialGen, FNC_materialGen, _paramc, _depc );
+    _paramc = 0; _depc = EDT_PARAM_UNK;
+    ocrEdtTemplateCreate( &TML_initCollect, FNC_initCollect, _paramc, _depc );
+
+    ocrGuid_t EDT_initCollect;
+    ocrEdtCreate( &EDT_initCollect, TML_initCollect,
+                  EDT_PARAM_DEF, NULL, n_nuclides, NULL,
+                  EDT_PROP_NONE, NULL_HINT, NULL );
+
+    // Prepare the resonance, window and 0K grids
     ocrPrintf("Generating resonance parameter grid...\n");
-    generate_poles( *PTR_InputsH, PTR_nPoles_nuclide, PTR_pole_DBguids_nuclide );
 
-    // Prepare full Window grid
-    ocrPrintf("Generating window parameter grid...\n");
-    generate_window_params( *PTR_InputsH, PTR_nWindows_nuclide, PTR_nPoles_nuclide, PTR_window_DBguids_nuclide );
+    for( int i = 0; i < n_nuclides; i++ )
+    {
+        Pole* PTR_poles;
+        Window* PTR_windows;
+        double* PTR_pseudoK0RS;
+        ocrHint_t spreadHNT, edtHNT;
 
-    //Prepare 0K Resonances
-    ocrPrintf("Generating 0K l_value data...\n");
-    generate_pseudo_K0RS( *PTR_InputsH, PTR_pseudoK0RS_DBguids_nuclide );
+        ocrDbCreate( &(PTR_pole_DBguids_nuclide[i]), (void **) &PTR_poles,
+                     sizeof(Pole)*(PTR_nPoles_nuclide[i]), DB_PROP_NONE,
+                     mcSpreadDbHint(&spreadHNT, mcNuclideSpreadIndex(input, i)), NO_ALLOC );
+        ocrDbCreate( &(PTR_window_DBguids_nuclide[i]), (void **) &PTR_windows,
+                     sizeof(Window)*(PTR_nWindows_nuclide[i]), DB_PROP_NONE,
+                     mcSpreadDbHint(&spreadHNT, mcNuclideSpreadIndex(input, i)), NO_ALLOC );
+        ocrDbCreate( &(PTR_pseudoK0RS_DBguids_nuclide[i]), (void **) &PTR_pseudoK0RS,
+                     sizeof(double)*(input.numL), DB_PROP_NONE,
+                     mcSpreadDbHint(&spreadHNT, mcNuclideSpreadIndex(input, i)), NO_ALLOC );
+
+        /* The creating task does not write the contents: the block is filled
+         * by the task that owns that index, so the creator drops its own hold
+         * and hands the block over. */
+        ocrDbRelease( PTR_pole_DBguids_nuclide[i] );
+        ocrDbRelease( PTR_window_DBguids_nuclide[i] );
+        ocrDbRelease( PTR_pseudoK0RS_DBguids_nuclide[i] );
+
+        u64 gen_paramv[3] = { (u64) i, (u64) PTR_nPoles_nuclide[i],
+                              (u64) PTR_nWindows_nuclide[i] };
+
+        ocrGuid_t EDT_gen, OET_gen;
+        ocrEdtCreate( &EDT_gen, TML_nuclideGen,
+                      EDT_PARAM_DEF, gen_paramv, EDT_PARAM_DEF, NULL,
+                      EDT_PROP_NONE,
+                      mcSpreadEdtHint(&edtHNT, mcNuclideSpreadIndex(input, i)), &OET_gen );
+
+        /* A task's output event is registered with its consumer before the
+         * task's own last dependence is added, so the task cannot run -- and
+         * the event cannot fire -- before the registration that carries it. */
+        ocrAddDependence( OET_gen, EDT_initCollect, (u32) i, DB_MODE_CONST );
+
+        _idep = 0;
+        ocrAddDependence( DBK_InputsH, EDT_gen, _idep++, DB_MODE_CONST );
+        ocrAddDependence( PTR_pole_DBguids_nuclide[i], EDT_gen, _idep++, DB_MODE_RW );
+        ocrAddDependence( PTR_window_DBguids_nuclide[i], EDT_gen, _idep++, DB_MODE_RW );
+        ocrAddDependence( PTR_pseudoK0RS_DBguids_nuclide[i], EDT_gen, _idep++, DB_MODE_RW );
+    }
+
+    for( int i = 0; i < n_mats; i++ )
+    {
+        int* PTR_ids;
+        double* PTR_concs;
+        ocrHint_t spreadHNT, edtHNT;
+
+        ocrDbCreate( &(PTR_nuclideIDs_DBguids_mat[i]), (void **) &PTR_ids,
+                     sizeof(int)*(PTR_numNucs_mat[i]), DB_PROP_NONE,
+                     mcSpreadDbHint(&spreadHNT, (u64)(10 + n_nuclides + i)), NO_ALLOC );
+        ocrDbCreate( &(PTR_nuclideConcs_DBguids_mat[i]), (void **) &PTR_concs,
+                     sizeof(double)*(PTR_numNucs_mat[i]), DB_PROP_NONE,
+                     mcSpreadDbHint(&spreadHNT, (u64)(10 + n_nuclides + i)), NO_ALLOC );
+
+        ocrDbRelease( PTR_nuclideIDs_DBguids_mat[i] );
+        ocrDbRelease( PTR_nuclideConcs_DBguids_mat[i] );
+
+        u64 gen_paramv[1] = { (u64) i };
+
+        ocrGuid_t EDT_gen;
+        ocrEdtCreate( &EDT_gen, TML_materialGen,
+                      EDT_PARAM_DEF, gen_paramv, EDT_PARAM_DEF, NULL,
+                      EDT_PROP_NONE,
+                      mcSpreadEdtHint(&edtHNT, (u64)(10 + n_nuclides + i)), NULL );
+
+        _idep = 0;
+        ocrAddDependence( DBK_InputsH, EDT_gen, _idep++, DB_MODE_CONST );
+        ocrAddDependence( PTR_nuclideIDs_DBguids_mat[i], EDT_gen, _idep++, DB_MODE_RW );
+        ocrAddDependence( PTR_nuclideConcs_DBguids_mat[i], EDT_gen, _idep++, DB_MODE_RW );
+    }
+
+    return NULL_GUID;
+}
+
+/* One nuclide's share of the data set, filled by the task that owns it.  The
+ * returned block carries the fold of what it generated, which its collector
+ * sums into a data-set checksum. */
+ocrGuid_t FNC_nuclideGen(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    Inputs input = *(Inputs*) depv[0].ptr;
+
+    Pole* PTR_poles = (Pole*) depv[1].ptr;
+    Window* PTR_windows = (Window*) depv[2].ptr;
+    double* PTR_pseudoK0RS = (double*) depv[3].ptr;
+
+    int i = (int) paramv[0];
+    int n_poles = (int) paramv[1];
+    int n_windows = (int) paramv[2];
+
+    unsigned long long cksum = generate_poles_i( input, i, n_poles, PTR_poles );
+    generate_window_params_i( i, n_windows, n_poles, PTR_windows );
+    generate_pseudo_K0RS_i( input, i, PTR_pseudoK0RS );
+
+    ocrGuid_t DBK_result;
+    unsigned long long* PTR_result;
+    ocrDbCreate( &DBK_result, (void **) &PTR_result, sizeof(unsigned long long),
+                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+    *PTR_result = cksum;
+
+    return DBK_result;
+}
+
+ocrGuid_t FNC_materialGen(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    Inputs input = *(Inputs*) depv[0].ptr;
+
+    int* PTR_ids = (int*) depv[1].ptr;
+    double* PTR_concs = (double*) depv[2].ptr;
+
+    int i = (int) paramv[0];
+    int num_nucs = load_num_nucs_i( input, i );
+
+    load_mat_i( i, num_nucs, PTR_ids );
+    load_concs_i( i, num_nucs, PTR_concs );
+
+    return NULL_GUID;
+}
+
+/* A sum of the per-index folds.  Integer addition is associative and
+ * commutative, so the data-set checksum does not depend on which task
+ * produced which index, on their completion order, or on how many ranks ran
+ * them. */
+ocrGuid_t FNC_initCollect(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    unsigned long long cksum = 0;
+
+    for( u32 i = 0; i < depc; i++ )
+        cksum += *(unsigned long long*) depv[i].ptr;
+
+    ocrPrintf("RSBench pole checksum: %llu\n", cksum);
 
     return NULL_GUID;
 }
@@ -464,8 +610,9 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
 
     globalH_t *PTR_globalH = depv[0].ptr;
 
+    ocrGuid_t DBK_timers;
     timer* PTR_timers;
-    ocrDbCreate( &PTR_globalH->DBK_timers, (void**) &PTR_timers, sizeof(timer)*number_of_timers,
+    ocrDbCreate( &DBK_timers, (void**) &PTR_timers, sizeof(timer)*number_of_timers,
                  0, NULL_HINT, NO_ALLOC );
     int i;
     for( i = 0; i < number_of_timers; i++ )
@@ -476,18 +623,27 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
         PTR_timers[i].elapsed = 0;
     }
     profile_start( total_timer, PTR_timers );
-    ocrDbRelease(PTR_globalH->DBK_timers);
+    ocrDbRelease(DBK_timers);
+
+    ocrGuid_t DBK_cksum;
+    u64* PTR_cksum;
+    ocrDbCreate( &DBK_cksum, (void**) &PTR_cksum, sizeof(u64),
+                 0, NULL_HINT, NO_ALLOC );
+    *PTR_cksum = 0;
+    ocrDbRelease(DBK_cksum);
 
     ocrGuid_t TS_globalComputeSpawner_OET;
     ocrEventCreate( &TS_globalComputeSpawner_OET, OCR_EVENT_STICKY_T, false );
 
-    MyOcrTaskStruct_t TS_globalComputeSpawner; _paramc = 0; _depc = 3;
+    MyOcrTaskStruct_t TS_globalComputeSpawner; _paramc = 1; _depc = 3;
+
+    u64 spawner_paramv[1] = { guidToParam( DBK_cksum ) };
 
     TS_globalComputeSpawner.FNC = FNC_globalComputeSpawner;
     ocrEdtTemplateCreate( &TS_globalComputeSpawner.TML, TS_globalComputeSpawner.FNC, _paramc, _depc );
 
     ocrEdtCreate( &TS_globalComputeSpawner.EDT, TS_globalComputeSpawner.TML,
-                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PARAM_DEF, spawner_paramv, EDT_PARAM_DEF, NULL,
                   EDT_PROP_FINISH, NULL_HINT, &TS_globalComputeSpawner.OET );
 
     ocrAddDependence( TS_globalComputeSpawner.OET, TS_globalComputeSpawner_OET, 0, DB_MODE_NULL );
@@ -497,7 +653,7 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
     ocrAddDependence( PTR_globalH->DBK_InputsHs, TS_globalComputeSpawner.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( PTR_globalH->DBK_rankHs, TS_globalComputeSpawner.EDT, _idep++, DB_MODE_CONST );
 
-    MyOcrTaskStruct_t TS_timer; _paramc = 0; _depc = 3;
+    MyOcrTaskStruct_t TS_timer; _paramc = 0; _depc = 4;
 
     TS_timer.FNC = FNC_timer;
     ocrEdtTemplateCreate( &TS_timer.TML, TS_timer.FNC, _paramc, _depc );
@@ -508,7 +664,8 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
 
     _idep = 0;
     ocrAddDependence( PTR_globalH->DBK_InputsH, TS_timer.EDT, _idep++, DB_MODE_RO );
-    ocrAddDependence( PTR_globalH->DBK_timers, TS_timer.EDT, _idep++, DB_MODE_RW );
+    ocrAddDependence( DBK_timers, TS_timer.EDT, _idep++, DB_MODE_RW );
+    ocrAddDependence( DBK_cksum, TS_timer.EDT, _idep++, DB_MODE_CONST );
     ocrAddDependence( TS_globalComputeSpawner_OET, TS_timer.EDT, _idep++, DB_MODE_NULL );
 
     return NULL_GUID;
@@ -518,12 +675,13 @@ ocrGuid_t FNC_timer(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
     Inputs *PTR_InputsH = depv[0].ptr;
     timer* PTR_timers = depv[1].ptr;
+    u64* PTR_cksum = (u64*) depv[2].ptr;
 
     profile_stop( total_timer, PTR_timers );
     double runtime = get_elapsed_time( total_timer, PTR_timers );
 
     ocrPrintf("\n");
-    print_results( *PTR_InputsH, runtime );
+    print_results( *PTR_InputsH, runtime, (unsigned long long) *PTR_cksum );
 
     return NULL_GUID;
 }
@@ -548,9 +706,9 @@ ocrGuid_t FNC_globalComputeSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_
 
     //ocrPrintf("#Subdomains %d\n", NR);
 
-    MyOcrTaskStruct_t TS_rankCompute; _paramc = 4; _depc = 2;
+    MyOcrTaskStruct_t TS_rankCompute; _paramc = 5; _depc = 2;
 
-    u64 compute_paramv[4];
+    u64 compute_paramv[5];
 
     TS_rankCompute.FNC = FNC_rankCompute;
     ocrEdtTemplateCreate( &TS_rankCompute.TML, TS_rankCompute.FNC, _paramc, _depc );
@@ -562,6 +720,7 @@ ocrGuid_t FNC_globalComputeSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_
         compute_paramv[1] = (u64) NL_SYNC;
         compute_paramv[2] = (u64) ilookup;
         compute_paramv[3] = (u64) MIN( ilookup + NL_SYNC - 1, NL - 1 );
+        compute_paramv[4] = paramv[0];
 
         ocrEdtCreate( &TS_rankCompute.EDT, TS_rankCompute.TML,
                       EDT_PARAM_DEF, compute_paramv, EDT_PARAM_DEF, NULL,
@@ -590,6 +749,7 @@ ocrGuid_t FNC_rankCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     u64 NL_SYNC = (u64) paramv[1];
     u64 ilookup = (u64) paramv[2];
     u64 ilookup_e = (u64) paramv[3];
+    u64 cksumParam = paramv[4];
 
     u64 NL = PTR_InputsH->lookups;
 
@@ -598,8 +758,8 @@ ocrGuid_t FNC_rankCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     if( ilookup < NL )
     {
         ocrGuid_t TS_rankMultiLookupSpawner_OET;
-        MyOcrTaskStruct_t TS_rankMultiLookupSpawner; _paramc = 3; _depc = 3;
-        u64 TS_rankMultiLookupSpawner_paramv[3] = {id, ilookup, ilookup_e};
+        MyOcrTaskStruct_t TS_rankMultiLookupSpawner; _paramc = 4; _depc = 3;
+        u64 TS_rankMultiLookupSpawner_paramv[4] = {id, ilookup, ilookup_e, cksumParam};
 
         ocrEventCreate( &TS_rankMultiLookupSpawner_OET, OCR_EVENT_STICKY_T, false );
 
@@ -621,8 +781,9 @@ ocrGuid_t FNC_rankCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
         if( ilookup < NL )
         {
-            MyOcrTaskStruct_t TS_rankCompute; _paramc = 4; _depc = 3;
-            u64 mainComputeManager_paramv[4] = { id, NL_SYNC, ilookup, MIN( ilookup + NL_SYNC - 1, NL - 1) };
+            MyOcrTaskStruct_t TS_rankCompute; _paramc = 5; _depc = 3;
+            u64 mainComputeManager_paramv[5] = { id, NL_SYNC, ilookup, MIN( ilookup + NL_SYNC - 1, NL - 1),
+                                                 cksumParam };
 
             TS_rankCompute.FNC = FNC_rankCompute;
             ocrEdtTemplateCreate( &TS_rankCompute.TML, TS_rankCompute.FNC, _paramc, _depc );
@@ -657,24 +818,33 @@ ocrGuid_t FNC_rankMultiLookupSpawner(u32 paramc, u64* paramv, u32 depc, ocrEdtDe
     u64 id = (u64) paramv[0];
     u64 ilookup_b = (u64) paramv[1];
     u64 ilookup_e = (u64) paramv[2];
+    ocrGuid_t DBK_cksum = guidFromParam( paramv[3] );
 
-    int lookups = PTR_InputsH->lookups;
+    u32 nlookups = (u32) (ilookup_e - ilookup_b + 1);
+
+    /* Slot 0 carries the accumulator; every other slot is filled by the one
+     * aggregator that owns it, so the reduction reads each result exactly once
+     * and cannot run before the last of them has been written. */
+    MyOcrTaskStruct_t TS_batchReduce;
+    ocrEdtCreate( &TS_batchReduce.EDT, PTR_rankTemplateH->TML_FNC_batchReduce,
+                  EDT_PARAM_DEF, NULL, nlookups + 1, NULL,
+                  EDT_PROP_NONE, NULL_HINT, NULL );
+
+    ocrAddDependence( DBK_cksum, TS_batchReduce.EDT, 0, DB_MODE_RW );
+
+    u64 reduceParam = guidToParam( TS_batchReduce.EDT );
 
     #if 1
-    MyOcrTaskStruct_t TS_rankLookup; _paramc = 2; _depc = 10;
+    MyOcrTaskStruct_t TS_rankLookup; _paramc = 4; _depc = 10;
 
-    u64 compute_paramv[2];
+    u64 compute_paramv[4];
 
     for( u64 ilookup = ilookup_b; ilookup <= ilookup_e; ilookup++ )
     {
-        //ocrPrintf("%d\n", ilookup);
-
-        if( ilookup % 1000 == 0 )
-            ocrPrintf("\rCalculating XS's... (%.02f%% completed)",
-                    (ilookup / ( (double)lookups ) * 100.0 ) );
-
         compute_paramv[0] = (u64) id;
         compute_paramv[1] = (u64) ilookup;
+        compute_paramv[2] = reduceParam;
+        compute_paramv[3] = (u64) (ilookup - ilookup_b) + 1;
 
         #if 1
         ocrEdtCreate( &TS_rankLookup.EDT, PTR_rankTemplateH->TML_FNC_rankLookup,
@@ -731,6 +901,8 @@ ocrGuid_t FNC_rankLookup(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     u64 id = (u64) paramv[0]; //we need worker_id here in the rank
     u64 ilookup = (u64) paramv[1];
+    u64 reduceParam = paramv[2];
+    u64 reduceSlot = paramv[3];
 
     unsigned long seed = (ilookup+1)*19+17;
 
@@ -740,8 +912,8 @@ ocrGuid_t FNC_rankLookup(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     u64* PTR_p_energy_u64 = (u64*) &p_energy;
 
     #if 1
-    MyOcrTaskStruct_t TS_macroxs; _paramc = 3; _depc = 6;
-    u64 compute_paramv[3];
+    MyOcrTaskStruct_t TS_macroxs; _paramc = 5; _depc = 9;
+    u64 compute_paramv[5];
 
     //TS_macroxs.FNC = FNC_macroxs;
     //ocrEdtTemplateCreate( &TS_macroxs.TML, TS_macroxs.FNC, _paramc, _depc );
@@ -749,6 +921,8 @@ ocrGuid_t FNC_rankLookup(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     compute_paramv[0] = (u64) *PTR_p_energy_u64;
     compute_paramv[1] = (u64) mat;
     compute_paramv[2] = (u64) PTR_numNucs_mat[mat];
+    compute_paramv[3] = reduceParam;
+    compute_paramv[4] = reduceSlot;
 
     ocrHint_t chainHNT;
     ocrEdtCreate( &TS_macroxs.EDT, PTR_rankTemplateH->TML_FNC_macroxs,
@@ -805,7 +979,7 @@ ocrGuid_t FNC_macroxs(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     u64 num_nucs = paramv[2];
 
     #if 1
-    MyOcrTaskStruct_t TS_microxsAggregator; _paramc = 3; _depc = 5 + 3*num_nucs;
+    MyOcrTaskStruct_t TS_microxsAggregator; _paramc = 5; _depc = 5 + 3*num_nucs;
 
     //TS_microxsAggregator.FNC = FNC_microxsAggregator;
     //ocrEdtTemplateCreate( &TS_microxsAggregator.TML, TS_microxsAggregator.FNC, _paramc, _depc );
@@ -898,6 +1072,45 @@ ocrGuid_t FNC_microxsAggregator(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
             macro_xs[j] += micro_xs[j] * conc;
         }
     }
+
+    /* The result is summed as a bit pattern: integer addition is associative
+     * and commutative, so the reduction is independent of the order the
+     * lookups complete in and of how many ranks ran them. */
+    u64 cksum = 0;
+    for( int j = 0; j < 4; j++ )
+    {
+        u64 bits;
+        memcpy( &bits, &macro_xs[j], sizeof(bits) );
+        cksum += bits;
+    }
+
+    ocrGuid_t DBK_result;
+    u64* PTR_result;
+    ocrDbCreate( &DBK_result, (void **) &PTR_result, sizeof(u64),
+                 DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+    *PTR_result = cksum;
+    ocrDbRelease( DBK_result );
+
+    ocrAddDependence( DBK_result, guidFromParam( paramv[3] ), (u32) paramv[4], DB_MODE_CONST );
+
+    return NULL_GUID;
+}
+
+ocrGuid_t FNC_batchReduce(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    u64* PTR_cksum = (u64*) depv[0].ptr;
+
+    u64 sum = *PTR_cksum;
+
+    u32 i;
+    for( i = 1; i < depc; i++ )
+    {
+        u64* PTR_result = (u64*) depv[i].ptr;
+        sum += *PTR_result;
+        ocrDbDestroy( depv[i].guid );
+    }
+
+    *PTR_cksum = sum;
 
     return NULL_GUID;
 }

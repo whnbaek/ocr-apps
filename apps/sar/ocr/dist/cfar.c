@@ -13,8 +13,9 @@
  * [m1, m2+Ncfar-1) x [n1, n2+Ncfar-1), which it computes from the images
  * directly.  The map then never has to exist, and the only thing a block
  * produces is its own detections, in its own datablock.  Boundary blocks
- * recompute the shared halo -- the ratio is (blk+Ncfar-1)^2 / blk^2 -- which
- * is what buys the removal of the shared object.
+ * recompute the shared halo -- the ratio is (blk+Ncfar-1)^2 / blk^2 correlation
+ * values, over a read footprint of (blk+Ncfar+Ncor-2)^2 pixels -- which is what
+ * buys the removal of the shared object.
  */
 #ifndef TG_ARCH
 #include <stdlib.h>
@@ -73,6 +74,68 @@ ocrGuid_t cfar_write_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEd
 	return NULL_GUID;
 }
 
+/* What one row of blocks reports.  The per-block entries travel with it only
+ * when the detections file is being written; the count, which is the program's
+ * result, is a plain sum either way. */
+struct cfar_row_s {
+	u64 cnt;
+	u64 nbytes;
+	u64 nblk;
+	struct cfar_blk_s ent[];
+};
+
+ocrGuid_t cfar_row_reduce_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
+	int retval;
+	cfarRowReducePRM_t *p = (cfarRowReducePRM_t *)paramv;
+	assert(paramc==PRMNUM(cfarRowReduce));
+	const size_t sz = sizeof(struct cfar_row_s)
+	                + (p->write_detects ? (size_t)depc*sizeof(struct cfar_blk_s) : 0);
+	ocrGuid_t out_dbg; struct cfar_row_s *out = NULL;
+	retval = ocrDbCreate(&out_dbg, (void **)&out, sz, 0, NULL_HINT, NO_ALLOC);
+	assert(retval==0);
+	memset(out, 0, sz);
+	out->nblk = p->write_detects ? (u64)depc : 0;
+	for(u32 b = 0; b < depc; b++) {
+		struct cfar_blk_s *blk = (struct cfar_blk_s *)depv[b].ptr;
+		if(blk == NULL) continue;
+		out->cnt    += blk->cnt;
+		out->nbytes += blk->nbytes;
+		if(p->write_detects) out->ent[b] = *blk;
+	}
+	ocrDbRelease(out_dbg);
+	return out_dbg;
+}
+
+#ifndef TG_ARCH
+/* One row's slice of the file: its base offset is known, so the row hands each
+ * of its blocks the absolute offset of its own bytes and the blocks write
+ * themselves.  No task ever holds the whole output. */
+ocrGuid_t cfar_row_write_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
+	int retval;
+	cfarRowWritePRM_t *p = (cfarRowWritePRM_t *)paramv;
+	assert(paramc==PRMNUM(cfarRowWrite));
+	assert(depc==1);
+	const struct cfar_row_s *row = (const struct cfar_row_s *)depv[0].ptr;
+	if(row == NULL) return NULL_GUID;
+	u64 offset = p->base;
+	for(u64 b = 0; b < row->nblk; b++) {
+		if(row->ent[b].nbytes == 0) continue;
+		cfarWritePRM_t wp;
+		wp.offset = offset;
+		wp.nbytes = row->ent[b].nbytes;
+		memcpy(wp.out_detects, p->out_detects, sizeof(wp.out_detects));
+		offset += row->ent[b].nbytes;
+		ocrGuid_t write_scg;
+		retval = ocrEdtCreate(&write_scg, p->write_clg, EDT_PARAM_DEF, (u64 *)&wp,
+		                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+		assert(retval==0);
+		retval = ocrAddDependence(row->ent[b].text, write_scg, 0, DB_MODE_RO);
+		assert(retval==0);
+	}
+	return NULL_GUID;
+}
+#endif
+
 ocrGuid_t post_CFAR_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
 	int retval;
 	postCFARPRM_t *postCFARParamvIn  = (postCFARPRM_t *)paramv;
@@ -82,55 +145,53 @@ ocrPrintf("//// enter post_CFAR_edt\n");RAG_FLUSH;
 	assert(paramc==PRMNUM(postCFAR));
 
 	u64 Nd = 0, total = 0;
-	for(u32 b = 0; b < depc; b++) {
-		struct cfar_blk_s *blk = (struct cfar_blk_s *)depv[b].ptr;
-		if(blk == NULL) continue;
-		Nd    += blk->cnt;
-		total += blk->nbytes;
+	for(u32 r = 0; r < depc; r++) {
+		struct cfar_row_s *row = (struct cfar_row_s *)depv[r].ptr;
+		if(row == NULL) continue;
+		Nd    += row->cnt;
+		total += row->nbytes;
 	}
+	(void)total;
 
 	/* Deterministic correctness scalar for a given input dataset. */
 	ocrPrintf("SAR detects: %lu\n", Nd);RAG_FLUSH;
 
 #ifndef TG_ARCH
-	/* Create the file once, empty; the blocks extend it from their offsets. */
-	{
+	if(postCFARParamvIn->write_detects) {
+		/* Create the file once, empty; the blocks extend it from their offsets. */
 		FILE *pOutFile = fopen(postCFARParamvIn->out_detects, "wb");
 		if( pOutFile == NULL ) {
 			ocrPrintf("Error opening %s\n", postCFARParamvIn->out_detects);RAG_FLUSH;
 			xe_exit(1);
 		}
 		fclose(pOutFile);
-	}
 
-	ocrGuid_t write_clg;
-	retval = ocrEdtTemplateCreate(&write_clg, cfar_write_edt, PRMNUM(cfarWrite), 1);
-	assert(retval==0);
-	RAG_TEMPLATE_REGISTER(write_clg);
-
-	u64 offset = 0;
-	for(u32 b = 0; b < depc; b++) {
-		struct cfar_blk_s *blk = (struct cfar_blk_s *)depv[b].ptr;
-		if(blk == NULL || blk->nbytes == 0) continue;
-		cfarWritePRM_t wp;
-		wp.offset = offset;
-		wp.nbytes = blk->nbytes;
-		memcpy(wp.out_detects, postCFARParamvIn->out_detects, sizeof(wp.out_detects));
-		offset += blk->nbytes;
-
-		ocrGuid_t write_scg;
-		retval = ocrEdtCreate(&write_scg, write_clg, EDT_PARAM_DEF, (u64 *)&wp,
-		                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+		ocrGuid_t write_clg, row_write_clg;
+		retval = ocrEdtTemplateCreate(&write_clg, cfar_write_edt, PRMNUM(cfarWrite), 1);
 		assert(retval==0);
-		retval = ocrAddDependence(blk->text, write_scg, 0, DB_MODE_RO);
+		RAG_TEMPLATE_REGISTER(write_clg);
+		retval = ocrEdtTemplateCreate(&row_write_clg, cfar_row_write_edt, PRMNUM(cfarRowWrite), 1);
 		assert(retval==0);
-	}
-	assert(offset == total);
-#else
-	for(u32 b = 0; b < depc; b++) {
-		struct cfar_blk_s *blk = (struct cfar_blk_s *)depv[b].ptr;
-		if(blk == NULL) continue;
-		ocrPrintf("block %u: %lu detects\n", b, blk->cnt);
+		RAG_TEMPLATE_REGISTER(row_write_clg);
+
+		u64 offset = 0;
+		for(u32 r = 0; r < depc; r++) {
+			struct cfar_row_s *row = (struct cfar_row_s *)depv[r].ptr;
+			if(row == NULL || row->nbytes == 0) continue;
+			cfarRowWritePRM_t wp;
+			wp.base      = offset;
+			wp.write_clg = write_clg;
+			memcpy(wp.out_detects, postCFARParamvIn->out_detects, sizeof(wp.out_detects));
+			offset += row->nbytes;
+
+			ocrGuid_t row_write_scg;
+			retval = ocrEdtCreate(&row_write_scg, row_write_clg, EDT_PARAM_DEF, (u64 *)&wp,
+			                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+			assert(retval==0);
+			retval = ocrAddDependence(depv[r].guid, row_write_scg, 0, DB_MODE_RO);
+			assert(retval==0);
+		}
+		assert(offset == total);
 	}
 #endif
 
@@ -324,7 +385,7 @@ RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_ref,NULL,NULL,st_ref_dbg,3);
 	ocrGuid_t text_dbg = NULL_GUID;
 	u64 nbytes = 0;
 #ifndef TG_ARCH
-	if(nd) {
+	if(nd && CFARAsyncParamvIn->write_detects) {
 		ocrGuid_t scratch_dbg;
 		char *scratch = (char *)spad_malloc(&scratch_dbg, (size_t)nd*CFAR_LINE_MAX);
 		if(scratch == NULL) {
@@ -362,6 +423,94 @@ RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_ref,NULL,NULL,st_ref_dbg,3);
 	return out_dbg;
 }
 
+/* One row band of detection blocks: this task creates them, so the creation
+ * traffic is spread over the machine, and it hands them to their own reducer,
+ * so the fan-in never passes through a single task either. */
+ocrGuid_t cfar_row_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
+	int retval;
+	cfarRowPRM_t *p = (cfarRowPRM_t *)paramv;
+	assert(paramc==PRMNUM(cfarRow));
+	assert(depc==4);
+RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,0);
+RAG_REF_MACRO_SPAD(struct CfarParams,cfar_params,cfar_params_ptr,cfar_params_lcl,cfar_params_dbg,1);
+RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_reg,NULL,NULL,st_reg_dbg,2);
+RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_ref,NULL,NULL,st_ref_dbg,3);
+
+	const int m     = (int)p->m1;
+	const int mhi   = (int)p->m2;
+	const int Nwins = (int)p->nwins;
+	const int BN    = (int)p->bn;
+	int nbn = 0;
+	for(int n=0; n<Nwins; n+=BN) nbn++;
+
+	/* The stripes this row's blocks read; the row is placed with them and so
+	   is its reducer, so a row's results never leave the rank that made them. */
+	const int _wny = (mhi - m) + cfar_params->Ncfar + image_params->Ncor - 2;
+	const int _gs0 = img_stripe_of(st_reg, m);
+	const int _gs1 = img_stripe_of(st_reg, m + _wny - 1);
+	const int _fs0 = img_stripe_of(st_ref, m);
+	const int _fs1 = img_stripe_of(st_ref, m + _wny - 1);
+	/* Two stripe slots per image are wired below, so a footprint that reaches a
+	   third stripe would be read out of a slot holding another image's piece.
+	   A silently wrong count is worse than no count. */
+	if(_gs1 - _gs0 > 1 || _fs1 - _fs0 > 1) {
+		ocrPrintf("detection footprint of %d rows at row %d spans stripes %d..%d"
+		          " and %d..%d (stripe height %d); a footprint must fit in two"
+		          " adjacent stripes\n",
+		          _wny, m, _gs0, _gs1, _fs0, _fs1,
+		          st_reg->y0[_gs0+1] - st_reg->y0[_gs0]);RAG_FLUSH;
+		xe_exit(1);
+	}
+
+	cfarRowReducePRM_t _rp;
+	_rp.write_detects = (u64)p->write_detects;
+	ocrHint_t _rh;
+	ocrGuid_t _red_scg, _red_evg;
+	retval = ocrEdtCreate(&_red_scg, p->red_clg, EDT_PARAM_DEF, (u64 *)&_rp,
+	                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
+	                      img_stripe_hint(&_rh, st_reg, _gs0), &_red_evg);
+	assert(retval==0);
+	retval = ocrAddDependence(_red_evg, p->post_CFAR_scg, (u32)p->row, DB_MODE_RO);
+	assert(retval==0);
+
+	int bidx = 0;
+	for(int n=0; n<Nwins; n+=BN, bidx++) {
+		CFARAsyncPRM_t cfarAsyncParamv;
+		cfarAsyncParamv.corners.m1 = m;
+		cfarAsyncParamv.corners.m2 = mhi;
+		cfarAsyncParamv.corners.n1 = n;
+		cfarAsyncParamv.corners.n2 = (n+BN)<Nwins?(n+BN):Nwins;
+		cfarAsyncParamv.write_detects = p->write_detects;
+
+		ocrHint_t _hnt;
+		ocrGuid_t cfar_async_scg, blk_evg;
+		retval = ocrEdtCreate(&cfar_async_scg, p->blk_clg, EDT_PARAM_DEF,
+		                      (u64 *)&cfarAsyncParamv, EDT_PARAM_DEF, NULL,
+		                      EDT_PROP_NONE, img_stripe_hint(&_hnt, st_reg, _gs0), &blk_evg);
+		assert(retval==0);
+		retval = ocrAddDependence(blk_evg, _red_scg, bidx, DB_MODE_RO);
+		assert(retval==0);
+
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,cfar_params_dbg,1);
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_reg_dbg,2);
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_ref_dbg,3);
+		for(int _k = 0; _k < 2; _k++) {
+			if(_gs0 + _k <= _gs1) {
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_reg->g[_gs0+_k],CFAR_STRIPE_SLOT0+_k);
+			} else {
+RAG_DEF_MACRO_GUID_ONLY(cfar_async_scg,st_reg_dbg,CFAR_STRIPE_SLOT0+_k);
+			}
+			if(_fs0 + _k <= _fs1) {
+RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_ref->g[_fs0+_k],CFAR_STRIPE_SLOT0+2+_k);
+			} else {
+RAG_DEF_MACRO_GUID_ONLY(cfar_async_scg,st_ref_dbg,CFAR_STRIPE_SLOT0+2+_k);
+			}
+		}
+	} // for n
+	return NULL_GUID;
+}
+
 ocrGuid_t CFAR_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
 	int retval;
 	CFARPRM_t *CFARParamvIn = (CFARPRM_t *)paramv;
@@ -380,8 +529,8 @@ RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_ref,NULL,NULL,st_ref_dbg,6);
 	const int Mwins = image_params->Iy - image_params->Ncor - cfar_params->Ncfar + 2;
 	const int Nwins = image_params->Ix - image_params->Ncor - cfar_params->Ncfar + 2;
 #ifdef RAG_CFAR_BLK_SIZE
-	const int BM = RAG_CFAR_BLK_SIZE;
-	const int BN = RAG_CFAR_BLK_SIZE;
+	const int BM = image_params->blk_cfar;
+	const int BN = image_params->blk_cfar;
 #else
 	const int BM = blk_size(Mwins,32);
 	const int BN = blk_size(Nwins,32);
@@ -390,10 +539,9 @@ RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_ref,NULL,NULL,st_ref_dbg,6);
 	int nbm = 0, nbn = 0;
 	for(int m=0; m<Mwins; m+=BM) nbm++;
 	for(int n=0; n<Nwins; n+=BN) nbn++;
-	const int nblks = nbm * nbn;
 
 	ocrGuid_t post_CFAR_clg, post_CFAR_scg;
-	retval = ocrEdtTemplateCreate(&post_CFAR_clg, post_CFAR_edt, PRMNUM(postCFAR), nblks);
+	retval = ocrEdtTemplateCreate(&post_CFAR_clg, post_CFAR_edt, PRMNUM(postCFAR), nbm);
 	assert(retval==0);
 	RAG_TEMPLATE_REGISTER(post_CFAR_clg);
 	retval = ocrEdtCreate(&post_CFAR_scg, post_CFAR_clg, EDT_PARAM_DEF,
@@ -401,57 +549,41 @@ RAG_REF_MACRO_BSM( const struct img_stripes_s *,st_ref,NULL,NULL,st_ref_dbg,6);
 	                      EDT_PROP_NONE, NULL_HINT, NULL);
 	assert(retval==0);
 
-	ocrGuid_t cfar_async_clg;
+	ocrGuid_t cfar_async_clg, cfar_red_clg, cfar_row_clg;
 	retval = ocrEdtTemplateCreate(&cfar_async_clg, cfar_async_edt, PRMNUM(CFARAsync), CFAR_STRIPE_SLOT0 + 4);
 	assert(retval==0);
 	RAG_TEMPLATE_REGISTER(cfar_async_clg);
+	/* Every row holds the same number of blocks, so one reducer template. */
+	retval = ocrEdtTemplateCreate(&cfar_red_clg, cfar_row_reduce_edt, PRMNUM(cfarRowReduce), nbn);
+	assert(retval==0);
+	RAG_TEMPLATE_REGISTER(cfar_red_clg);
+	retval = ocrEdtTemplateCreate(&cfar_row_clg, cfar_row_edt, PRMNUM(cfarRow), 4);
+	assert(retval==0);
+	RAG_TEMPLATE_REGISTER(cfar_row_clg);
 
-	int bidx = 0;
-	for(int m=0; m<Mwins; m+=BM) {
-		for(int n=0; n<Nwins; n+=BN) {
-			CFARAsyncPRM_t cfarAsyncParamv;
-			cfarAsyncParamv.corners.m1 = m;
-			cfarAsyncParamv.corners.m2 = (m+BM)<Mwins?(m+BM):Mwins;
-			cfarAsyncParamv.corners.n1 = n;
-			cfarAsyncParamv.corners.n2 = (n+BN)<Nwins?(n+BN):Nwins;
-
-			/* The stripes this block's rectangle falls in.  The block is placed
-			   on the stripe that holds it, so the piece it reads is already
-			   there and the blocks beside it on that rank share the fetch. */
-			const int _wny = (cfarAsyncParamv.corners.m2 - cfarAsyncParamv.corners.m1)
-			               + cfar_params->Ncfar + image_params->Ncor - 2;
-			const int _gs0 = img_stripe_of(st_reg, m);
-			const int _gs1 = img_stripe_of(st_reg, m + _wny - 1);
-			const int _fs0 = img_stripe_of(st_ref, m);
-			const int _fs1 = img_stripe_of(st_ref, m + _wny - 1);
-			assert(_gs1 - _gs0 <= 1 && _fs1 - _fs0 <= 1);
-			ocrHint_t _hnt;
-			ocrGuid_t cfar_async_scg, blk_evg;
-			retval = ocrEdtCreate(&cfar_async_scg, cfar_async_clg, EDT_PARAM_DEF,
-			                      (u64 *)&cfarAsyncParamv, EDT_PARAM_DEF, NULL,
-			                      EDT_PROP_NONE, img_stripe_hint(&_hnt, st_reg, _gs0), &blk_evg);
-			assert(retval==0);
-			retval = ocrAddDependence(blk_evg, post_CFAR_scg, bidx, DB_MODE_RO);
-			assert(retval==0);
-			bidx++;
-
-RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,cfar_params_dbg,1);
-RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_reg_dbg,2);
-RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_ref_dbg,3);
-			for(int _k = 0; _k < 2; _k++) {
-				if(_gs0 + _k <= _gs1) {
-RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_reg->g[_gs0+_k],CFAR_STRIPE_SLOT0+_k);
-				} else {
-RAG_DEF_MACRO_GUID_ONLY(cfar_async_scg,st_reg_dbg,CFAR_STRIPE_SLOT0+_k);
-				}
-				if(_fs0 + _k <= _fs1) {
-RAG_DEF_MACRO_PASS_RO(cfar_async_scg,NULL,NULL,NULL,NULL,st_ref->g[_fs0+_k],CFAR_STRIPE_SLOT0+2+_k);
-				} else {
-RAG_DEF_MACRO_GUID_ONLY(cfar_async_scg,st_ref_dbg,CFAR_STRIPE_SLOT0+2+_k);
-				}
-			}
-		} // for n
+	int ridx = 0;
+	for(int m=0; m<Mwins; m+=BM, ridx++) {
+		cfarRowPRM_t rp;
+		rp.post_CFAR_scg = post_CFAR_scg;
+		rp.blk_clg       = cfar_async_clg;
+		rp.red_clg       = cfar_red_clg;
+		rp.m1            = (u64)m;
+		rp.m2            = (u64)((m+BM)<Mwins?(m+BM):Mwins);
+		rp.nwins         = (u64)Nwins;
+		rp.bn            = (u64)BN;
+		rp.row           = (u64)ridx;
+		rp.write_detects = CFARParamvIn->post.write_detects;
+		const int _s0 = img_stripe_of(st_reg, m);
+		ocrHint_t _hnt;
+		ocrGuid_t row_scg;
+		retval = ocrEdtCreate(&row_scg, cfar_row_clg, EDT_PARAM_DEF, (u64 *)&rp,
+		                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
+		                      img_stripe_hint(&_hnt, st_reg, _s0), NULL);
+		assert(retval==0);
+RAG_DEF_MACRO_PASS_RO(row_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
+RAG_DEF_MACRO_PASS_RO(row_scg,NULL,NULL,NULL,NULL,cfar_params_dbg,1);
+RAG_DEF_MACRO_PASS_RO(row_scg,NULL,NULL,NULL,NULL,st_reg_dbg,2);
+RAG_DEF_MACRO_PASS_RO(row_scg,NULL,NULL,NULL,NULL,st_ref_dbg,3);
 	} // for m
 
 #ifdef TRACE_LVL_2

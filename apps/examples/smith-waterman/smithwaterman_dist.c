@@ -24,11 +24,6 @@
  * events of tiles it owns, so each name is created exactly once, and a
  * consumer may register a dependence on a name whose object does not exist
  * yet.
- *
- * The tile-to-place map is cyclic on both axes.  Over a BLOCKED map a
- * wavefront leaves most places idle -- an anti-diagonal of blocks is only
- * O(sqrt(P)) wide -- while a cyclic map puts every place on every
- * anti-diagonal.
  */
 
 #include "ocr.h"
@@ -38,30 +33,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "macros.h"
-
-/* Placement-optimization layer: contiguous row-band placement for the
- * wavefront.  A tile's West neighbour shares its row and therefore its rank;
- * North/NW share its band on every row except the nranks-1 band-boundary
- * rows, so the heavy row-to-row payload stays rank-local while the
- * anti-diagonal frontier still reaches every band once it is a band tall.
- * A round-robin map makes EVERY neighbour remote instead. */
-#ifdef OCR_APP_OPTIMIZED_PLACEMENT
-#include <extensions/ocr-affinity.h>
-static ocrHint_t * swBandEdtHint(ocrHint_t *h, u64 row, u64 nrows) {
-    u64 nranks;
-    ocrAffinityCount(AFFINITY_PD, &nranks);
-    if (nranks <= 1 || nrows == 0) return NULL_HINT;
-    u64 band = (row * nranks) / nrows;
-    if (band >= nranks) band = nranks - 1;
-    ocrGuid_t aff;
-    ocrAffinityGetAt(AFFINITY_PD, band, &aff);
-    ocrHintInit(h, OCR_HINT_EDT_T);
-    ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
-    return h;
-}
-#else
-#define swBandEdtHint(h, row, nrows) NULL_HINT
-#endif
 
 #define GAP_PENALTY -1
 #define TRANSITION_PENALTY -2
@@ -391,6 +362,11 @@ static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_ti
     file_name_score = ocrGetArgv(marshalled, 5);
 #endif
 
+    if (*p_tile_width < 1 || *p_tile_height < 1) {
+        ocrPrintf("tileWidth and tileHeight must be positive integers\n");
+        return 1;
+    }
+
     *p_string_1 = read_file(file_name_1, &n_char_in_file_1);
     if(*p_string_1 == NULL) return 1;
     ocrPrintf("Size of input string 1 is %d\n", n_char_in_file_1 );
@@ -401,18 +377,25 @@ static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_ti
     ocrPrintf("Size of input string 2 is %d\n", n_char_in_file_2 );
     *p_string2_len = (s32)n_char_in_file_2;
 
-    *check_score = atoi((char *)read_file(file_name_score, &n_char_in_file_score));
+    s8 *score_text = read_file(file_name_score, &n_char_in_file_score);
+    if (score_text == NULL) return 1;
+    *check_score = atoi((char *)score_text);
     ocrPrintf("Score to get it %u\n", *check_score);
     ocrPrintf("Tile width is %d\n", *p_tile_width);
     ocrPrintf("Tile height is %d\n", *p_tile_height);
+
+    /* An empty sequence leaves the tile grid empty, so no task would ever
+     * reach the bottom-right corner that ends the run. */
+    if (n_char_in_file_1 == 0 || n_char_in_file_2 == 0) {
+        ocrPrintf("both input sequences must contain at least one nucleotide\n");
+        return 1;
+    }
 
     /* Use ceiling division to handle partial tiles at edges */
     *p_n_tiles_width = (n_char_in_file_1 + *p_tile_width - 1) / *p_tile_width;
     *p_n_tiles_height = (n_char_in_file_2 + *p_tile_height - 1) / *p_tile_height;
 
     ocrPrintf("Imported %d x %d tiles.\n", *p_n_tiles_width, *p_n_tiles_height);
-
-    ocrPrintf("Allocating tile matrix\n");
     return 0;
 }
 
@@ -423,10 +406,11 @@ static u32 __attribute__ ((noinline)) ioHandling ( void* marshalled, s32* p_n_ti
  * band of rows and the only dependence that leaves it is the band's top edge:
  * one row of tiles per column, so O(P*W) crossings against the O(W^2) a
  * cyclic or round-robin map pays, every neighbour of which is remote.  The
- * price is pipeline fill -- a place cannot start until the band above has
- * produced its first column -- and that is P of the 2W-1 anti-diagonal steps,
- * under a percent at the sizes this runs at.  Scattering to avoid an idle
- * that small while paying W/P times the messages is the wrong trade. */
+ * price is pipeline fill, and it is not small: the last band's first row lies
+ * (1 - 1/P) of the way down the grid, so that place has nothing to run before
+ * anti-diagonal step (1 - 1/P)*H of the W+H-1, and at any step only the bands
+ * the frontier's row window covers are busy.  Splitting a place's rows into k
+ * separated bands divides that fill by k and multiplies the crossings by k. */
 static u64 ownerOf(u64 i, u64 nTilesH, u64 places) {
     u64 g = (i * places) / (nTilesH + 1);
     return g >= places ? places - 1 : g;
@@ -485,13 +469,18 @@ ocrGuid_t placeInitTask ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     /* First row of each rank: a rank's places are adjacent bands, so this is
      * the first row of its first place.  Scanned once, P is small. */
-    u64 rankRow0[256];
+    u64 *rankRow0 = (u64*)malloc((size_t)(nr ? nr : 1) * sizeof(u64));
+    if ( rankRow0 == NULL ) {
+        ocrPrintf("out of memory for the per-rank first-row table (%lu ranks)\n", nr);
+        ocrShutdown();
+        return NULL_GUID;
+    }
     { u64 r, gg2;
-      for ( r = 0; r < nr && r < 256; ++r ) rankRow0[r] = (u64)nh + 1;
+      for ( r = 0; r < nr; ++r ) rankRow0[r] = (u64)nh + 1;
       for ( gg2 = 0; gg2 < places; ++gg2 ) {
           u64 rr = placeRank(gg2, places);
           u64 r0 = bandFirstRow(gg2, (u64)nh, places);
-          if ( rr < 256 && r0 < rankRow0[rr] ) rankRow0[rr] = r0;
+          if ( rr < nr && r0 < rankRow0[rr] ) rankRow0[rr] = r0;
       } }
 
     /* A name is derived from the tile's own band, so any place can name a tile
@@ -595,6 +584,7 @@ ocrGuid_t placeInitTask ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         ocrEdtTemplateDestroy(tml);
     }
 #undef EVOF
+    free(rankRow0);
     return NULL_GUID;
 }
 
@@ -626,6 +616,25 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
      * range and each place creates only what it owns. */
     u64 nranksNow = 1; ocrAffinityCount(AFFINITY_PD, &nranksNow);
     if ( nranksNow == 0 ) nranksNow = 1;
+
+    {   /* optional 6th argument: how many ownership partitions the tiles split into */
+        void *marshalled = depv[0].ptr;
+        if ( ocrGetArgc(marshalled) > 6 ) n_places = (s32) atoi(ocrGetArgv(marshalled, 6));
+    }
+    /* Partitions are contiguous row bands and reach ranks through a linear map,
+     * so every rank owns rows exactly when there are at least as many
+     * partitions as ranks (the map is onto) and at most as many partitions as
+     * rows (no band is empty).  Outside that window some rank is left with no
+     * work and no complaint. */
+    if ( n_places < 1 || (u64)n_places < nranksNow ||
+         n_places - 1 > n_tiles_height ) {
+        ocrPrintf("every rank must own a band: places %d must lie between the rank "
+                  "count %lu and the tile row count %d\n",
+                  n_places, nranksNow, n_tiles_height + 1);
+        ocrShutdown();
+        return NULL_GUID;
+    }
+
     /* Room for the largest band a rank can hold, times the interleave, and a
      * multiple of the rank count so a tile's three events share a home. */
     u64 evStride = ((u64)(n_tiles_height+1)/nranksNow + 2)*(n_tiles_width+1)*nranksNow + nranksNow;
@@ -679,17 +688,16 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
     ocrDbRelease(dbParamsGuid);
 
-    {   /* optional 6th argument: how many ownership partitions the tiles split into */
-        void *marshalled = depv[0].ptr;
-        if ( ocrGetArgc(marshalled) > 6 ) n_places = (s32) atoi(ocrGetArgv(marshalled, 6));
-        if ( n_places < 1 ) n_places = 1;
-    }
-
     /* One builder per place, and nothing else: O(P) work here. */
     u64 places = (u64)n_places, gg;
     /* One announcement per band, all created before any builder runs, so no
      * builder ever registers a dependence on a name that is not installed. */
     ocrGuid_t *namesDone = (ocrGuid_t*)malloc(places * sizeof(ocrGuid_t));
+    if ( namesDone == NULL ) {
+        ocrPrintf("out of memory for the per-place announcements (%lu places)\n", places);
+        ocrShutdown();
+        return NULL_GUID;
+    }
     for ( gg = 0; gg < places; ++gg )
         ocrEventCreate(&namesDone[gg], OCR_EVENT_STICKY_T, EVT_PROP_TAKES_ARG);
 

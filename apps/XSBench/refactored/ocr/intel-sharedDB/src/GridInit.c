@@ -1,34 +1,22 @@
 #include "XSbench_header.h"
 
-// Generates randomized energy grid for each nuclide
-// Note that this is done as part of initialization (serial), so
-// rand() is used.
+// Generates the randomized energy grid of every nuclide.  Each value is keyed
+// by its own position in the grid, so the grid is a pure function of the
+// instance's data seed and is identical however the work is distributed.
 void generate_grids( NuclideGridPoint ** nuclide_grids,
-                     long n_isotopes, long n_gridpoints ) {
-	for( long i = 0; i < n_isotopes; i++ )
-		for( long j = 0; j < n_gridpoints; j++ )
-		{
-			nuclide_grids[i][j].energy       =((double)rand()/(double)RAND_MAX);
-			nuclide_grids[i][j].total_xs     =((double)rand()/(double)RAND_MAX);
-			nuclide_grids[i][j].elastic_xs   =((double)rand()/(double)RAND_MAX);
-			nuclide_grids[i][j].absorbtion_xs=((double)rand()/(double)RAND_MAX);
-			nuclide_grids[i][j].fission_xs   =((double)rand()/(double)RAND_MAX);
-			nuclide_grids[i][j].nu_fission_xs=((double)rand()/(double)RAND_MAX);
-		}
-}
+                     long n_isotopes, long n_gridpoints, u64 dataSeed ) {
+	u64 key = xs_stream( dataSeed, XS_STREAM_GRIDS );
 
-// Verification version of this function (tighter control over RNG)
-void generate_grids_v( NuclideGridPoint ** nuclide_grids,
-                     long n_isotopes, long n_gridpoints, u64* seed ) {
 	for( long i = 0; i < n_isotopes; i++ )
 		for( long j = 0; j < n_gridpoints; j++ )
 		{
-			nuclide_grids[i][j].energy       = rn_v(seed);
-			nuclide_grids[i][j].total_xs     = rn_v(seed);
-			nuclide_grids[i][j].elastic_xs   = rn_v(seed);
-			nuclide_grids[i][j].absorbtion_xs= rn_v(seed);
-			nuclide_grids[i][j].fission_xs   = rn_v(seed);
-			nuclide_grids[i][j].nu_fission_xs= rn_v(seed);
+			u64 base = (u64)(i*n_gridpoints + j) * 6;
+			nuclide_grids[i][j].energy       = xs_draw_unit(key, base + 0);
+			nuclide_grids[i][j].total_xs     = xs_draw_unit(key, base + 1);
+			nuclide_grids[i][j].elastic_xs   = xs_draw_unit(key, base + 2);
+			nuclide_grids[i][j].absorbtion_xs= xs_draw_unit(key, base + 3);
+			nuclide_grids[i][j].fission_xs   = xs_draw_unit(key, base + 4);
+			nuclide_grids[i][j].nu_fission_xs= xs_draw_unit(key, base + 5);
 		}
 }
 
@@ -113,31 +101,27 @@ GridPoint * generate_energy_grid( ocrDBK_t* DBK_uEnergy_grid,  ocrDBK_t* DBK_xs_
 	return energy_grid;
 }
 
-// Searches each nuclide grid for the closest energy level and assigns
-// the index from unionized grid to the correct spot in the nuclide grid.
-// This process is time consuming, as the number of binary searches
-// required is:  binary searches = n_gridpoints * n_isotopes^2
-void set_grid_ptrs( GridPoint * energy_grid, int * xs_grid,
-                    NuclideGridPoint ** nuclide_grids,
-                    long n_isotopes, long n_gridpoints, int mype )
+// Searches each nuclide grid for the closest energy level and assigns the
+// index from the unionized grid to the correct spot in the nuclide grid, for
+// the half-open row range [ibegin, iend).  Rows are independent -- a row reads
+// only its own unionized energy and every nuclide grid -- so the range is a
+// pure function of its bounds and the caller may split the rows over as many
+// producers as it likes.  Output is written densely from the range's own
+// origin, so a producer never shares a destination with another producer.
+void set_grid_ptrs_range( GridPoint * energy_grid, int * xs_rows,
+                          NuclideGridPoint ** nuclide_grids,
+                          long n_isotopes, long n_gridpoints,
+                          u64 ibegin, u64 iend )
 {
-	if( mype == 0 ) ocrPrintf("Assigning pointers to Unionized Energy Grid...\n");
-
-	//#pragma omp parallel for default(none) \
-	//shared( energy_grid, xs_grid, nuclide_grids, n_isotopes, n_gridpoints, mype )
-	for( long i = 0; i < n_isotopes * n_gridpoints ; i++ )
+	for( u64 i = ibegin; i < iend; i++ )
 	{
 		double quarry = energy_grid[i].energy;
-		if( INFO && mype == 0 && i % 10000 == 0 )
-			ocrPrintf( "\rAligning Unionized Grid...(%.2f%% complete)",
-			       100.0 * (double) i / (n_isotopes*n_gridpoints) );
 		for( long j = 0; j < n_isotopes; j++ )
 		{
 			// j is the nuclide i.d.
 			// log n binary search
-			xs_grid[i * n_isotopes + j] =
+			xs_rows[(i - ibegin) * (u64) n_isotopes + (u64) j] =
 				binary_search( nuclide_grids[j], quarry, n_gridpoints);
 		}
 	}
-	if( mype == 0 ) ocrPrintf("\n");
 }

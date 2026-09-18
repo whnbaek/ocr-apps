@@ -338,6 +338,8 @@ typedef struct {
 
     double tol;
     double grid_sum[MAX_NUM_VARS];
+    int checksum_checks;
+    int checksum_divergences;
 
     int p8[MAX_REFINE_LEVELS+2], p2[MAX_REFINE_LEVELS+2]; //(num_refine+2)
     int mesh_size[3];

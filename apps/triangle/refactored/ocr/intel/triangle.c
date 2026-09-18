@@ -22,6 +22,7 @@ See the README file for more information.
 
 #include <ocr.h>
 #include <extensions/ocr-affinity.h>
+#include <errno.h>
 #include <stdlib.h>
 #define BOARDSIZE 15
 #define MOVESIZE 36
@@ -65,15 +66,6 @@ static u64 triGenMoves(u64 rows, u64 *moves) {
     return n;
 }
 
-/* Levels of the search tree (moves made) scattered across ranks by a
- * deterministic hash of the board bitmask — placement is a pure function of
- * the position, independent of creation order; deeper tasks pin to the
- * creating rank so each scattered subtree runs wire-free.  Calibrated by
- * measurement. */
-#ifndef TRIANGLE_SCATTER_LEVELS
-#define TRIANGLE_SCATTER_LEVELS 3
-#endif
-
 
 /*
 void printboard(u64 board[15]) {
@@ -99,20 +91,28 @@ static inline u64 mixKey(u64 x) {
     return x;
 }
 
-/* Top-level children scatter on the hashed board bitmask; deeper children
- * stay on the creating rank so the subtree beneath them is wire-free. */
-static ocrHint_t * triChildEdtHint(ocrHint_t * h, u64 level, u64 key) {
-    u64 nranks;
-    ocrAffinityCount(AFFINITY_PD, &nranks);
+/* Depth of the scattered frontier.  The shallow levels of the tree are the
+ * independent placement units and their number grows geometrically with
+ * depth, so scattering one level deeper per decade of ranks holds the
+ * units-per-rank ratio — and with it the balance a hashed map can reach —
+ * roughly constant however wide the machine is.  Only the scattered edges
+ * cross a rank; beneath the frontier a subtree stays where its root landed. */
+static u64 triScatterLevels(u64 nranks) {
+    u64 levels = 4, span = 1;
+    while(span < nranks) { span *= 10; levels++; }
+    return levels;
+}
+
+/* Place a task on a named rank. */
+static ocrHint_t * triEdtHintAt(ocrHint_t * h, u64 rank) {
     ocrGuid_t aff;
-    if(level <= TRIANGLE_SCATTER_LEVELS) ocrAffinityGetAt(AFFINITY_PD, mixKey(key) % nranks, &aff);
-    else ocrAffinityGetCurrent(&aff);
+    ocrAffinityGetAt(AFFINITY_PD, rank, &aff);
     ocrHintInit(h, OCR_HINT_EDT_T);
     ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
     return h;
 }
 
-/* Pin the summing continuation to the creating rank. */
+/* Pin a task to the creating rank. */
 static ocrHint_t * triLocalEdtHint(ocrHint_t * h) {
     ocrGuid_t aff;
     ocrAffinityGetCurrent(&aff);
@@ -231,6 +231,13 @@ look for legal moves
     /* board occupancy as a bitmask: the deterministic placement key */
     u64 bits = 0;
     for(i=0;i<holes;i++) if(board[i]) bits |= (1ull << i);
+    /* One rank query per node: every child of a node shares its level, so
+     * below the scattered frontier they also share the creating rank. */
+    u64 nranks;
+    ocrAffinityCount(AFFINITY_PD, &nranks);
+    u64 scatter = (nummoves + 1) <= triScatterLevels(nranks);
+    ocrHint_t localHint;
+    if(!scatter) triLocalEdtHint(&localHint);
 #endif
 
     u64 triangleParamv[7] = {nummoves, 0, triangleTemplate.guid, 0, depth, holes, nmoves};
@@ -253,7 +260,9 @@ look for legal moves
             u64 childBits = (bits & ~(1ull<<pmoves[3*i]) & ~(1ull<<pmoves[3*i+1]))
                             | (1ull<<pmoves[3*i+2]);
             ocrHint_t edtHint;
-            ocrHint_t *childHint = triChildEdtHint(&edtHint, nummoves+1, childBits);
+            ocrHint_t *childHint = scatter
+                ? triEdtHintAt(&edtHint, mixKey(childBits) % nranks)
+                : &localHint;
 #else
             ocrHint_t *childHint = NULL_HINT;
 #endif
@@ -296,9 +305,13 @@ look for legal moves
 //full-depth puzzle; for a partial search the count is reported as-is.
 static void launch_round(u64 depth, u64 rounds_left, u64 rows);
 
-/* paramv: {depth, rounds_left} — sequential full-search repetitions chain
- * through the wrapup EDT; all round state travels in paramv.
- * depv[0]: the root subtree's count block. */
+/* paramv: {depth, rounds_left, rows} — sequential full-search repetitions
+ * chain through the wrapup EDT; all round state travels in paramv.
+ * depv[0]: the root subtree's count block.
+ * The round's starting board and jump table outlive this task deliberately:
+ * a count that a task satisfies from inside its body orders that satisfy,
+ * not the release of the acquires the task still holds, so arrival here
+ * places no bound on the last reader of a block the whole tree reads. */
 ocrGuid_t wrapupTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     u64 depth = paramv[0];
     u64 rounds_left = paramv[1];
@@ -474,23 +487,55 @@ ocrAddDependence(boardDb, realmain, 1, DB_MODE_RW);
 ocrAddDependence(pmovesDb, realmain, 2, DB_MODE_RW);
 }
 
+/* The whole token must be the number: a trailing character or a value the
+ * type cannot hold is a mistyped argument, not a value to truncate. */
+static int triParseInt(const char *text, s64 *out) {
+    char *end;
+    long v;
+    if(text == NULL || text[0] == '\0') return 0;
+    errno = 0;
+    v = strtol(text, &end, 10);
+    if(*end != '\0' || errno == ERANGE) return 0;
+    *out = (s64) v;
+    return 1;
+}
+
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]){
 //optional arguments: search depth in moves (full board by default), rounds,
 //board rows (the author's 5-row puzzle by default)
     u64 argc = ocrGetArgc(depv[0].ptr);
+    /* An argument outside its domain is rejected, never corrected: a clamped
+     * or dropped value runs a problem instance nobody asked for and still
+     * prints a well-formed result line. */
+    s64 v;
+    if(argc > 4) {
+        ocrPrintf("triangle: usage: [depth [rounds [rows]]]\n");
+        ocrAbort(1);
+    }
     u64 rows = 0; /* absent: the author's board, the author's table */
     if(argc > 3) {
-        u64 rr = (u64) atoi(ocrGetArgv(depv[0].ptr, 3));
-        if(rr >= 3 && rr <= TRI_ROWS_MAX) rows = rr;
+        if(!triParseInt(ocrGetArgv(depv[0].ptr, 3), &v) || v < 3 || v > TRI_ROWS_MAX) {
+            ocrPrintf("triangle: rows must be in [3,%d]\n", (int) TRI_ROWS_MAX);
+            ocrAbort(1);
+        }
+        rows = (u64) v;
     }
     u64 maxdepth = triHoles(rows ? rows : TRI_ROWS_DEFAULT) - 2;
     u64 depth = maxdepth;
-    if(argc > 1) depth = (u64) atoi(ocrGetArgv(depv[0].ptr, 1));
-    if(depth < 1 || depth > maxdepth) depth = maxdepth;
+    if(argc > 1) {
+        if(!triParseInt(ocrGetArgv(depv[0].ptr, 1), &v) || v < 1 || v > (s64) maxdepth) {
+            ocrPrintf("triangle: depth must be in [1,%d]\n", (int) maxdepth);
+            ocrAbort(1);
+        }
+        depth = (u64) v;
+    }
     u64 rounds = 1;
     if(argc > 2) {
-        u64 r = (u64) atoi(ocrGetArgv(depv[0].ptr, 2));
-        if(r >= 1) rounds = r;
+        if(!triParseInt(ocrGetArgv(depv[0].ptr, 2), &v) || v < 1) {
+            ocrPrintf("triangle: rounds must be at least 1\n");
+            ocrAbort(1);
+        }
+        rounds = (u64) v;
     }
     if(rows == 0)
         ocrPrintf("triangle puzzle depth %d \n", depth);

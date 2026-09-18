@@ -425,10 +425,6 @@ ocrGuid_t backproject_async_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc
 } // backproject_async
 
 
-/* Tiles are a regular grid over [m1,m2) x [n1,n2), so a tile's rectangle is
- * recoverable from its slot: the dependences are added in creation order. */
-typedef struct { u64 m1, m2, n1, n2, bm, bn; } bpGatherPRM_t;
-
 /* Create one stripe's worth of tiles.  Runs on whatever rank the runtime put
    it on, so the tiles it creates are homed there and the creation traffic is
    spread instead of leaving one task to issue all of it. */
@@ -463,6 +459,12 @@ ocrGuid_t bp_stripe_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdt
   int retval;
   bpStripePRM_t *sp = (bpStripePRM_t *)paramv;
   assert(paramc == (sizeof(bpStripePRM_t)+sizeof(u64)-1)/sizeof(u64));
+  /* This band's tiles and its slab belong to the stripe the band lands in, so
+     they are created there: the slab is then assembled and consumed without
+     the pixels crossing the network at all. */
+  ocrHint_t _rh, _th;
+  ocrHint_t *_rhp = rank_edt_hint(&_rh, (u64)sp->rank);
+  ocrHint_t *_thp = rank_edt_hint(&_th, (u64)sp->rank);
   ocrGuid_t _row_scg = NULL_GUID;
   bpRowPRM_t _rp;
   _rp.m1 = (u64)sp->m;
@@ -470,7 +472,7 @@ ocrGuid_t bp_stripe_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdt
   _rp.n1 = (u64)sp->n1; _rp.n2 = (u64)sp->n2; _rp.bn = (u64)sp->bn;
   ocrGuid_t _row_evg;
   retval = ocrEdtCreate(&_row_scg, sp->row_clg, EDT_PARAM_DEF, (u64 *)&_rp,
-                        EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, &_row_evg);
+                        EDT_PARAM_DEF, NULL, EDT_PROP_NONE, _rhp, &_row_evg);
   assert(retval==0);
   retval = ocrAddDependence(_row_evg, sp->gather_scg, sp->slot, DB_MODE_RO);
   assert(retval==0);
@@ -486,7 +488,7 @@ ocrGuid_t bp_stripe_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdt
     backProjAsyncPRM_t pv;
     pv.corners = async_corners;
     retval = ocrEdtCreate(&tile_scg, sp->tile_clg, EDT_PARAM_DEF, (u64 *)&pv,
-                          EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT,
+                          EDT_PARAM_DEF, NULL, EDT_PROP_NONE, _thp,
                           &tile_evg);
     assert(retval==0);
     retval = ocrAddDependence(tile_evg, _row_scg, slot++, DB_MODE_RO);
@@ -500,27 +502,6 @@ ocrGuid_t bp_stripe_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdt
   return NULL_GUID;
 }
 
-ocrGuid_t backproject_gather_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
-  bpGatherPRM_t *p = (bpGatherPRM_t *)paramv;
-  RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,0);
-  RAG_REF_MACRO_BSM( struct complexData **,image,NULL,NULL,image_dbg,1);
-  RAG_REF_MACRO_BSM( struct img_stripes_s *,stripes,NULL,NULL,stripes_dbg,2);
-  RAG_REMAP_2D(image, image_params->Iy, image_params->Ix, struct complexData);
-  const u64 cols = p->n2 - p->n1;
-  int s = 0;
-  for(u64 m = p->m1; m < p->m2; m += p->bm, ++s) {
-    const u64 mhi = (m + p->bm) < p->m2 ? (m + p->bm) : p->m2;
-    const struct complexData *slab = (const struct complexData *)depv[3+s].ptr;
-    if(slab == NULL) continue;
-    for(u64 r = m; r < mhi; ++r)
-      memcpy(&image[r][p->n1], &slab[(r-m)*cols], (size_t)cols*sizeof(struct complexData));
-  }
-  /* Cut the assembled image into its stripes, each homed on the rank whose
-     tasks read it.  The consumers then depend on the stripe they cover
-     instead of on the image, and the image itself never leaves this rank. */
-  img_stripes_scatter(stripes, image);
-  return NULL_GUID;
-} // backproject_gather
 
 ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtDep_t *depv) {
   int retval;
@@ -530,22 +511,29 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
   assert(paramc==(PRMNUM(backProj)));
   backProjPRM_t *_bpp = (backProjPRM_t *)paramv;
   struct corners_t *corners = &_bpp->corners;
-  const ocrGuid_t _stripes_dbg = _bpp->stripes_dbg;
   int m1   = corners->m1;
   int m2   = corners->m2;
   int n1   = corners->n1;
   int n2   = corners->n2;
-  assert(depc==7);
+  assert(depc==8);
   RAG_REF_MACRO_SPAD(struct ImageParams,image_params,image_params_ptr,image_params_lcl,image_params_dbg,0);
   RAG_REF_MACRO_SPAD(struct RadarParams,radar_params,radar_params_ptr,radar_params_lcl,radar_params_dbg,1);
-  RAG_REF_MACRO_BSM( struct complexData **,image,NULL,NULL,image_dbg,2);
-  RAG_REF_MACRO_BSM( struct complexData **,refImage,NULL,NULL,refImage_dbg,3);
-  RAG_REF_MACRO_BSM( struct complexData **,Xin,NULL,NULL,Xin_dbg,4);
+  RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,image_dbg,2);
+  RAG_REF_MACRO_PASS(NULL,NULL,NULL,NULL,refImage_dbg,3);
+  /* The pulse history is acquired here only when it is upsampled below; the
+     block's identity comes with the parameters, since a slot in NULL mode
+     does not carry it. */
+  ocrGuid_t Xin_dbg = _bpp->Xin_dbg;
+  struct complexData **Xin = (struct complexData **)depv[4].ptr;
   RAG_REF_MACRO_BSM( float **,Pt,NULL,NULL,Pt_dbg,5);
   RAG_REF_MACRO_BSM( float *,Tp,NULL,NULL,Tp_dbg,6);
-#if 0
-#warn RAG
-#endif
+  RAG_REF_MACRO_BSM( const struct img_stripes_s *,stripes,NULL,NULL,stripes_dbg,7);
+  (void)image_dbg; (void)refImage_dbg;
+
+  /* The pulse history the tiles interpolate from: the input as read, or its
+     upsampled copy when the oversampling factor asks for one.  Everything
+     after this point is one decomposition, whichever it is. */
+  ocrGuid_t Xsrc_dbg = Xin_dbg;
   if(image_params->F > 1) {
     fftwf_complex *input, *fft_result, *ifft_result;
     ocrGuid_t input_dbg, fft_result_dbg, ifft_result_dbg;
@@ -575,13 +563,10 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
       xe_exit(1);
     }
     struct complexData *Xup_data_ptr = (struct complexData *)&Xup[image_params->P3];
-    if ( Xup_data_ptr == NULL) {
-      ocrPrintf("Unable to allocate memory for Xup.\n");RAG_FLUSH;
-      xe_exit(1);
-    }
     for(int n=0; n<image_params->P3; n++) {
       Xup[n] =  Xup_data_ptr + n*image_params->S4;
     }
+    RAG_REMAP_2D(Xin, image_params->P3, image_params->S3, struct complexData);
 
     for(int m=0; m<image_params->P3; m++) {
 #ifdef RAG_DRAM
@@ -613,221 +598,136 @@ ocrGuid_t BackProj_edt(uint32_t paramc, uint64_t *paramv, uint32_t depc, ocrEdtD
     fftwf_free(ifft_result, ifft_result_dbg);
     fftwf_destroy_plan(plan_forward);
     fftwf_destroy_plan(plan_backward);
-#ifdef TRACE
-    ocrPrintf("////// Performing backprojection over Ix[%d:%d] and Iy[%d:%d]\n",
-	      m1, m2-1, n1, n2-1);RAG_FLUSH;
-#endif
-#if !defined(TG_ARCH)
-    fprintf(stderr,"Performing backprojection over Ix[%d:%d] and Iy[%d:%d]\n",
-	      m1, m2-1, n1, n2-1);fflush(stderr);
-#endif
-
-#ifdef RAG_NEW_BLK_SIZE
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = RAG_NEW_BLK_SIZE;
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = RAG_NEW_BLK_SIZE;
-#else
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = blk_size(m2-m1,32);
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = blk_size(n2-n1,32);
-    assert( ((m2-m1)%BACK_PROJ_ASYNC_BLOCK_SIZE_M) == 0);
-    assert( ((n2-n1)%BACK_PROJ_ASYNC_BLOCK_SIZE_N) == 0);
-#endif
-
-    /* One block per tile, and a gather that assembles them into the image
-     * once.  The tiles then never share a writable block, which is what the
-     * base program's single whole-image RW dependence forces them to do. */
-    int _ntm = 0, _ntn = 0;
-    for(int m=m1; m<m2; m+=BACK_PROJ_ASYNC_BLOCK_SIZE_M) _ntm++;
-    for(int n=n1; n<n2; n+=BACK_PROJ_ASYNC_BLOCK_SIZE_N) _ntn++;
-    int _ntiles = _ntm * _ntn;
-    /* This task does not touch the image any more -- the tiles write their own
-     * blocks and the gather assembles them.  Release it BEFORE handing a write
-     * dependence on it to the gather: holding a block while queuing a writer
-     * for it puts that writer behind this task, and every reader that queues
-     * afterwards behind the writer. */
-    ocrDbRelease(image_dbg);
-    ocrGuid_t _gather_clg, _gather_scg;
-    bpGatherPRM_t _gp;
-    _gp.m1 = m1; _gp.m2 = m2; _gp.n1 = n1; _gp.n2 = n2;
-    _gp.bm = BACK_PROJ_ASYNC_BLOCK_SIZE_M; _gp.bn = BACK_PROJ_ASYNC_BLOCK_SIZE_N;
-    retval = ocrEdtTemplateCreate(&_gather_clg, backproject_gather_edt,
-                                  (sizeof(bpGatherPRM_t)+sizeof(u64)-1)/sizeof(u64),
-                                  3 + _ntiles);
-    assert(retval==0);
-    RAG_TEMPLATE_REGISTER(_gather_clg);
-    retval = ocrEdtCreate(&_gather_scg, _gather_clg, EDT_PARAM_DEF, (u64 *)&_gp,
-                          EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
-    assert(retval==0);
-    RAG_DEF_MACRO_PASS_RO(_gather_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-    RAG_DEF_MACRO_PASS(_gather_scg,NULL,NULL,NULL,NULL,image_dbg,1);
-    /* The gather writes the stripe set: it is the one task that holds the
-       whole image, so it is where the cut belongs. */
-    RAG_DEF_MACRO_PASS(_gather_scg,NULL,NULL,NULL,NULL,_stripes_dbg,2);
-    int _tidx = 0;
-
-    // create a template for backproject_async function
-    ocrGuid_t backproject_async_clg;
-    retval = ocrEdtTemplateCreate(
-	&backproject_async_clg, // ocrGuid_t *new_guid
-	 backproject_async_edt,	// ocr_edt_ptr func_ptr
-	PRMNUM(backProjAsync),
-	5);			// depc
-    assert(retval==0);
-    RAG_TEMPLATE_REGISTER(backproject_async_clg);
-
-#ifdef RAG_NEW_BLK_SIZE
-    for(int m=m1; m<m2; m+=BACK_PROJ_ASYNC_BLOCK_SIZE_M) {
-      for(int n=n1; n<n2; n+=BACK_PROJ_ASYNC_BLOCK_SIZE_N) {
-	struct corners_t async_corners;
-	async_corners.m1   = m;
-	async_corners.m2   = (m+BACK_PROJ_ASYNC_BLOCK_SIZE_M)<m2?(m+BACK_PROJ_ASYNC_BLOCK_SIZE_M):m2;
-	async_corners.n1   = n;
-	async_corners.n2   = (n+BACK_PROJ_ASYNC_BLOCK_SIZE_N)<n2?(n+BACK_PROJ_ASYNC_BLOCK_SIZE_N):n2;
-#else
-    for(int m=m1; m<m2; m+=BACK_PROJ_ASYNC_BLOCK_SIZE_M) {
-      for(int n=n1; n<n2; n+=BACK_PROJ_ASYNC_BLOCK_SIZE_N) {
-	struct corners_t async_corners;
-	async_corners.m1   = m;
-	async_corners.m2   = m+BACK_PROJ_ASYNC_BLOCK_SIZE_M;
-	async_corners.n1   = n;
-	async_corners.n2   = n+BACK_PROJ_ASYNC_BLOCK_SIZE_N;
-#endif
-#ifdef TRACE_LVL_3
-	ocrPrintf("////// create an edt for backproject_async\n");RAG_FLUSH;
-#endif
-	ocrGuid_t backproject_async_scg, _tile_evg;
-    backProjAsyncPRM_t backProjAsyncParamv;
-    backProjAsyncParamv.corners = async_corners;
-	retval = ocrEdtCreate(
-			&backproject_async_scg,	// *created_edt_guid
-			 backproject_async_clg,	// edt_template_guid
-			EDT_PARAM_DEF,		// paramc
-			(u64 *)&backProjAsyncParamv, // *paramv
-			EDT_PARAM_DEF,		// depc
-			NULL,			// *depv
-			EDT_PROP_NONE,		// properties
-			NULL_HINT, // affinity
-			&_tile_evg);		// *outputEvent
-	assert(retval==0);
-	retval = ocrAddDependence(_tile_evg, _gather_scg, 3 + _tidx, DB_MODE_RO);
-	assert(retval==0);
-	_tidx++;
-
-	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,radar_params_dbg,1);
-	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Xup_dbg,2);  // Xup
-	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Pt_dbg,3);   // Platform Position
-	RAG_DEF_MACRO_PASS_RO(backproject_async_scg,NULL,NULL,NULL,NULL,Tp_dbg,4);   // Pulse timestamps
-      } // for n
-    } // for m
-#ifndef TG_ARCH
-    dram_free(Xup,Xup_dbg); // Xup[]
-#else
-     bsm_free(Xup,Xup_dbg); // Xup[]
-#endif
-  } else { // if F
-#ifdef TRACE
-    ocrPrintf("////// Performing backprojection over Ix[%d:%d] and Iy[%d:%d]\n",
-	      m1, m2-1, n1, n2-1);RAG_FLUSH;
-#endif
-#if !defined(TG_ARCH)
-    fprintf(stderr,"Performing backprojection over Ix[%d:%d] and Iy[%d:%d]\n",
-	      m1, m2-1, n1, n2-1);fflush(stderr);
-#endif
-
-#ifdef RAG_NEW_BLK_SIZE
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = RAG_NEW_BLK_SIZE;
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = RAG_NEW_BLK_SIZE;
-#else
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_M = blk_size(m2-m1,32);
-    int BACK_PROJ_ASYNC_BLOCK_SIZE_N = blk_size(n2-n1,32);
-    assert( ((m2-m1)%BACK_PROJ_ASYNC_BLOCK_SIZE_M) == 0);
-    assert( ((n2-n1)%BACK_PROJ_ASYNC_BLOCK_SIZE_N) == 0);
-#endif
-
-    /* One block per tile, and a gather that assembles them into the image
-     * once.  The tiles then never share a writable block, which is what the
-     * base program's single whole-image RW dependence forces them to do. */
-    int _ntm = 0, _ntn = 0;
-    for(int m=m1; m<m2; m+=BACK_PROJ_ASYNC_BLOCK_SIZE_M) _ntm++;
-    for(int n=n1; n<n2; n+=BACK_PROJ_ASYNC_BLOCK_SIZE_N) _ntn++;
-    int _ntiles = _ntm * _ntn;
-    /* This task does not touch the image any more -- the tiles write their own
-     * blocks and the gather assembles them.  Release it BEFORE handing a write
-     * dependence on it to the gather: holding a block while queuing a writer
-     * for it puts that writer behind this task, and every reader that queues
-     * afterwards behind the writer. */
-    ocrDbRelease(image_dbg);
-    ocrGuid_t _gather_clg, _gather_scg;
-    bpGatherPRM_t _gp;
-    _gp.m1 = m1; _gp.m2 = m2; _gp.n1 = n1; _gp.n2 = n2;
-    _gp.bm = BACK_PROJ_ASYNC_BLOCK_SIZE_M; _gp.bn = BACK_PROJ_ASYNC_BLOCK_SIZE_N;
-    retval = ocrEdtTemplateCreate(&_gather_clg, backproject_gather_edt,
-                                  (sizeof(bpGatherPRM_t)+sizeof(u64)-1)/sizeof(u64),
-                                  3 + _ntm);
-    assert(retval==0);
-    RAG_TEMPLATE_REGISTER(_gather_clg);
-    retval = ocrEdtCreate(&_gather_scg, _gather_clg, EDT_PARAM_DEF, (u64 *)&_gp,
-                          EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
-    assert(retval==0);
-    RAG_DEF_MACRO_PASS_RO(_gather_scg,NULL,NULL,NULL,NULL,image_params_dbg,0);
-    RAG_DEF_MACRO_PASS(_gather_scg,NULL,NULL,NULL,NULL,image_dbg,1);
-    /* The gather writes the stripe set: it is the one task that holds the
-       whole image, so it is where the cut belongs. */
-    RAG_DEF_MACRO_PASS(_gather_scg,NULL,NULL,NULL,NULL,_stripes_dbg,2);
-    int _tidx = 0;
-
-    // create a template for backproject_async function
-    ocrGuid_t backproject_async_clg;
-    retval = ocrEdtTemplateCreate(
-	&backproject_async_clg, // ocrGuid_t *new_guid
-	backproject_async_edt,	// ocr_edt_ptr func_ptr
-	PRMNUM(backProjAsync), // paramc
-	5);			// depc
-    assert(retval==0);
-    RAG_TEMPLATE_REGISTER(backproject_async_clg);
-
-    /* One spawner per row-stripe: each creates its own stripe's tiles, so the
-       creation traffic is spread over the machine instead of issuing from this
-       one task, and each tile is created on the rank that will run it.  Slot
-       ranges are handed out arithmetically, so the stripes never coordinate. */
-    /* Each stripe assembles its own row band; the image gather then has one
-       dependence per band.  Both fan-ins are the grid's side length, which is
-       what keeps the dependence list inside the transport's message bound. */
-    ocrGuid_t _row_clg;
-    retval = ocrEdtTemplateCreate(&_row_clg, bp_row_gather_edt,
-                                  (sizeof(bpRowPRM_t)+sizeof(u64)-1)/sizeof(u64),
-                                  1 + _ntn);
-    assert(retval==0);
-    RAG_TEMPLATE_REGISTER(_row_clg);
-    ocrGuid_t _stripe_clg;
-    retval = ocrEdtTemplateCreate(&_stripe_clg, bp_stripe_edt,
-                                  (sizeof(bpStripePRM_t)+sizeof(u64)-1)/sizeof(u64),
-                                  0);
-    assert(retval==0);
-    RAG_TEMPLATE_REGISTER(_stripe_clg);
-    for(int m=m1; m<m2; m+=BACK_PROJ_ASYNC_BLOCK_SIZE_M) {
-      bpStripePRM_t _sp;
-      _sp.gather_scg       = _gather_scg;
-      _sp.image_params_dbg = image_params_dbg;
-      _sp.radar_params_dbg = radar_params_dbg;
-      _sp.Xin_dbg          = Xin_dbg;
-      _sp.Pt_dbg           = Pt_dbg;
-      _sp.Tp_dbg           = Tp_dbg;
-      _sp.tile_clg         = backproject_async_clg;
-      _sp.row_clg          = _row_clg;
-      _sp.m  = m;   _sp.m2 = m2;
-      _sp.n1 = n1;  _sp.n2 = n2;
-      _sp.bm = BACK_PROJ_ASYNC_BLOCK_SIZE_M;
-      _sp.bn = BACK_PROJ_ASYNC_BLOCK_SIZE_N;
-      _sp.slot = 3 + _tidx;
-      _tidx += 1;
-      ocrGuid_t _stripe_scg;
-      retval = ocrEdtCreate(&_stripe_scg, _stripe_clg, EDT_PARAM_DEF,
-                            (u64 *)&_sp, EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
-                            NULL_HINT, NULL);
-      assert(retval==0);
-    } // for m
+    ocrDbRelease(Xup_dbg);
+    Xsrc_dbg = Xup_dbg;
   } // if F
+#ifdef TRACE
+  ocrPrintf("////// Performing backprojection over Ix[%d:%d] and Iy[%d:%d]\n",
+	    m1, m2-1, n1, n2-1);RAG_FLUSH;
+#endif
+
+#ifdef RAG_NEW_BLK_SIZE
+  const int BM = image_params->blk_tile;
+  const int BN = image_params->blk_tile;
+#else
+  const int BM = blk_size(m2-m1,32);
+  const int BN = blk_size(n2-n1,32);
+  assert( ((m2-m1)%BM) == 0);
+  assert( ((n2-n1)%BN) == 0);
+#endif
+
+  /* The stripe gathers below assemble a stripe out of the bands that cover it
+     and clip them at the image's own height, so a call that produced only part
+     of the image would leave a stripe holding rows nothing wrote. */
+  if(m1 != 0 || m2 != image_params->Iy || n1 != 0 || n2 != image_params->Ix) {
+    ocrPrintf("projection over rows [%d,%d) and columns [%d,%d) is not the whole"
+              " %dx%d image; the stripe assembly assumes it is\n",
+              m1, m2, n1, n2, image_params->Iy, image_params->Ix);RAG_FLUSH;
+    xe_exit(1);
+  }
+
+  int _ntn = 0;
+  for(int n=n1; n<n2; n+=BN) _ntn++;
+
+  /* The stripe layout is read once into local storage and the block released:
+     the collector below writes it, and a writer queued behind a reader that is
+     still holding the block would put every later reader behind that writer. */
+  struct img_stripes_s _st;
+  memcpy(&_st, stripes, sizeof(_st));
+  ocrDbRelease(stripes_dbg);
+
+  ocrGuid_t backproject_async_clg;
+  retval = ocrEdtTemplateCreate(&backproject_async_clg, backproject_async_edt,
+                                PRMNUM(backProjAsync), 5);
+  assert(retval==0);
+  RAG_TEMPLATE_REGISTER(backproject_async_clg);
+
+  /* Each band assembles its own row of tiles into a full-width slab, and each
+     stripe assembles the bands that fall in it.  Two levels keep both fan-ins
+     at the grid's side length, which is what keeps a dependence list inside
+     the transport's message bound. */
+  ocrGuid_t _row_clg;
+  retval = ocrEdtTemplateCreate(&_row_clg, bp_row_gather_edt,
+                                (sizeof(bpRowPRM_t)+sizeof(u64)-1)/sizeof(u64),
+                                1 + _ntn);
+  assert(retval==0);
+  RAG_TEMPLATE_REGISTER(_row_clg);
+  ocrGuid_t _stripe_clg;
+  retval = ocrEdtTemplateCreate(&_stripe_clg, bp_stripe_edt,
+                                (sizeof(bpStripePRM_t)+sizeof(u64)-1)/sizeof(u64),
+                                0);
+  assert(retval==0);
+  RAG_TEMPLATE_REGISTER(_stripe_clg);
+
+  int _maxb = 1;
+  for(int s = 0; s < _st.ns; s++) {
+    int _j0, _nb; img_stripe_bands(&_st, s, BM, &_j0, &_nb);
+    if(_nb > _maxb) _maxb = _nb;
+  }
+  ocrGuid_t _sg_clg;
+  retval = ocrEdtTemplateCreate(&_sg_clg, img_stripe_gather_edt, PRMNUM(stGather), _maxb);
+  assert(retval==0);
+  RAG_TEMPLATE_REGISTER(_sg_clg);
+  ocrGuid_t _coll_clg, _coll_scg;
+  retval = ocrEdtTemplateCreate(&_coll_clg, img_stripes_collect_edt, 0, 1 + _st.ns);
+  assert(retval==0);
+  RAG_TEMPLATE_REGISTER(_coll_clg);
+  retval = ocrEdtCreate(&_coll_scg, _coll_clg, EDT_PARAM_DEF, NULL,
+                        EDT_PARAM_DEF, NULL, EDT_PROP_NONE, NULL_HINT, NULL);
+  assert(retval==0);
+  RAG_DEF_MACRO_PASS(_coll_scg,NULL,NULL,NULL,NULL,stripes_dbg,0);
+
+  ocrGuid_t _sg_scg[IMG_MAX_STRIPES];
+  for(int s = 0; s < _st.ns; s++) {
+    int _j0, _nb; img_stripe_bands(&_st, s, BM, &_j0, &_nb);
+    stGatherPRM_t _gp;
+    _gp.y0 = (u64)_st.y0[s];   _gp.y1 = (u64)_st.y0[s+1];
+    _gp.iy = (u64)image_params->Iy; _gp.ix = (u64)image_params->Ix;
+    _gp.bh = (u64)BM;          _gp.j0 = (u64)_j0;
+    _gp.nb = (u64)_nb;         _gp.rank = img_stripe_rank(&_st, s);
+    ocrHint_t _sh;
+    ocrGuid_t _sg_evg;
+    retval = ocrEdtCreate(&_sg_scg[s], _sg_clg, EDT_PARAM_DEF, (u64 *)&_gp,
+                          EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
+                          img_stripe_hint(&_sh, &_st, s), &_sg_evg);
+    assert(retval==0);
+    retval = ocrAddDependence(_sg_evg, _coll_scg, 1 + s, DB_MODE_RO);
+    assert(retval==0);
+    /* A stripe with fewer bands than the widest one still has to be runnable. */
+    for(int k = _nb; k < _maxb; k++) {
+      RAG_DEF_MACRO_GUID_ONLY(_sg_scg[s],stripes_dbg,k);
+    }
+  }
+
+  /* One spawner per band: each creates its own tiles, so the creation traffic
+     is spread over the machine instead of issuing from this one task, and each
+     tile is created on the rank whose stripe it fills. */
+  for(int m=m1; m<m2; m+=BM) {
+    const int _s = img_stripe_of(&_st, m);
+    const int _j0 = _st.y0[_s] / BM;
+    bpStripePRM_t _sp;
+    _sp.gather_scg       = _sg_scg[_s];
+    _sp.image_params_dbg = image_params_dbg;
+    _sp.radar_params_dbg = radar_params_dbg;
+    _sp.Xin_dbg          = Xsrc_dbg;
+    _sp.Pt_dbg           = Pt_dbg;
+    _sp.Tp_dbg           = Tp_dbg;
+    _sp.tile_clg         = backproject_async_clg;
+    _sp.row_clg          = _row_clg;
+    _sp.m  = m;   _sp.m2 = m2;
+    _sp.n1 = n1;  _sp.n2 = n2;
+    _sp.bm = BM;  _sp.bn = BN;
+    /* The gather's slots are the stripe's own bands, counted from the image's
+       first row, not from this call's first row. */
+    _sp.slot = m / BM - _j0;
+    _sp.rank = (int)img_stripe_rank(&_st, _s);
+    ocrHint_t _bh;
+    ocrGuid_t _stripe_scg;
+    retval = ocrEdtCreate(&_stripe_scg, _stripe_clg, EDT_PARAM_DEF,
+                          (u64 *)&_sp, EDT_PARAM_DEF, NULL, EDT_PROP_NONE,
+                          rank_edt_hint(&_bh, (u64)_sp.rank), NULL);
+    assert(retval==0);
+  } // for m
 
 #ifdef TRACE_LVL_3
   ocrPrintf("////// leave BackProj_edt\n");RAG_FLUSH;

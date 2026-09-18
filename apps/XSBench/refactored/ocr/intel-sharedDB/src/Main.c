@@ -23,6 +23,7 @@
 
 ocrGuid_t iterationsPerThreadEdt( EDT_ARGS );
 ocrGuid_t lookUpKernelPerThreadEdt( EDT_ARGS );
+ocrGuid_t summaryEdt( EDT_ARGS );
 
 typedef struct
 {
@@ -65,7 +66,7 @@ void initOcrObjects( rankH_t* PTR_rankH, u64 myRank, u64 nRanks )
     reductionPrivate_t* rpPerfTimerPTR;
     ocrDbCreate( &PTR_rankH->rpPerfTimerDBK, (void**) &rpPerfTimerPTR, sizeof(reductionPrivate_t), 0, NULL_HINT, NO_ALLOC );
 
-    ocrEdtTemplateCreate( &PTR_rankTemplateH->iterationsPerThreadTML, iterationsPerThreadEdt, (sizeof(PRM_iterationsPerThread_t)+sizeof(u64)-1)/sizeof(u64), 11 );
+    ocrEdtTemplateCreate( &PTR_rankTemplateH->iterationsPerThreadTML, iterationsPerThreadEdt, (sizeof(PRM_iterationsPerThread_t)+sizeof(u64)-1)/sizeof(u64), 10 );
     ocrEdtTemplateCreate( &PTR_rankTemplateH->lookUpKernelPerThreadTML, lookUpKernelPerThreadEdt, (sizeof(PRM_perThread_t)+sizeof(u64)-1)/sizeof(u64), 3 );
 
     rpPerfTimerPTR->nrank = nRanks;
@@ -96,15 +97,11 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
 
-	// rand() is only used in the serial initialization stages.
-	// A custom RNG is used in parallel portions.
-	#ifdef VERIFICATION
-	srand(26);
-	#else
-	srand(time(NULL));
-	#endif
-
     Inputs in = PTR_rankH->globalParamH.in;
+
+	// The instance index is part of the key, so the instances are independent
+	// replicas and each one's data is the same at every node count.
+	u64 dataSeed = XS_DATA_SEED + mype;
 
 	// =====================================================================
 	// Prepare Nuclide Energy Grids, Unionized Energy Grid, & Material Data
@@ -113,23 +110,10 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 	// Allocate & fill energy grids
 	if( mype == 0) ocrPrintf("Generating Nuclide Energy Grids...\n");
 
-	#ifdef VERIFICATION
-    u64* seed_v;
-    ocrDbCreate( &PTR_rankDataH->DBK_seed_v, (void**) &seed_v, sizeof(u64), 0, NULL_HINT, NO_ALLOC );
-    *seed_v = 1337;
-    u64* hash;
-    ocrDbCreate( &PTR_rankDataH->DBK_hash, (void**) &hash, sizeof(u64), 0, NULL_HINT, NO_ALLOC );
-    *hash = 0;
-	#endif
-
 	NuclideGridPoint ** nuclide_grids = gpmatrix(&PTR_rankDataH->DBK_nuclide_grids, &PTR_rankDataH->DBK_nuclide_grid_ptrs,
                                                     in.n_isotopes,in.n_gridpoints);
 
-	#ifdef VERIFICATION
-	generate_grids_v( nuclide_grids, in.n_isotopes, in.n_gridpoints, seed_v );
-	#else
-	generate_grids( nuclide_grids, in.n_isotopes, in.n_gridpoints );
-	#endif
+	generate_grids( nuclide_grids, in.n_isotopes, in.n_gridpoints, dataSeed );
 
 	// Sort grids by energy
 	if( mype == 0) ocrPrintf("Sorting Nuclide Energy Grids...\n");
@@ -139,10 +123,12 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 	int * xs_grid;
 	GridPoint * energy_grid = generate_energy_grid( &PTR_rankDataH->DBK_uEnergy_grid, &PTR_rankDataH->DBK_xs_grid, in.n_isotopes,
 	                          in.n_gridpoints, nuclide_grids, mype, &xs_grid );
+	(void) energy_grid;
+	(void) xs_grid;
 
-	// Double Indexing. Filling in the flat xs grid with per-nuclide indices
-	// for every unionized-grid point.
-	set_grid_ptrs( energy_grid, xs_grid, nuclide_grids, in.n_isotopes, in.n_gridpoints, mype );
+	// Double Indexing. The flat xs grid is filled in by a fan-out of tasks
+	// over disjoint unionized-grid row ranges; see FNC_initSimulation.
+	if( mype == 0 ) ocrPrintf("Assigning pointers to Unionized Energy Grid...\n");
 
 	// Get material data
 	if( mype == 0 )
@@ -150,16 +136,7 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 	int *num_nucs  = load_num_nucs( &PTR_rankDataH->DBK_num_nucs, in.n_isotopes);
 	int **mats     = load_mats(PTR_rankDataH, num_nucs, in.n_isotopes);
 
-	#ifdef VERIFICATION
-	double **concs = load_concs_v(PTR_rankDataH, num_nucs, seed_v);
-	#else
-	double **concs = load_concs(PTR_rankDataH, num_nucs);
-	#endif
-
-	#ifdef VERIFICATION
-    ocrDbRelease( PTR_rankDataH->DBK_seed_v );
-    ocrDbRelease( PTR_rankDataH->DBK_hash );
-    #endif
+	double **concs = load_concs(PTR_rankDataH, num_nucs, dataSeed);
 
     ocrDbRelease( PTR_rankDataH->DBK_nuclide_grids );
     ocrDbRelease( PTR_rankDataH->DBK_nuclide_grid_ptrs );
@@ -204,24 +181,18 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
     ocrDBK_t DBK_num_nucs = depv[_idep++].guid;
     ocrDBK_t DBK_mats_all = depv[_idep++].guid;
     ocrDBK_t DBK_concs_all = depv[_idep++].guid;
-    #ifdef VERIFICATION
-    ocrDBK_t DBK_hash = depv[_idep++].guid;
-    #endif
 
     _idep = 0;
     rankH_t* PTR_rankH = depv[_idep++].ptr;
     rankDataH_t* PTR_rankDataH = depv[_idep++].ptr;
     u64* seed = depv[_idep++].ptr;
-    double* xs = depv[_idep++].ptr;
+    LaneResult* lane = depv[_idep++].ptr;
 	NuclideGridPoint * nuclide_grids_linear = depv[_idep++].ptr;
 	GridPoint * uEnergy_grid = depv[_idep++].ptr;
     int* xs_grid = depv[_idep++].ptr;
     int* num_nucs = depv[_idep++].ptr;
     int* mats_all = depv[_idep++].ptr;
     double* concs_all = depv[_idep++].ptr;
-    #ifdef VERIFICATION
-    u64* vhash = depv[_idep++].ptr;
-    #endif
 
     ocrHint_t myDbkAffinityHNT = PTR_rankH->myDbkAffinityHNT;
     ocrHint_t myEdtAffinityHNT = PTR_rankH->myEdtAffinityHNT;
@@ -262,6 +233,9 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
     double p_energy;
     int mat;
 
+    // Magnitude accumulator over this task's own lookups, in its own order.
+    double digestAcc = 0.;
+
     for( int i = ibegin; i <= iend; i++ )
     {
 
@@ -272,15 +246,8 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
         			/ (double) in.nthreads * 100.0);
 
         // Randomly pick an energy and material for the particle
-        #ifdef VERIFICATION
-        {
-        	p_energy = rn_v(seed);
-        	mat      = pick_mat(seed);
-        }
-        #else
         p_energy = rn(seed);
         mat      = pick_mat(seed);
-        #endif
 
         // debugging
         DEBUG_PRINTF(("E = %f mat = %d\n", p_energy, mat));
@@ -296,35 +263,25 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
         // Copy results from above function call onto heap
         // so that compiler cannot optimize function out
         // (only occurs if -flto flag is used)
-        memcpy(xs, macro_xs_vector, 5*sizeof(double));
+        memcpy(lane->xs, macro_xs_vector, sizeof(lane->xs));
 
-        // Verification hash calculation
-        // This method provides a consistent hash accross
-        // architectures and compilers.
-        #ifdef VERIFICATION
-        char line[256];
-        DEBUG_PRINTF(("%.5f %d %.5f %.5f %.5f %.5f %.5f\n",
-               p_energy, mat,
-        	   macro_xs_vector[0],
-        	   macro_xs_vector[1],
-        	   macro_xs_vector[2],
-        	   macro_xs_vector[3],
-        	   macro_xs_vector[4]));
-        sprintf(line, "%.5f %d %.5f %.5f %.5f %.5f %.5f",
-               p_energy, mat,
-        	   macro_xs_vector[0],
-        	   macro_xs_vector[1],
-        	   macro_xs_vector[2],
-        	   macro_xs_vector[3],
-        	   macro_xs_vector[4]);
-        unsigned long vhash_local = hash(line, 10000);
-        *vhash += vhash_local;
-        #endif
+        digestAcc += fabs(macro_xs_vector[0]) + fabs(macro_xs_vector[1])
+                   + fabs(macro_xs_vector[2]) + fabs(macro_xs_vector[3])
+                   + fabs(macro_xs_vector[4]);
     }
+
+    // One quantized contribution per task keeps the chain's digest an integer
+    // sum, so folding the chains is order-independent.
+    lane->digest += xs_quantize( digestAcc );
 
     if( PTR_PRM_iterationsPerThread->lastGeneration )
     {
         DEBUG_PRINTF(("Thread %d reached the end of iterations\n", tid));
+        // Every block this task still holds must be released before the
+        // completion signal that eventually admits its reader: a signal raised
+        // from inside the task body precedes the epilogue's implicit release.
+        ocrDbRelease( DBK_xs );
+        ocrDbRelease( DBK_seed );
         ocrEventSatisfySlot( PTR_rankH->loopCompletionLatchEVT, NULL_GUID, OCR_EVENT_LATCH_DECR_SLOT );
     }
 
@@ -345,11 +302,7 @@ ocrGuid_t lookUpKernelPerThreadEdt( EDT_ARGS )
     int tid = PTR_PRM_perThread->tid;
     int nthreads = PTR_PRM_perThread->nthreads;
     int generation = PTR_PRM_perThread->generation;
-    #ifdef VERIFICATION
-    ocrDBK_t DBK_seed_v = PTR_PRM_perThread->DBK_seed;
-    #else
     ocrDBK_t DBK_seed = PTR_PRM_perThread->DBK_seed;
-    #endif
     ocrDBK_t DBK_xs = PTR_PRM_perThread->DBK_xs;
 
     _idep = 0;
@@ -409,11 +362,7 @@ ocrGuid_t lookUpKernelPerThreadEdt( EDT_ARGS )
     _idep = 0;
     ocrAddDependence( DBK_rankH, iterationsPerThreadEDT, _idep++, DB_MODE_RO );
     ocrAddDependence( DBK_rankDataH, iterationsPerThreadEDT, _idep++, DB_MODE_RO );
-    #ifdef VERIFICATION
-    ocrAddDependence( DBK_seed_v, iterationsPerThreadEDT, _idep++, DB_MODE_EW );
-    #else
     ocrAddDependence( DBK_seed, iterationsPerThreadEDT, _idep++, DB_MODE_RW );
-    #endif
     ocrAddDependence( DBK_xs, iterationsPerThreadEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( PTR_rankDataH->DBK_nuclide_grids, iterationsPerThreadEDT, _idep++, DB_MODE_RO );
     ocrAddDependence( PTR_rankDataH->DBK_uEnergy_grid, iterationsPerThreadEDT, _idep++, DB_MODE_RO );
@@ -421,11 +370,6 @@ ocrGuid_t lookUpKernelPerThreadEdt( EDT_ARGS )
     ocrAddDependence( PTR_rankDataH->DBK_num_nucs, iterationsPerThreadEDT, _idep++, DB_MODE_RO );
     ocrAddDependence( PTR_rankDataH->DBK_mats_all, iterationsPerThreadEDT, _idep++, DB_MODE_RO );
     ocrAddDependence( PTR_rankDataH->DBK_concs_all, iterationsPerThreadEDT, _idep++, DB_MODE_RO );
-    #ifdef VERIFICATION
-    ocrAddDependence( PTR_rankDataH->DBK_hash, iterationsPerThreadEDT, _idep++, DB_MODE_EW );
-    #else
-    ocrAddDependence( NULL_GUID, iterationsPerThreadEDT, _idep++, DB_MODE_EW );
-    #endif
 
     if( ub_g < PTR_in->lookups-1 )
     {
@@ -482,25 +426,40 @@ ocrGuid_t lookUpKernelEdt( EDT_ARGS )
 		border_print();
 	}
 
+    //Create the summary EDT here: it reports the reduced time and folds the
+    //chains' digests, so it needs one dependence per chain and per chain seed.
+    ocrGuid_t summaryTML, summaryEDT;
+    ocrEdtTemplateCreate( &summaryTML, summaryEdt, 0, 3 + 2*nthreads );
+
+    ocrEdtCreate( &summaryEDT, summaryTML,
+                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
+
+    ocrEdtTemplateDestroy( summaryTML );
+
+    ocrAddDependence( DBK_rankH, summaryEDT, 0, DB_MODE_RW );
+    ocrAddDependence( DBK_rankDataH, summaryEDT, 1, DB_MODE_RW );
+    ocrAddDependence( PTR_rankH->rpPerfTimerEVT, summaryEDT, 2, DB_MODE_RO );
+
     for( int i = 0; i < nthreads; ++i )
     {
         u64 tid = i;
         PRM_perThread.tid = tid;
 
         ocrDBK_t DBK_seed;
-        #ifdef VERIFICATION
-        DBK_seed = PTR_rankDataH->DBK_seed_v;
-        #else
         u64 *seed;
         ocrDbCreate( &DBK_seed, (void**) &seed, sizeof(u64), 0, NULL_HINT, NO_ALLOC );
         *seed = (tid+1)*19+17;
         ocrDbRelease( DBK_seed );
-        #endif
 
         ocrDBK_t DBK_xs;
-        double* xs;
-        ocrDbCreate( &DBK_xs, (void**) &xs, 5*sizeof(double), 0, NULL_HINT, NO_ALLOC );
+        LaneResult* lane;
+        ocrDbCreate( &DBK_xs, (void**) &lane, sizeof(LaneResult), 0, NULL_HINT, NO_ALLOC );
+        memset( lane, 0, sizeof(LaneResult) );
         ocrDbRelease( DBK_xs );
+
+        ocrAddDependence( DBK_xs, summaryEDT, 3 + i, DB_MODE_RO );
+        ocrAddDependence( DBK_seed, summaryEDT, 3 + nthreads + i, DB_MODE_RO );
 
         PRM_perThread.DBK_seed = DBK_seed;
         PRM_perThread.DBK_xs = DBK_xs;
@@ -561,19 +520,11 @@ ocrGuid_t summaryEdt( EDT_ARGS )
     ocrGuid_t DBK_rankH = depv[_idep++].guid;
     ocrDBK_t DBK_rankDataH = depv[_idep++].guid;
     ocrDBK_t maxTimeDBK = depv[_idep++].guid;
-	#ifdef VERIFICATION
-    ocrDBK_t DBK_hash = depv[_idep++].guid;
-    #endif
 
     _idep = 0;
     rankH_t* PTR_rankH = depv[_idep++].ptr;
     rankDataH_t* PTR_rankDataH = depv[_idep++].ptr;
     double* runtime = depv[_idep++].ptr;
-	#ifdef VERIFICATION
-    u64 vhash = *(u64*)(depv[_idep++].ptr);
-    #else
-    u64 vhash = 0;
-    #endif
 
     Inputs* PTR_in = &(PTR_rankH->globalParamH.in);
     globalOcrParamH_t* PTR_globalOcrParamH = &(PTR_rankH->globalParamH.ocrParamH);
@@ -581,6 +532,16 @@ ocrGuid_t summaryEdt( EDT_ARGS )
 
     int mype = PTR_rankH->myRank;
     int nprocs = PTR_rankH->nRanks;
+    int nthreads = PTR_in->nthreads;
+
+    // Integer fold over the chains: independent of the order they finished in
+    // and of how the chains were distributed.
+    u64 checksum = 0;
+    for( int i = 0; i < nthreads; i++ )
+    {
+        LaneResult* lane = depv[3 + i].ptr;
+        checksum += lane->digest;
+    }
 
 	if( mype == 0)
 	{
@@ -588,14 +549,15 @@ ocrGuid_t summaryEdt( EDT_ARGS )
 		ocrPrintf("Simulation complete.\n" );
 
 	    // Print / Save Results and Exit
-	    print_results( *PTR_in, mype, *runtime, nprocs, vhash );
+	    print_results( *PTR_in, mype, *runtime, nprocs, checksum );
 	}
 
     //Destroy DBK, events, etc.
-	#ifdef VERIFICATION
-    ocrDbDestroy( PTR_rankDataH->DBK_seed_v );
-    ocrDbDestroy( PTR_rankDataH->DBK_hash );
-    #endif
+    for( int i = 0; i < nthreads; i++ )
+    {
+        ocrDbDestroy( depv[3 + i].guid );
+        ocrDbDestroy( depv[3 + nthreads + i].guid );
+    }
 
     ocrDbDestroy( PTR_rankDataH->DBK_nuclide_grids );
     ocrDbDestroy( PTR_rankDataH->DBK_nuclide_grid_ptrs );
@@ -611,6 +573,127 @@ ocrGuid_t summaryEdt( EDT_ARGS )
 
 	if( mype == 0)
         ocrEventSatisfy(PTR_globalOcrParamH->finalOnceEVT, NULL_GUID );
+
+    return NULL_GUID;
+}
+
+typedef struct
+{
+    u64 ibegin, iend;
+} PRM_alignGrid_t;
+
+/* One producer per lookup chain, but never more producers than there are rows
+ * to produce, so every range is non-empty and every output block has a size. */
+static u64 alignTaskCount( long n_isotopes, long n_gridpoints, u64 nchains )
+{
+    u64 nrows = (u64) n_isotopes * (u64) n_gridpoints;
+    return ( nchains < nrows ) ? nchains : nrows;
+}
+
+static void alignRange( u64 t, u64 nrows, u64 ntasks, u64* ibegin, u64* iend )
+{
+    *ibegin = t*nrows/ntasks;
+    *iend   = (t+1)*nrows/ntasks;
+}
+
+ocrGuid_t alignGridEdt( EDT_ARGS )
+{
+    DEBUG_PRINTF(( "%s\n", __func__ ));
+
+    s32 _idep;
+
+    PRM_alignGrid_t* PTR_PRM_alignGrid = (PRM_alignGrid_t*) paramv;
+
+    _idep = 3;
+    ocrDBK_t DBK_rows = depv[_idep].guid;
+
+    _idep = 0;
+    rankH_t* PTR_rankH = depv[_idep++].ptr;
+    NuclideGridPoint* nuclide_grids_linear = depv[_idep++].ptr;
+    GridPoint* uEnergy_grid = depv[_idep++].ptr;
+    int* xs_rows = depv[_idep++].ptr;
+
+    Inputs* PTR_in = &(PTR_rankH->globalParamH.in);
+    long n_isotopes = PTR_in->n_isotopes;
+    long n_gridpoints = PTR_in->n_gridpoints;
+
+    /* A pointer table cannot live in a shared datablock, so each acquirer
+     * builds its own over the linear grid it acquired. */
+    ocrDBK_t DBK_nuclide_grid_ptrs;
+    NuclideGridPoint ** nuclide_grids;
+    ocrDbCreate( &DBK_nuclide_grid_ptrs, (void **) &nuclide_grids, n_isotopes*sizeof(NuclideGridPoint *),
+                    0, NULL_HINT, NO_ALLOC );
+
+    assignNuclideGridPtrs( nuclide_grids_linear, nuclide_grids, n_isotopes, n_gridpoints );
+
+    set_grid_ptrs_range( uEnergy_grid, xs_rows, nuclide_grids, n_isotopes, n_gridpoints,
+                         PTR_PRM_alignGrid->ibegin, PTR_PRM_alignGrid->iend );
+
+    ocrDbDestroy( DBK_nuclide_grid_ptrs );
+
+    /* The rows must be published before the completion event that admits the
+     * assembling task. */
+    ocrDbRelease( DBK_rows );
+
+    return NULL_GUID;
+}
+
+ocrGuid_t alignJoinEdt( EDT_ARGS )
+{
+    DEBUG_PRINTF(( "%s\n", __func__ ));
+
+    s32 _idep;
+
+    _idep = 0;
+    ocrGuid_t DBK_rankH = depv[_idep++].guid;
+    ocrDBK_t DBK_rankDataH = depv[_idep++].guid;
+    ocrDBK_t DBK_xs_grid = depv[_idep++].guid;
+
+    _idep = 0;
+    rankH_t* PTR_rankH = depv[_idep++].ptr;
+    rankDataH_t* PTR_rankDataH = depv[_idep++].ptr;
+    int* xs_grid = depv[_idep++].ptr;
+
+    ocrHint_t myEdtAffinityHNT = PTR_rankH->myEdtAffinityHNT;
+
+    Inputs* PTR_in = &(PTR_rankH->globalParamH.in);
+    long n_isotopes = PTR_in->n_isotopes;
+    long n_gridpoints = PTR_in->n_gridpoints;
+
+    u64 nrows = (u64) n_isotopes * (u64) n_gridpoints;
+    u64 ntasks = alignTaskCount( n_isotopes, n_gridpoints, (u64) PTR_in->nthreads );
+
+    u64 t;
+    for( t = 0; t < ntasks; t++ )
+    {
+        u64 ibegin, iend;
+        alignRange( t, nrows, ntasks, &ibegin, &iend );
+
+        memcpy( &xs_grid[ibegin * (u64) n_isotopes], depv[3+t].ptr,
+                (iend - ibegin) * (u64) n_isotopes * sizeof(int) );
+    }
+
+    for( t = 0; t < ntasks; t++ )
+        ocrDbDestroy( depv[3+t].guid );
+
+    profile_start( total_timer, &PTR_rankDataH->timers );
+
+    ocrDbRelease( DBK_xs_grid );
+    ocrDbRelease( DBK_rankDataH );
+
+    //Cross-section lookup kernel
+    ocrGuid_t lookUpKernelTML, lookUpKernelEDT;
+    ocrEdtTemplateCreate( &lookUpKernelTML, lookUpKernelEdt, 0, 2 );
+
+    ocrEdtCreate( &lookUpKernelEDT, lookUpKernelTML,
+                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
+
+    ocrEdtTemplateDestroy( lookUpKernelTML );
+
+    _idep = 0;
+    ocrAddDependence( DBK_rankH, lookUpKernelEDT, _idep++, DB_MODE_RO );
+    ocrAddDependence( DBK_rankDataH, lookUpKernelEDT, _idep++, DB_MODE_RO );
 
     return NULL_GUID;
 }
@@ -649,33 +732,78 @@ ocrGuid_t FNC_initSimulation( EDT_ARGS )
         PTR_rankDataH->timers[i].count = 0;
         PTR_rankDataH->timers[i].elapsed = 0;
     }
-    profile_start( total_timer, &PTR_rankDataH->timers );
 
     ocrDBK_t rpPerfTimerDBK = PTR_rankH->rpPerfTimerDBK;
     ocrEVT_t rpPerfTimerEVT = PTR_rankH->rpPerfTimerEVT;
 
     ocrEVT_t loopCompletionLatchEVT = PTR_rankH->loopCompletionLatchEVT;
 
-	#ifdef VERIFICATION
-    ocrDBK_t DBK_hash = PTR_rankDataH->DBK_hash;
-    #endif
+    long n_isotopes = PTR_in->n_isotopes;
+    long n_gridpoints = PTR_in->n_gridpoints;
+    u64 nrows = (u64) n_isotopes * (u64) n_gridpoints;
+    u64 ntasks = alignTaskCount( n_isotopes, n_gridpoints, nthreads );
+
+    ocrDBK_t DBK_nuclide_grids = PTR_rankDataH->DBK_nuclide_grids;
+    ocrDBK_t DBK_uEnergy_grid = PTR_rankDataH->DBK_uEnergy_grid;
+    ocrDBK_t DBK_xs_grid = PTR_rankDataH->DBK_xs_grid;
 
     ocrDbRelease( DBK_rankDataH );
     ocrDbRelease( DBK_rankH );
 
-    //Cross-section lookup kernel
-    ocrGuid_t lookUpKernelTML, lookUpKernelEDT, lookUpKernelOEVT, lookUpKernelOEVTS;
-    ocrEdtTemplateCreate( &lookUpKernelTML, lookUpKernelEdt, 0, 2 );
+    //Aligning the unionized grid is independent over its rows, so it is
+    //produced by a fan-out of tasks and assembled by one join.  Each producer
+    //owns its own output block: no two tasks ever write the same datablock,
+    //which is what makes the phase legal under a write-race-free model too.
+    //The join is what starts the kernel, so the lookup phase begins only once
+    //the whole index is in place.
+    ocrGuid_t alignJoinTML, alignJoinEDT;
+    ocrEdtTemplateCreate( &alignJoinTML, alignJoinEdt, 0, 3 + 2*ntasks );
 
-    ocrEdtCreate( &lookUpKernelEDT, lookUpKernelTML,
+    ocrEdtCreate( &alignJoinEDT, alignJoinTML,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
                   EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
 
-    ocrEdtTemplateDestroy( lookUpKernelTML );
+    ocrEdtTemplateDestroy( alignJoinTML );
 
-    _idep = 0;
-    ocrAddDependence( DBK_rankH, lookUpKernelEDT, _idep++, DB_MODE_RO );
-    ocrAddDependence( DBK_rankDataH, lookUpKernelEDT, _idep++, DB_MODE_RO );
+    ocrAddDependence( DBK_rankH, alignJoinEDT, 0, DB_MODE_RO );
+    ocrAddDependence( DBK_rankDataH, alignJoinEDT, 1, DB_MODE_RW );
+    ocrAddDependence( DBK_xs_grid, alignJoinEDT, 2, DB_MODE_RW );
+
+    ocrGuid_t alignGridTML;
+    ocrEdtTemplateCreate( &alignGridTML, alignGridEdt, PARAMC_U64(PRM_alignGrid_t), 4 );
+
+    u64 t;
+    for( t = 0; t < ntasks; t++ )
+    {
+        PRM_alignGrid_t PRM_alignGrid;
+        alignRange( t, nrows, ntasks, &PRM_alignGrid.ibegin, &PRM_alignGrid.iend );
+
+        ocrDBK_t DBK_rows;
+        int* xs_rows;
+        ocrDbCreate( &DBK_rows, (void**) &xs_rows,
+                     (PRM_alignGrid.iend - PRM_alignGrid.ibegin) * (u64) n_isotopes * sizeof(int),
+                     0, &myDbkAffinityHNT, NO_ALLOC );
+        ocrDbRelease( DBK_rows );
+
+        ocrGuid_t alignGridEDT, alignGridOEVT, alignGridOEVTS;
+
+        ocrEdtCreate( &alignGridEDT, alignGridTML, EDT_PARAM_DEF, (u64*)&PRM_alignGrid,
+                      EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &myEdtAffinityHNT, &alignGridOEVT );
+
+        createEventHelper( &alignGridOEVTS, 1 );
+        ocrAddDependence( alignGridOEVT, alignGridOEVTS, 0, DB_MODE_NULL );
+
+        ocrAddDependence( DBK_rows, alignJoinEDT, (u32)(3 + t), DB_MODE_RO );
+        ocrAddDependence( alignGridOEVTS, alignJoinEDT, (u32)(3 + ntasks + t), DB_MODE_NULL );
+
+        _idep = 0;
+        ocrAddDependence( DBK_rankH, alignGridEDT, _idep++, DB_MODE_RO );
+        ocrAddDependence( DBK_nuclide_grids, alignGridEDT, _idep++, DB_MODE_RO );
+        ocrAddDependence( DBK_uEnergy_grid, alignGridEDT, _idep++, DB_MODE_RO );
+        ocrAddDependence( DBK_rows, alignGridEDT, _idep++, DB_MODE_RW );
+    }
+
+    ocrEdtTemplateDestroy( alignGridTML );
 
     //Create a summary EDT; stops the timer and launches reduction
     ocrGuid_t launchReductionTML, launchReductionEDT, launchReductionOEVT, launchReductionOEVTS;
@@ -693,25 +821,8 @@ ocrGuid_t FNC_initSimulation( EDT_ARGS )
     ocrAddDependence( rpPerfTimerDBK, launchReductionEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( loopCompletionLatchEVT, launchReductionEDT, _idep++, DB_MODE_NULL );
 
-    //Create a wrapUp EDT that depends on the reduction output
-    ocrGuid_t wrapUpTML, wrapUpEDT, wrapUpOEVT, wrapUpOEVTS;
-    ocrEdtTemplateCreate( &wrapUpTML, summaryEdt, 0, 4 );
-
-    ocrEdtCreate( &wrapUpEDT, wrapUpTML,
-                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
-                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
-
-    ocrEdtTemplateDestroy( wrapUpTML );
-
-    _idep = 0;
-    ocrAddDependence( DBK_rankH, wrapUpEDT, _idep++, DB_MODE_RW ); //TODO
-    ocrAddDependence( DBK_rankDataH, wrapUpEDT, _idep++, DB_MODE_RW );
-    ocrAddDependence( rpPerfTimerEVT, wrapUpEDT, _idep++, DB_MODE_RO );
-	#ifdef VERIFICATION
-    ocrAddDependence( DBK_hash, wrapUpEDT, _idep++, DB_MODE_RO );
-    #else
-    ocrAddDependence( NULL_GUID, wrapUpEDT, _idep++, DB_MODE_NULL );
-    #endif
+    //The summary EDT is created by lookUpKernelEdt: it folds the per-chain
+    //digests, so it can only be wired once the chains' datablocks exist.
 
     return NULL_GUID;
 }
@@ -875,9 +986,28 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
 
     int version = 13;
     // Process CLI Fields -- store in "Inputs" structure
-    Inputs in = read_CLI( argc, argv );
+    Inputs in;
+    if( read_CLI( argc, argv, &in ) != 0 )
+    {
+        ocrShutdown();
+        return NULL_GUID;
+    }
 
     int nprocs = in.nprocs;
+
+    //Every policy domain must receive at least one SPMD instance: with fewer
+    //instances than policy domains the block partition leaves nodes idle.
+    u64 affinityCount = 1;
+#ifdef ENABLE_EXTENSION_AFFINITY
+    ocrAffinityCount( AFFINITY_PD, &affinityCount );
+#endif
+    if( (u64) nprocs < affinityCount )
+    {
+        ocrPrintf("ERROR: -p (%d) must be at least the number of policy domains (%"PRIu64")\n",
+                  nprocs, affinityCount);
+        ocrShutdown();
+        return NULL_GUID;
+    }
 
     // Print-out of Input Summary
     print_inputs( in, nprocs, version );

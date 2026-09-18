@@ -36,6 +36,7 @@
 
 ocrGuid_t cg_rank_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t cg_chan_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t cg_buildspawn_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t cg_bcast_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t cg_spmv_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t cg_slicejoin_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
@@ -46,6 +47,12 @@ ocrGuid_t cg_beta_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t cg_outer_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t cg_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t cg_shutdown_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+
+static void cg_dist_usage(void)
+{
+    ocrPrintf("cg [-t class] [-i niter] [-c tasks-per-rank]"
+              " (class=T|S|W|A|B|C|D|E; default: -t S, -c 0 = derive)\n");
+}
 
 static void cg_hint_at(ocrHint_t* hnt, u64 rank)
 {
@@ -79,31 +86,40 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     classdb_t* class; ocrGuid_t classid;
     u32 niter_override = 0;
     u32 chunks = 0;
-    if(argc>1) {
-        if(argc!=3 && argc != 5 && argc != 7) {
-            ocrPrintf("cg [-t class] [-i niter] [-c tasks-per-rank]"
-                      " (class=T|S|W|A|B|C|D|E; default: -t S, -c 0 = derive)\n");
+    char classt = 'S';
+    u64 ai;
+    /* Flag/value pairs, every flag recognised: an argument the program does
+       not know is a mis-specified run, not something to walk past. */
+    for(ai = 1; ai < argc; ai += 2) {
+        const char* f = ocrGetArgv(depv[0].ptr, ai);
+        const char* v;
+        if(ai+1 >= argc) {
+            ocrPrintf("cg_dist: %s takes a value\n", f);
+            cg_dist_usage();
             ocrShutdown();
             return NULL_GUID;
         }
-        char classt = 'S';
-        while(--argc) {
-            if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-t")==0)
-                classt = *ocrGetArgv(depv[0].ptr,argc--);
-            else if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-i")==0)
-                niter_override = atoi(ocrGetArgv(depv[0].ptr,argc--));
-            else if(strcmp(ocrGetArgv(depv[0].ptr,argc-1), "-c")==0)
-                chunks = atoi(ocrGetArgv(depv[0].ptr,argc--));
-        }
-        class_init(&class, &classid, classt, 1);
-        if(class->c == 'U') {
-            ocrPrintf("cg [-t] [T,S,W,A,B,C,D,E] (default: S -t)\n");
+        v = ocrGetArgv(depv[0].ptr, ai+1);
+        if(strcmp(f, "-t") == 0)
+            classt = *v;
+        else if(strcmp(f, "-i") == 0)
+            niter_override = atoi(v);
+        else if(strcmp(f, "-c") == 0)
+            chunks = atoi(v);
+        else {
+            ocrPrintf("cg_dist: unknown argument %s\n", f);
+            cg_dist_usage();
             ocrShutdown();
             return NULL_GUID;
         }
     }
-    else
-        class_init(&class, &classid, 'S', 1);
+    class_init(&class, &classid, classt, 1);
+    if(class->c == 'U') {
+        ocrPrintf("cg_dist: unknown class %c\n", classt);
+        cg_dist_usage();
+        ocrShutdown();
+        return NULL_GUID;
+    }
     if(niter_override >= 1)
         class->niter = niter_override;
 
@@ -198,14 +214,40 @@ ocrGuid_t cg_rank_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
 
     cg_hint_at(&priv->myHNT, myrank);
 
-    /* Nothing about the matrix is generated centrally and shipped: this rank
-       replays the draw stream itself and indexes only the rows it owns, so
-       the replay costs one rank's time however many ranks there are and the
-       construction never touches the wire. */
-    if(cg_gen_prepare(na, (u32)shared->nonzer, priv->lo, priv->hi, &priv->gen) == -1) {
+    /* The product fans out over row slices so the whole worker pool of this
+       rank works on it; the slice count is fixed for the run.  With -c 0 it
+       is derived from the band, one task per CG_DIST_ROWS_PER_TASK rows. */
+    priv->nchunk = shared->chunks;
+    if(priv->nchunk == 0) {
+        priv->nchunk = (priv->nloc + CG_DIST_ROWS_PER_TASK - 1) / CG_DIST_ROWS_PER_TASK;
+        if(priv->nchunk > CG_DIST_DEFAULT_CHUNKS) priv->nchunk = CG_DIST_DEFAULT_CHUNKS;
+        if(priv->nchunk > priv->nloc) priv->nchunk = priv->nloc;
+        if(priv->nchunk < 1) priv->nchunk = 1;
+    }
+    else if(priv->nchunk > CG_DIST_MAX_CHUNKS || priv->nchunk > priv->nloc) {
+        /* silently clamping a width the run asked for would measure a width
+           other than the one the run recorded */
+        ocrPrintf("cg_dist: -c %lu is above the limit: at most %d, and at most"
+                  " the %lu rows a rank owns\n",
+                  priv->nchunk, CG_DIST_MAX_CHUNKS, priv->nloc);
         ocrShutdown();
         return NULL_GUID;
     }
+
+    /* Nothing about the matrix is generated centrally and shipped: this rank
+       draws the entries itself and indexes only the rows it owns, so the
+       construction never touches the wire.  The index is divided over this
+       rank's own workers and the slices are built by the tasks that will
+       multiply them; what is left sequential is the draw stream itself. */
+    cg_gen_ptr_t gp;
+    if(cg_gen_draw(na, (u32)shared->nonzer, &priv->gen, &gp) == -1) {
+        ocrShutdown();
+        return NULL_GUID;
+    }
+    priv->nscan = cg_gen_scan_width(priv->gen.np, priv->nchunk);
+    cg_gen_index_alloc(&priv->gen, &gp, priv->lo, priv->hi,
+                       priv->nchunk, priv->nscan);
+    cg_gen_release(&priv->gen);
 
     double* v; ocrGuid_t vecid;
     ocrDbCreate(&vecid, (void**)&v, sizeof(double)*(5*priv->nloc + na), 0, NULL_HINT, NO_ALLOC);
@@ -232,18 +274,8 @@ ocrGuid_t cg_rank_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     ocrEventCreateParams(&rp->returnEVT, OCR_EVENT_CHANNEL_T, false, &params);
     priv->returnEVT = rp->returnEVT;
 
-    /* The product fans out over row slices so the whole worker pool of this
-       rank works on it; the slice count is fixed for the run, so both
-       templates are made once here. */
-    priv->nchunk = shared->chunks;
-    if(priv->nchunk == 0) {
-        priv->nchunk = (priv->nloc + CG_DIST_ROWS_PER_TASK - 1) / CG_DIST_ROWS_PER_TASK;
-        if(priv->nchunk > CG_DIST_DEFAULT_CHUNKS) priv->nchunk = CG_DIST_DEFAULT_CHUNKS;
-    }
-    if(priv->nchunk > CG_DIST_MAX_CHUNKS) priv->nchunk = CG_DIST_MAX_CHUNKS;
-    if(priv->nchunk > priv->nloc) priv->nchunk = priv->nloc;
-    if(priv->nchunk < 1) priv->nchunk = 1;
-
+    /* The slice count is fixed for the run, so every template is made once
+       here. */
     ocrEdtTemplateCreate(&priv->bcastTML, cg_bcast_edt, 0, 4);
     ocrEdtTemplateCreate(&priv->spmvTML, cg_spmv_edt, 0, CG_SL_TAIL+nrank);
     ocrEdtTemplateCreate(&priv->chunkTML, cg_chunk_edt, 5, 2);
@@ -262,37 +294,25 @@ ocrGuid_t cg_rank_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     ocrEdtTemplateDestroy(chanTML);
 
     /* The band is built here rather than shipped here: one task per row slice
-       constructs its own rows from the shared draw stream, so the workers of
-       this rank build in parallel and each slice is first touched by the
-       worker that will multiply it.  The chain waits on the build. */
-    ocrGuid_t buildTML, sjTML, sliceJoin, sliceJoinOut;
+       constructs its own rows, so the workers of this rank build in parallel
+       and each slice is first touched by the worker that will multiply it.
+       A slice cannot be wired until the index it reads is complete, so the
+       scanners gate an EDT that issues the fan-out.  The chain waits on the
+       build. */
+    ocrGuid_t sjTML, sliceJoin, sliceJoinOut;
     ocrEdtTemplateCreate(&sjTML, cg_slicejoin_edt, 1, 1+priv->nchunk);
     ocrEdtCreate(&sliceJoin, sjTML, 1, &myrank, 1+priv->nchunk, NULL, 0,
                  &priv->myHNT, &sliceJoinOut);
     ocrEdtTemplateDestroy(sjTML);
-    ocrEdtTemplateCreate(&buildTML, cg_build_edt, 4, CG_GEN_DEPC);
-    { u64 k;
-      ocrGuid_t gen[CG_GEN_DEPC];
-      gen[0] = priv->gen.arow;   gen[1] = priv->gen.rowoff;
-      gen[2] = priv->gen.acol;   gen[3] = priv->gen.aelt;
-      gen[4] = priv->gen.scale;  gen[5] = priv->gen.cap;
-      gen[6] = priv->gen.idxoff; gen[7] = priv->gen.idx;
-      for(k = 0; k < priv->nchunk; ++k) {
-        u64 pv[4];
-        u32 d;
-        pv[0] = priv->lo + k*priv->nloc/priv->nchunk;
-        pv[1] = priv->lo + (k+1)*priv->nloc/priv->nchunk;
-        memcpy(pv+2, &priv->shift, sizeof(double));
-        pv[3] = priv->lo;
-        ocrGuid_t st, done;
-        ocrEdtCreate(&st, buildTML, 4, pv, CG_GEN_DEPC, NULL, 0, &priv->myHNT, &done);
-        for(d = 0; d < CG_GEN_DEPC; ++d)
-            ocrAddDependence(gen[d], st, d, DB_MODE_RO);
-        ocrAddDependence(done, sliceJoin, 1+k, DB_MODE_RO);
-      } }
-    ocrEdtTemplateDestroy(buildTML);
-    ocrAddDependence(privid, sliceJoin, 0, DB_MODE_RW);
+    priv->sliceJoin = sliceJoin;
     ocrAddDependence(sliceJoinOut, chanEDT, CG_SL_TAIL+nrank, DB_MODE_NULL);
+
+    ocrGuid_t bsTML, buildSpawn;
+    ocrEdtTemplateCreate(&bsTML, cg_buildspawn_edt, 0, 1+priv->nscan);
+    ocrEdtCreate(&buildSpawn, bsTML, 0, NULL, 1+priv->nscan, NULL, 0,
+                 &priv->myHNT, NULL);
+    ocrEdtTemplateDestroy(bsTML);
+    cg_gen_spawn_scan(&priv->gen, priv->shift, buildSpawn, 1, &priv->myHNT);
 
     for(j = 0; j < nrank; ++j) {
         if(j == myrank) {
@@ -318,7 +338,26 @@ ocrGuid_t cg_rank_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     ocrDbRelease(privid);
     ocrDbRelease(vecid);
     ocrDbRelease(redid);
+    ocrAddDependence(privid, buildSpawn, 0, DB_MODE_RW);
     cg_chain_wire(chanEDT, privid, vecid, timerid, redid);
+
+    return NULL_GUID;
+}
+
+/* Issues the row-slice builders once the index they read is complete.
+   depv: 0 private, 1.. one scanner completion each. */
+ocrGuid_t cg_buildspawn_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+    cg_dist_private_t* priv = (cg_dist_private_t*)depv[0].ptr;
+    cg_gen_t gen = priv->gen;
+    double shift = priv->shift;
+    ocrHint_t hnt = priv->myHNT;
+    ocrGuid_t sliceJoin = priv->sliceJoin;
+    ocrGuid_t privid = depv[0].guid;
+
+    ocrDbRelease(privid);
+    ocrAddDependence(privid, sliceJoin, 0, DB_MODE_RW);
+    cg_gen_spawn(&gen, shift, cg_build_edt, sliceJoin, 1, &hnt);
 
     return NULL_GUID;
 }
@@ -414,16 +453,13 @@ ocrGuid_t cg_slicejoin_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     u64 nnz = 0;
     u32 k;
     for(k = 1; k < depc; ++k) {
-        cg_slice_ref_t* ref = (cg_slice_ref_t*)depv[k].ptr;
+        cg_gen_ref_t* ref = (cg_gen_ref_t*)depv[k].ptr;
         priv->slice[k-1] = ref->guid;
         nnz += ref->nnz;
         ocrDbDestroy(depv[k].guid);
     }
     ocrPrintf("number of nonzeros(rank %lu) = %lu\n", paramv[0], nnz);
-    ocrDbDestroy(priv->gen.arow);   ocrDbDestroy(priv->gen.rowoff);
-    ocrDbDestroy(priv->gen.acol);   ocrDbDestroy(priv->gen.aelt);
-    ocrDbDestroy(priv->gen.scale);  ocrDbDestroy(priv->gen.cap);
-    ocrDbDestroy(priv->gen.idxoff); ocrDbDestroy(priv->gen.idx);
+    cg_gen_destroy(&priv->gen);
     return NULL_GUID;
 }
 
@@ -565,9 +601,9 @@ ocrGuid_t cg_spmv_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         pv[4] = first;
         ocrGuid_t chunk, done;
         ocrEdtCreate(&chunk, chunkTML, 5, pv, 2, NULL, 0, &hnt, &done);
+        ocrAddDependence(done, join, CG_SL_TAIL+k, DB_MODE_RO);
         ocrAddDependence(depv[CG_SL_VEC].guid, chunk, 0, DB_MODE_RW);
         ocrAddDependence(slice[k], chunk, 1, DB_MODE_RO);
-        ocrAddDependence(done, join, CG_SL_TAIL+k, DB_MODE_RO);
     }
 
     cg_chain_wire(join, depv[CG_SL_PRIV].guid, depv[CG_SL_VEC].guid, timer,

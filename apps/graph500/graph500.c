@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <errno.h>
 
 #ifndef NO_AFFINITIES
 #ifndef ENABLE_EXTENSION_AFFINITY
@@ -39,8 +40,16 @@
 #define PRId64 "lld"
 #endif
 
+#ifndef PRIu64
+#define PRIu64 "llu"
+#endif
+
 #ifndef UINT64_C
 #define UINT64_C(c) c ## ULL
+#endif
+
+#ifndef UINT64_MAX
+#define UINT64_MAX UINT64_C(18446744073709551615)
 #endif
 
 //The following defines pick the way local arrays are allocated (as STL vectors, local arrays with variable size, malloc-ed blocks, OCR data blocks)
@@ -80,6 +89,12 @@
 #define INDEX_OF_TORUNGUID1 (1)
 #define SIZE_OF_TORUNGUIDDBK (2)
 // END OF TORUN GUIDS
+
+// PER-WORKER BFS SUMMARY (handed to the finish EDT)
+#define INDEX_OF_VISITED_COUNT (0)
+#define INDEX_OF_VISITED_DIGEST (1)
+#define SIZE_OF_VISITEDSUMDBK (2)
+// END OF PER-WORKER BFS SUMMARY
 
 // CONSTGUIDS DB CONSTANTS
 #define INDEX_OF_DISTRIBUTETMP (0)
@@ -397,6 +412,7 @@ typedef struct {
 	double kernel_1_time;
 	u64 kernel_2_nedge;
 	u64 kernel_2_nvertex;
+	u64 kernel_2_digest;
 	u64 SCALE;
 	u64 edgefactor;
 	vertexType ROOT;
@@ -536,16 +552,21 @@ ocrGuid_t getApply(ocrGuid_t* constguidPTR, u64 level, u64 w, u64 R, u64 C) {
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
 /* The workers form an R x C grid over the adjacency matrix, and one BFS level
  * exchanges along the whole of a worker's row and the whole of its column.
- * Indexing places by the worker id alone puts every one of those partners on
- * another place as soon as there is more than one: the id is row-major, so
- * consecutive ids are row partners and ids C apart are column partners, and
- * both strides are lost to the modulo.
+ * Cutting the grid into pr x pc tiles, one per place, leaves a worker R/pr of
+ * its column and C/pc of its row on its own place, and the factorisation is
+ * chosen to maximise that sum.  What is maximised is therefore a per-axis
+ * COUNT of co-placed partners, not a message or a byte count: the two part
+ * company whenever the axes carry different volumes per partner.  With the
+ * tile count fixed the sum favours leaving one axis whole over halving both.
+ * Every place holds the same number of workers either way, so balance is not
+ * traded for it.
  *
- * Give each place a contiguous tile of the grid instead.  A worker then keeps
- * C/pc of its row and R/pr of its column on its own place, and the split is
- * chosen to maximise that sum -- which, with the tile count fixed, favours
- * leaving one axis whole rather than halving both.  Every place still holds
- * the same number of workers, so nothing is traded away in balance.
+ * On a square grid the whole-row and the whole-column tiling score the same
+ * and the tie-break below keeps the latter (pr = 1).  Whenever the place count
+ * also divides the column extent, indexing by the worker id alone is itself a
+ * partition into whole columns, so the tiling only regroups the same columns
+ * into contiguous blocks: same balance, same per-axis co-placed counts.  A
+ * grid whose axes differ is the only case in which the two maps differ.
  *
  * Falls back to the shipped mapping when the place count does not divide the
  * grid, since a partial tile would leave places holding different counts. */
@@ -574,6 +595,24 @@ u64 getAffinityIndex(u64 w, u64 R, u64 C, u64 affinityCount) {
 }
 #endif
 #endif
+
+static u64 avalanche64(u64 x) {
+	x ^= x >> 30; x *= UINT64_C(0xBF58476D1CE4E5B9);
+	x ^= x >> 27; x *= UINT64_C(0x94D049BB133111EB);
+	x ^= x >> 31;
+	return x;
+}
+
+/* One term of a set digest over the search result.  Distinct (vertex, level,
+ * parent) triples must yield distinct terms with overwhelming probability, and
+ * the caller must fold the terms with an operator that is commutative and
+ * associative: the order in which a set of results is traversed is a
+ * scheduling artefact and must not reach the digest. */
+u64 mixVisited(u64 vertex, u64 level, u64 parent) {
+	u64 x = avalanche64(vertex + UINT64_C(0x9E3779B97F4A7C15));
+	x = avalanche64(x ^ (level + UINT64_C(0x9E3779B97F4A7C15)));
+	return avalanche64(x ^ (parent + UINT64_C(0x9E3779B97F4A7C15)));
+}
 
 u64 xorshift64star(u64 *x) {
 	*x ^= *x >> 12; // a
@@ -1381,9 +1420,12 @@ ocrGuid_t applyEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 		//		ocrPrintf("AAddDep -> Stop(sl%" PRId64 ")\n",myId);
 #if VALIDATION_MODE<2
 		u64 cVisited = 0;
+		u64 cDigest = 0;
 		for (u64 i = 0; i<vSIZE; i++)
 			if (visitedPTR[i].level != (u64)-1) {
 				cVisited++;
+				cDigest += mixVisited((u64)vIndex2vertex(myId, i, R, C, SIZE),
+					visitedPTR[i].level, (u64)visitedPTR[i].parent);
 #if VALIDATION_MODE==1
 				ocrPrintf("WARNING:Print to file not implemented yet\n");
 #endif
@@ -1391,8 +1433,9 @@ ocrGuid_t applyEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 		ocrDbDestroy(depv[APPLY_SLOT_VISITED].guid);
 		ocrGuid_t cVisitedDBK;
 		u64* cVisitedPTR;
-		ocrDbCreate(&cVisitedDBK, (void**)&cVisitedPTR, sizeof(u64), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
-		*cVisitedPTR = cVisited;
+		ocrDbCreate(&cVisitedDBK, (void**)&cVisitedPTR, SIZE_OF_VISITEDSUMDBK * sizeof(u64), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
+		cVisitedPTR[INDEX_OF_VISITED_COUNT] = cVisited;
+		cVisitedPTR[INDEX_OF_VISITED_DIGEST] = cDigest;
 		ocrDbRelease(cVisitedDBK);
 		myAddDependence(cVisitedDBK, finishEDT, FINISH_SLOT_VISITED(myId), DB_MODE_CONST);
 #else
@@ -1507,9 +1550,11 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 #if VALIDATION_MODE<2  //we do not have information for complete validation
 	u64 vertex_count = 0;
+	u64 vertex_digest = 0;
 	for (u64 w = 0; w<R*C; w++) {
-		u64* cVisitedPart = (u64*)depv[w].ptr;
-		vertex_count = vertex_count + (*cVisitedPart);
+		u64* cVisitedPart = (u64*)depv[FINISH_SLOT_VISITED(w)].ptr;
+		vertex_count = vertex_count + cVisitedPart[INDEX_OF_VISITED_COUNT];
+		vertex_digest = vertex_digest + cVisitedPart[INDEX_OF_VISITED_DIGEST];
 	}
 	u64 edge_factor = EDGE_SIZE / SIZE;
 	u64 edge_count = vertex_count*edge_factor;
@@ -1530,8 +1575,12 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	}
 
 	u64 vertex_count = 0;
+	u64 vertex_digest = 0;
 	for (vertexType i = 0; i < SIZE; i++)
-		if (visited[i].level != (u64)-1)	++vertex_count;
+		if (visited[i].level != (u64)-1) {
+			++vertex_count;
+			vertex_digest = vertex_digest + mixVisited((u64)i, visited[i].level, (u64)visited[i].parent);
+		}
 
 	// ROOT has level 0 and parent itself
 	if ((visited[ROOT].level != 0) || (visited[ROOT].parent != ROOT))
@@ -1652,6 +1701,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 	dat->kernel_2_nedge = edge_count;
 	dat->kernel_2_nvertex = vertex_count;
+	dat->kernel_2_digest = vertex_digest;
 	ocrDbRelease(depv[FINISH_SLOT_FROMSTOP].guid);
 
 	//destroy your DBs Visited
@@ -1702,6 +1752,7 @@ ocrGuid_t shutDownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 		ocrPrintf("--------------SEARCH %" PRId64 "\n", s);
 		ocrPrintf("nodes %" PRId64 " edges %" PRId64 " edge factor %f root %" PRId64 "\n", vertex_count, edge_count, ((double)edge_count) / vertex_count, (u64)dat->ROOT);
+		ocrPrintf("BFS_DIGEST %" PRIu64 "\n", dat->kernel_2_digest); FLUSH;
 		ocrPrintf("MTEPS %f\n", ((double)edge_count) / elapsed);
 		ocrPrintf("\n");
 	}
@@ -1732,6 +1783,24 @@ ocrGuid_t finalShutdownEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
 	return NULL_GUID;
 }
 
+/* A count argument is a positive decimal integer and nothing else: a trailing
+ * character, an empty string or a value the conversion could not represent all
+ * mean the run was asked for something other than what was typed, which a
+ * conversion that reports failure only through its return value cannot tell
+ * apart from a legitimate parse. */
+static u64 parseCountArg(const char* s, const char* name) {
+	char* end = NULL;
+	long v = 0;
+	errno = 0;
+	if (s != NULL) v = strtol(s, &end, 10);
+	if (s == NULL || end == s || *end != '\0' || errno == ERANGE || v < 1) {
+		ocrPrintf("ERROR: %s must be a positive decimal integer (got \"%s\").\n",
+			name, s ? s : "(none)"); FLUSH;
+		ocrAbort(1);
+	}
+	return (u64)v;
+}
+
 #ifdef __cplusplus
 extern "C"
 #endif
@@ -1743,11 +1812,20 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 		ocrShutdown();
 		return NULL_GUID;
 	}
-	u64 SCALE = atoi(ocrGetArgv(depv[0].ptr, 1));
-	u64 EDGEFACTOR = atoi(ocrGetArgv(depv[0].ptr, 2));
+	u64 SCALE = parseCountArg(ocrGetArgv(depv[0].ptr, 1), "SCALE");
+	u64 EDGEFACTOR = parseCountArg(ocrGetArgv(depv[0].ptr, 2), "EDGEFACTOR");
 	// row and column number of workers (the number of workers is R*C)
-	u64 R = atoi(ocrGetArgv(depv[0].ptr, 3));
-	u64 C = atoi(ocrGetArgv(depv[0].ptr, 4));
+	u64 R = parseCountArg(ocrGetArgv(depv[0].ptr, 3), "R");
+	u64 C = parseCountArg(ocrGetArgv(depv[0].ptr, 4), "C");
+
+	/* The vertex count is formed in floating point and stored unsigned, so the
+	 * exponent must keep it exactly representable in both.  The extents
+	 * derived from it are range-checked separately, once the divisibility that
+	 * defines them is known. */
+	if (SCALE > 62) {
+		ocrPrintf("ERROR: SCALE must be at most 62 (got %" PRId64 ").\n", SCALE); FLUSH;
+		ocrAbort(1);
+	}
 
 	u64 NUMBER_OF_SEARCH = 1;
 #ifdef NO_MAP
@@ -1755,9 +1833,25 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 #endif
 
 	u64 SIZE = (u64)pow(2, SCALE);
-	assert(SIZE%R == 0);
-	assert(SIZE%C == 0);
-	assert(SIZE % (R*C) == 0);
+	/* The vertex-to-(worker, index) map assumes each grid axis and the grid as
+	 * a whole divide the vertex count exactly; a remainder makes the map
+	 * many-to-one and silently loses vertices. */
+	if (SIZE%R != 0 || SIZE%C != 0 || SIZE % (R*C) != 0) {
+		ocrPrintf("ERROR: the worker grid must divide the vertex count: SIZE=2^%" PRId64 "=%" PRId64
+			" is not divisible by R=%" PRId64 ", C=%" PRId64 " and R*C=%" PRId64 ".\n",
+			SCALE, SIZE, R, C, R*C); FLUSH;
+		ocrAbort(1);
+	}
+	/* Both extents derived from the vertex count are unsigned products used as
+	 * loop bounds: the edge stream is SIZE*EDGEFACTOR long and a worker's
+	 * adjacency block is (SIZE/C)*(SIZE/R) entries.  A wrapped product does not
+	 * fail, it silently shortens the loop, so reject the arguments instead. */
+	if (EDGEFACTOR > UINT64_MAX / SIZE || (SIZE / C) > UINT64_MAX / (SIZE / R)) {
+		ocrPrintf("ERROR: SCALE=%" PRId64 " with EDGEFACTOR=%" PRId64 ", R=%" PRId64 ", C=%" PRId64
+			" overflows the 64-bit edge (%" PRId64 "*%" PRId64 ") or adjacency (%" PRId64 "*%" PRId64
+			") extent.\n", SCALE, EDGEFACTOR, R, C, SIZE, EDGEFACTOR, SIZE / C, SIZE / R); FLUSH;
+		ocrAbort(1);
+	}
 	u64 MAX_EDGE_SIZE = SIZE*EDGEFACTOR;
 	u64 EDGE_SIZE;
 
@@ -1811,7 +1905,11 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 	//find a worker who gets ROOT and ROOT's id on that worker
 	vertexType ROOT = 4;
-	assert(ROOT<SIZE);
+	if (!((u64)ROOT < SIZE)) {
+		ocrPrintf("ERROR: the search root %" PRId64 " is outside a graph of %" PRId64 " vertices;"
+			" raise SCALE.\n", (u64)ROOT, SIZE); FLUSH;
+		ocrAbort(1);
+	}
 	u64 ROOT_WORKER;
 	u64 ROOT_ID;
 	vertex2vIndex(ROOT, &ROOT_WORKER, &ROOT_ID, R, C, SIZE);

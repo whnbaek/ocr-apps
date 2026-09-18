@@ -1,27 +1,35 @@
 #include <ocr.h>
+#include <extensions/ocr-affinity.h>
 
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
-#include <extensions/ocr-affinity.h>
 /* Placement-optimization layer.  The whole recursion sorts ONE array block:
  * each task acquires it DB_MODE_RW, partitions its range in place, and hands
  * it to its children -- a single-writer chain over one block, which no hint
  * can parallelize across ranks.  What a hint can do is stop the block from
  * following the chain around.  A subarray's tasks are placed by the range they
- * sort rather than by where they were created: a child covering [low, high)
- * goes to the place that owns that part of the array, so the tasks that
- * revisit a region keep returning to the same place, while the ranges, being a
- * partition, keep every place equally loaded.
+ * sort rather than by where they were created: a child covering [low, high]
+ * goes to the place that owns the MIDDLE of that range, so the tasks that
+ * revisit a region keep returning to the same place.
+ *
+ * The middle and not the start.  Keyed on the start, every range that begins
+ * at the front of the array maps to the first place however much of the array
+ * it covers, so the root and the entire spine of ranges that keep the front
+ * stack on one place while the leaves spread evenly -- the task COUNT balances
+ * and the WORK does not.  The middle of a range moves with the range's extent,
+ * so a shrinking spine walks down the places instead of resting on one, and a
+ * leaf, whose middle is its start, is placed exactly as before.
  *
  * Placing by the creating task instead would keep the whole recursion on the
  * one place the root started on -- perfectly local, and using a single node of
  * however many the machine has.  That is not a scheduling answer, and a run
  * that leaves most of the machine idle is not comparable with one that does
  * not. */
-static ocrHint_t * qsRangeEdtHint(ocrHint_t *h, u64 low, u64 arraySize) {
+static ocrHint_t * qsRangeEdtHint(ocrHint_t *h, u64 low, u64 high, u64 arraySize) {
     u64 pdCount;
     ocrAffinityCount(AFFINITY_PD, &pdCount);
     if (pdCount <= 1) return NULL_HINT;
-    u64 place = arraySize ? (low * pdCount) / arraySize : 0;
+    u64 mid = low + (high - low) / 2;
+    u64 place = arraySize ? (mid * pdCount) / arraySize : 0;
     if (place >= pdCount) place = pdCount - 1;
     ocrGuid_t aff;
     ocrAffinityGetAt(AFFINITY_PD, place, &aff);
@@ -30,7 +38,7 @@ static ocrHint_t * qsRangeEdtHint(ocrHint_t *h, u64 low, u64 arraySize) {
     return h;
 }
 #else
-#define qsRangeEdtHint(h, low, n) NULL_HINT
+#define qsRangeEdtHint(h, low, high, n) NULL_HINT
 #endif
 #include <stdlib.h>
 #include "macros.h"
@@ -40,23 +48,43 @@ static ocrHint_t * qsRangeEdtHint(ocrHint_t *h, u64 low, u64 arraySize) {
 #define ARRAY_SIZE 1000
 //Range of numbers to be sorted.
 #define RANGE 1000000
+//Number of tasks the input generation is cut into (overridable at runtime).
+#define FILL_TASKS 128
 
 typedef struct {
     u64 low;
     u64 high;
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
     //carried only for the placement layer, which needs the whole extent to
-    //turn a subarray's start into the place that owns it
+    //turn a subarray's range into the place that owns it
     u64 arraySize;
 #endif
     ocrGuid_t qsortTemplate;
 } qsortPRM_t;
 
 typedef struct {
+    u64 low;
+    u64 high;
+    u64 range;
+} fillPRM_t;
+
+typedef struct {
     u64 arraySize;
 } finishPRM_t;
 
-//Pseudo-RNG.  Gets rid of C stdlib dependence
+//Index-seeded value generator: a pure function of (index, range) carrying no
+//state between calls, so any task can produce any range of the input and the
+//multiset does not depend on how the array was divided among its producers.
+static u64 genValue(u64 index, u64 range) {
+    u64 z = (index + 1) * 0x9E3779B97F4A7C15UL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+    z = z ^ (z >> 31);
+    return z % range;
+}
+
+//Pseudo-RNG the partition draws its pivot index from.  Gets rid of C stdlib
+//dependence.
 int getRandNum(int seed) {
     int MAX = 1000;
     int i;
@@ -103,12 +131,24 @@ void sortSerial(u64 *data, u64 low, u64 high) {
     }
 }
 
+// paramv 0: first index; 1: one past the last; 2: value range
+// depv   0: array
+ocrGuid_t fillTask( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+    fillPRM_t *fillParamvIn = (fillPRM_t *)paramv;
+    u64 low = fillParamvIn->low, high = fillParamvIn->high;
+    u64 range = fillParamvIn->range;
+    u64 *data = depv[0].ptr;
+    u64 i;
+    for(i = low; i < high; i++)
+        data[i] = genValue(i, range);
+    return NULL_GUID;
+}
+
 // paramv 0: low index (inclusive)
 // paramv 1: high index (inclusive)
 // paramv 2: qsort edt template
 // depv   0: array
 ocrGuid_t qsortTask( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-    u64 i;
     qsortPRM_t *qsortParamvIn = (qsortPRM_t *)paramv;
     u64 low = qsortParamvIn->low;
     u64 high = qsortParamvIn->high;
@@ -186,7 +226,7 @@ ocrGuid_t qsortTask( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
             ocrHint_t lowHNT;
             ocrEdtCreate(&qsortLowEdt, qsortTemplate, EDT_PARAM_DEF, (u64 *)&qsortLowParamv,
                      EDT_PARAM_DEF, &qsortLowDataEvt, EDT_PROP_FINISH,
-                     qsRangeEdtHint(&lowHNT, low, arraySize), NULL);
+                     qsRangeEdtHint(&lowHNT, low, pivotIndex-1, arraySize), NULL);
             ocrEventSatisfy(qsortLowDataEvt, dbGuid);
         }
 
@@ -202,7 +242,7 @@ ocrGuid_t qsortTask( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
             ocrHint_t highHNT;
             ocrEdtCreate(&qsortHighEdt, qsortTemplate, EDT_PARAM_DEF, (u64 *)&qsortHighParamv,
                      EDT_PARAM_DEF, &qsortHighDataEvt, EDT_PROP_FINISH,
-                     qsRangeEdtHint(&highHNT, pivotIndex+1, arraySize), NULL);
+                     qsRangeEdtHint(&highHNT, pivotIndex+1, high, arraySize), NULL);
             ocrEventSatisfy(qsortHighDataEvt, dbGuid);
         }
     }
@@ -237,35 +277,71 @@ ocrGuid_t finishTask( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 }
 
 ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-    ocrGuid_t qsortTemplate;
+    ocrGuid_t qsortTemplate, qsortRootTemplate, fillTemplate;
     ocrGuid_t qsortEdt;
     ocrGuid_t dataDb;
     ocrGuid_t outEvt;
     u64 *data;
+    u64 k;
 
     qsortPRM_t  qsortParamv;
     finishPRM_t finishParamv;
 
-    // Positional argv: [arraySize] [range]; absent args keep the #define defaults.
+    // Positional argv: [arraySize] [range] [fillTasks]; absent arguments keep
+    // the #define defaults, and an argument that cannot describe a run is
+    // reported rather than replaced.
     u64 arraySize = ARRAY_SIZE;
     u64 range = RANGE;
-    if(depc >= 1 && depv[0].ptr) {
-        u64 argc = getArgc(depv[0].ptr);
-        if(argc > 1) arraySize = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
-        if(argc > 2) range     = strtoull(getArgv(depv[0].ptr, 2), NULL, 10);
+    u64 fillTasks = FILL_TASKS;
+    u64 argc = 0;
+    if(depc >= 1 && depv[0].ptr) argc = getArgc(depv[0].ptr);
+    if(argc > 4) {
+        ocrPrintf("QSORT_ARG_ERROR at most three arguments: arraySize range fillTasks\n");
+        ocrShutdown();
+        return NULL_GUID;
     }
-    if(arraySize == 0) arraySize = ARRAY_SIZE;   // guard degenerate size
-    if(range == 0)     range     = RANGE;
+    if(argc > 1) arraySize = strtoull(getArgv(depv[0].ptr, 1), NULL, 10);
+    if(argc > 2) range     = strtoull(getArgv(depv[0].ptr, 2), NULL, 10);
+    if(argc > 3) fillTasks = strtoull(getArgv(depv[0].ptr, 3), NULL, 10);
+    if(arraySize == 0 || range == 0 || fillTasks == 0) {
+        ocrPrintf("QSORT_ARG_ERROR arraySize, range and fillTasks must be positive\n");
+        ocrShutdown();
+        return NULL_GUID;
+    }
+    if(fillTasks > arraySize) fillTasks = arraySize;
+    ocrPrintf("QSORT_ARGS arraySize=%lu range=%lu fillTasks=%lu\n",
+              arraySize, range, fillTasks);
 
     ocrEdtTemplateCreate(&qsortTemplate, qsortTask, PRMNUM(qsort), 1);
 
     ocrDbCreate(&dataDb, (void**)&data, sizeof(u64) * (arraySize),
         /*flags=*/0, /*location=*/NULL_HINT, NO_ALLOC);
-
-    u64 i;
-    for(i = 0; i < arraySize; i++)
-        data[i] = getRandNum(i) % range;
     ocrDbRelease(dataDb);
+
+    /* The input is generated by the tasks that own its ranges, not by this
+     * one: every value is a pure function of its index, so a range can be
+     * produced wherever its producer runs and the array does not depend on how
+     * the ranges were cut.  They are placed where the block is -- one block
+     * holds the whole array, and a writer anywhere else would move all of it
+     * to write a slice. */
+    ocrGuid_t homeAff;
+    ocrHint_t fillHNT;
+    ocrAffinityGetCurrent(&homeAff);
+    ocrHintInit(&fillHNT, OCR_HINT_EDT_T);
+    ocrSetHintValue(&fillHNT, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(homeAff));
+
+    ocrGuid_t *fillEdt = (ocrGuid_t*)malloc(fillTasks * sizeof(ocrGuid_t));
+    ocrGuid_t *fillOut = (ocrGuid_t*)malloc(fillTasks * sizeof(ocrGuid_t));
+    ocrEdtTemplateCreate(&fillTemplate, fillTask, PRMNUM(fill), 1);
+    for(k = 0; k < fillTasks; k++) {
+        fillPRM_t fillParamv;
+        fillParamv.low   = (k * arraySize) / fillTasks;
+        fillParamv.high  = ((k + 1) * arraySize) / fillTasks;
+        fillParamv.range = range;
+        ocrEdtCreate(&fillEdt[k], fillTemplate, EDT_PARAM_DEF, (u64 *)&fillParamv,
+                     EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &fillHNT, &fillOut[k]);
+    }
+    ocrEdtTemplateDestroy(fillTemplate);
 
     qsortParamv.low = 0;
     qsortParamv.high = arraySize-1;
@@ -274,10 +350,16 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 #endif
     qsortParamv.qsortTemplate = qsortTemplate;
 
+    //The root is the only task in the recursion that waits for anything but
+    //the array: its remaining slots are the generation it follows.  The
+    //children carry the one-slot template.
     ocrHint_t rootHNT;
-    ocrEdtCreate(&qsortEdt, qsortTemplate, EDT_PARAM_DEF, (u64 *)&qsortParamv,
+    ocrEdtTemplateCreate(&qsortRootTemplate, qsortTask, PRMNUM(qsort),
+                         (u32)(1 + fillTasks));
+    ocrEdtCreate(&qsortEdt, qsortRootTemplate, EDT_PARAM_DEF, (u64 *)&qsortParamv,
         EDT_PARAM_DEF, NULL, EDT_PROP_FINISH,
-        qsRangeEdtHint(&rootHNT, 0, arraySize), &outEvt);
+        qsRangeEdtHint(&rootHNT, 0, arraySize-1, arraySize), &outEvt);
+    ocrEdtTemplateDestroy(qsortRootTemplate);
 
     // Link up output event to a coordination event to be used by the finishEddt
     ocrGuid_t coordEvt;
@@ -286,6 +368,13 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 
     // Enables qsortEdt
     ocrAddDependence(dataDb, qsortEdt, 0, DB_MODE_RW);
+    for(k = 0; k < fillTasks; k++)
+        ocrAddDependence(fillOut[k], qsortEdt, (u32)(1 + k), DB_MODE_NULL);
+    //every consumer of the generation is registered, so the generators may run
+    for(k = 0; k < fillTasks; k++)
+        ocrAddDependence(dataDb, fillEdt[k], 0, DB_MODE_RW);
+    free(fillEdt);
+    free(fillOut);
 
     ocrGuid_t finishTemplate;
     ocrGuid_t finishEdt;
@@ -297,6 +386,6 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrHint_t finHNT;
     ocrEdtCreate(&finishEdt, finishTemplate, EDT_PARAM_DEF, (u64 *)&finishParamv,
         EDT_PARAM_DEF, finishDepv, 0,
-        qsRangeEdtHint(&finHNT, 0, arraySize), NULL);
+        qsRangeEdtHint(&finHNT, 0, arraySize-1, arraySize), NULL);
     return NULL_GUID;
 }

@@ -31,9 +31,8 @@
 
 typedef struct RootMeta_t RootMeta_t;
 
-// Keep MAX_NUM_UNREFINED_BLOCKS reasonable.  Each unrefined block requires a depencence in the rootClone EDT.  Also, the DbSize and DbEquip for the root has MAX_NUM_UNREFINED_BLOCKS entries.
-// 1000 is plenty!  It supports 10x10x10 unrefined blocks.  If you need more, you can always get the same effect by adding more refinement levels.  Remember, you need to compile OCR to support
-// ceiling(MAX_NUM_UNREFINED_BLOCKS+6)/64 slot bit vectors.
+// Upper bound on npx*npy*npz.  Each unrefined block costs one dependence slot in the rootClone EDT and one entry in the root's dbSize table, so the bound is a memory bound on the root's meta
+// datablock, not an algorithmic one.  Override it at build time for a wider base mesh.
 
 #ifndef MAX_NUM_UNREFINED_BLOCKS
 #define MAX_NUM_UNREFINED_BLOCKS 1000
@@ -157,8 +156,10 @@ typedef struct RootMeta_t RootMeta_t;
 typedef struct RootMeta_t {
 
    Clone_t       cloningState;
-   DbSize_t      dbSize[MAX_NUM_UNREFINED_BLOCKS];
-   unsigned int  satisfySlotInCloneWithDefault;                  // Bit vector of which slots in the clone EDT need fulfillment with the default contents.
+   DbSize_t      dbSize[MAX_NUM_UNREFINED_BLOCKS + (sizeof(rootClone_Deps_t)/sizeof(ocrEdtDep_t))];   // Indexed by dependence slot, so it must cover the fixed slots as well as the per-block ones.
+   double        lastChecksum;                                   // Most recent fully aggregated checksum, its position-weighted companion, and the timestep they belong to, reported once at shutdown.
+   double        lastWeightedChecksum;
+   int           lastTimeStep;                                   // Negative until a round has been aggregated, so it also says whether a round ever happened.
 
 } RootMeta_t;
 #define sizeof_RootMeta_t              (sizeof(RootMeta_t))

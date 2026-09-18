@@ -85,6 +85,26 @@ void initOcrObjects( rankH_t* PTR_rankH, u64 myRank, u64 nRanks )
     ocrEventCreate(&(PTR_rankH->rpPerfTimerEVT), OCR_EVENT_STICKY_T, true );
     rpPerfTimerPTR->returnEVT = PTR_rankH->rpPerfTimerEVT;
 
+    // The lookup results are folded twice: over an instance's lanes, then over
+    // the instances, so the printed value is a function of every lookup the
+    // run performed rather than of one instance's.
+    reductionPrivate_t* rpXsPTR;
+    ocrDbCreate( &PTR_rankH->rpXsReductionDBK, (void**) &rpXsPTR, sizeof(reductionPrivate_t), 0, NULL_HINT, NO_ALLOC );
+
+    rpXsPTR->nrank = nRanks;
+    rpXsPTR->myrank = myRank;
+    rpXsPTR->ndata = RS_NRESULT;
+    rpXsPTR->reductionOperator = REDUCTION_U8_ADD;
+    rpXsPTR->rangeGUID = PTR_globalOcrParamH->xsReductionRangeGUID;
+    rpXsPTR->reductionTML = NULL_GUID;
+    rpXsPTR->new = 1;
+    rpXsPTR->type = ALLREDUCE;
+
+    ocrEventCreate(&(PTR_rankH->rpXsReductionEVT), OCR_EVENT_STICKY_T, true );
+    rpXsPTR->returnEVT = PTR_rankH->rpXsReductionEVT;
+
+    ocrDbRelease( PTR_rankH->rpXsReductionDBK );
+
     ocrGuidRangeCreate( &(PTR_rankH->loopReductionRangeGUID), PTR_in->nthreads, GUID_USER_EVENT_STICKY );
     ocrEventCreate(&(PTR_rankH->rpLoopReductionEVT), OCR_EVENT_STICKY_T, true );
 
@@ -104,9 +124,10 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
 
-    // Fixed seed: the generated resonance data, and therefore the lookup
-    // workload's composition, is reproducible from run to run.
-    srand(42);
+    // The dataset is a pure function of the SPMD instance and of each value's
+    // position in the array it fills: identical at every node count, in every
+    // run, and independent of how the instances interleave.
+    u64 dataSeed = RS_DATA_SEED + mype;
 
     Inputs in = PTR_rankH->globalParamH.in;
 
@@ -124,27 +145,27 @@ void initSimulation(rankDataH_t* PTR_rankDataH, rankH_t* PTR_rankH, u64 mype)
     // =====================================================================
     // Allocate & fill energy grids
     if( mype == 0 ) ocrPrintf("Generating resonance distributions...\n");
-    int * n_poles = generate_n_poles( &PTR_rankDataH->DBK_n_poles, in );
+    int * n_poles = generate_n_poles( &PTR_rankDataH->DBK_n_poles, in, dataSeed );
 
     // Allocate & fill Window grids
     if( mype == 0 ) ocrPrintf("Generating window distributions...\n");
-    int * n_windows = generate_n_windows( &PTR_rankDataH->DBK_n_windows, in );
+    int * n_windows = generate_n_windows( &PTR_rankDataH->DBK_n_windows, in, dataSeed );
 
     // Get material data
     if( mype == 0 ) ocrPrintf("Loading Hoogenboom-Martin material data...\n");
-    Materials M = get_materials( PTR_rankDataH, in );
+    Materials M = get_materials( PTR_rankDataH, in, dataSeed );
 
     // Prepare full resonance grid
     if( mype == 0 ) ocrPrintf("Generating resonance parameter grid...\n");
-    Pole ** poles = generate_poles( &PTR_rankDataH->DBK_poles, &PTR_rankDataH->DBK_pole_ptrs, in, n_poles );
+    Pole ** poles = generate_poles( &PTR_rankDataH->DBK_poles, &PTR_rankDataH->DBK_pole_ptrs, in, n_poles, dataSeed );
 
     // Prepare full Window grid
     if( mype == 0 ) ocrPrintf("Generating window parameter grid...\n");
-    Window ** windows = generate_window_params( &PTR_rankDataH->DBK_windows, &PTR_rankDataH->DBK_window_ptrs, in, n_windows, n_poles);
+    Window ** windows = generate_window_params( &PTR_rankDataH->DBK_windows, &PTR_rankDataH->DBK_window_ptrs, in, n_windows, n_poles, dataSeed );
 
     //Prepare 0K Resonances
     if( mype == 0 ) ocrPrintf("Generating 0K l_value data...\n");
-    double ** pseudo_K0RS = generate_pseudo_K0RS( &PTR_rankDataH->DBK_pseudo_K0RS, &PTR_rankDataH->DBK_pseudo_K0RS_ptrs, in );
+    double ** pseudo_K0RS = generate_pseudo_K0RS( &PTR_rankDataH->DBK_pseudo_K0RS, &PTR_rankDataH->DBK_pseudo_K0RS_ptrs, in, dataSeed );
 
     ocrDbRelease( PTR_rankDataH->DBK_n_poles );
     ocrDbRelease( PTR_rankDataH->DBK_n_windows);
@@ -279,6 +300,12 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
 
     u64* g_abrarov = &reductionVars[0];
     u64* g_alls = &reductionVars[1];
+    u64* g_xsDigest = &reductionVars[2];
+
+    // The lane's running magnitude sum outlives the generation that produced
+    // it, so it is carried in the lane's own reduction block.
+    double laneXs;
+    memcpy( &laneXs, &reductionVars[3], sizeof(double) );
 
     u64 abrarov = 0;
     u64 alls = 0;
@@ -302,8 +329,7 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
         // to do anything with it in this program, so return value
         // is written over.
         calculate_macro_xs( macro_xs, mat, E, in, data, sigTfactors, &abrarov, &alls );
-        *g_abrarov += abrarov;
-        *g_alls += alls;
+        laneXs += fabs(macro_xs[0]) + fabs(macro_xs[1]) + fabs(macro_xs[2]) + fabs(macro_xs[3]);
 
         // Results are copied onto heap to avoid some compiler
         // flags (-flto) from optimizing out function call
@@ -316,6 +342,13 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
                macro_xs[3],
                0.));
     }
+
+    *g_abrarov += abrarov;
+    *g_alls += alls;
+    memcpy( &reductionVars[3], &laneXs, sizeof(double) );
+    if( !isfinite( laneXs ) )
+        ocrPrintf("ERROR: non-finite cross-section accumulation in lane %d\n", tid);
+    *g_xsDigest = rs_quantize( laneXs );
 
     if( PTR_PRM_iterationsPerThread->lastGeneration )
     {
@@ -517,37 +550,71 @@ ocrGuid_t lookUpKernelEdt( EDT_ARGS )
         u64 tid = i;
         PRM_perThread.tid = tid;
 
+        u64 pdGridDims[1] = { PD_X };
+        u64 edtGridDims[1] = { nthreads };
+        int laneIndex = i;
+
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+        // Place a lane by its index among ALL the run's lanes rather than by
+        // its index within its own instance: the block map is then exact
+        // whenever the rank count divides the total, and a rank's block holds
+        // whole instances, so a lane sits with the data it reads.
+        edtGridDims[0] = (u64) PTR_rankH->nRanks * nthreads;
+        laneIndex = mype * (int) nthreads + i;
+#endif
+
+        int pd = getPolicyDomainID_Cart1D( laneIndex, edtGridDims, pdGridDims );
+        DEBUG_PRINTF(("id %"PRId32" map PD %"PRId32"\n", laneIndex, pd));
+
+#if defined(ENABLE_EXTENSION_AFFINITY) && defined(SINGLE_RUN_ACROSS_PD)
+        ocrGuid_t PDaffinityGuid;
+        ocrAffinityGetAt( AFFINITY_PD, pd, &(PDaffinityGuid) );
+        ocrSetHintValue( &myEdtAffinityHNT, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(PDaffinityGuid) );
+        ocrSetHintValue( &myDbkAffinityHNT, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(PDaffinityGuid) );
+#endif
+
+        ocrHint_t* laneDbkHNT = NULL_HINT;
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+        laneDbkHNT = &myDbkAffinityHNT;
+#endif
+
         ocrDBK_t DBK_seed;
         u64 *seed;
-        ocrDbCreate( &DBK_seed, (void**) &seed, sizeof(u64), 0, NULL_HINT, NO_ALLOC );
+        ocrDbCreate( &DBK_seed, (void**) &seed, sizeof(u64), 0, laneDbkHNT, NO_ALLOC );
         // Deterministic per-thread seed; Park-Miller requires a nonzero seed.
         *seed = 42 + 1 + tid;
         ocrDbRelease( DBK_seed );
 
         ocrDBK_t DBK_xs;
         double* xs;
-        ocrDbCreate( &DBK_xs, (void**) &xs, 4*sizeof(double), 0, NULL_HINT, NO_ALLOC );
+        ocrDbCreate( &DBK_xs, (void**) &xs, 4*sizeof(double), 0, laneDbkHNT, NO_ALLOC );
         ocrDbRelease( DBK_xs );
 
         ocrDBK_t DBK_sigTfactors;
         complex double* sigTfactors;
-        ocrDbCreate( &DBK_sigTfactors, (void**) &sigTfactors, PTR_in->numL*sizeof(complex double), 0, NULL_HINT, NO_ALLOC );
+        ocrDbCreate( &DBK_sigTfactors, (void**) &sigTfactors, PTR_in->numL*sizeof(complex double), 0, laneDbkHNT, NO_ALLOC );
         ocrDbRelease( DBK_sigTfactors );
 
+        // [0] and [1] are the kernel's two counters, [2] the lane's result
+        // digest -- all three reduced by integer add, so the folded value does
+        // not depend on the tree's shape.  [3] carries the running magnitude
+        // sum the digest is taken from and is past the reduced prefix.
         ocrDBK_t DBK_reductionVars;
         u64* reductionVars;
-        ocrDbCreate( &DBK_reductionVars, (void**) &reductionVars, 2*sizeof(u64), 0, NULL_HINT, NO_ALLOC );
+        ocrDbCreate( &DBK_reductionVars, (void**) &reductionVars, 4*sizeof(u64), 0, laneDbkHNT, NO_ALLOC );
         reductionVars[0] = 0;
         reductionVars[1] = 0;
+        reductionVars[2] = 0;
+        reductionVars[3] = 0;
         ocrDbRelease( DBK_reductionVars );
 
         ocrDBK_t rpLoopReductionDBK;
         reductionPrivate_t* rpLoopReductionPTR;
-        ocrDbCreate( &rpLoopReductionDBK, (void**) &rpLoopReductionPTR, sizeof(reductionPrivate_t), 0, NULL_HINT, NO_ALLOC );
+        ocrDbCreate( &rpLoopReductionDBK, (void**) &rpLoopReductionPTR, sizeof(reductionPrivate_t), 0, laneDbkHNT, NO_ALLOC );
 
         rpLoopReductionPTR->nrank = nthreads;
         rpLoopReductionPTR->myrank = i;
-        rpLoopReductionPTR->ndata = 2;
+        rpLoopReductionPTR->ndata = RS_NRESULT;
         rpLoopReductionPTR->reductionOperator = REDUCTION_U8_ADD;
         rpLoopReductionPTR->rangeGUID = PTR_rankH->loopReductionRangeGUID;
         rpLoopReductionPTR->reductionTML = NULL_GUID;
@@ -558,19 +625,6 @@ ocrGuid_t lookUpKernelEdt( EDT_ARGS )
         if( i == 0 ) rpLoopReductionPTR->returnEVT = PTR_rankH->rpLoopReductionEVT;
 
         ocrDbRelease( rpLoopReductionDBK );
-
-        u64 pdGridDims[1] = { PD_X };
-        u64 edtGridDims[1] = { nthreads };
-
-        int pd = getPolicyDomainID_Cart1D( i, edtGridDims, pdGridDims );
-        DEBUG_PRINTF(("id %"PRIu64" map PD %"PRId32"\n", i, pd));
-
-#if defined(ENABLE_EXTENSION_AFFINITY) && defined(SINGLE_RUN_ACROSS_PD)
-        ocrGuid_t PDaffinityGuid;
-        ocrAffinityGetAt( AFFINITY_PD, pd, &(PDaffinityGuid) );
-        ocrSetHintValue( &myEdtAffinityHNT, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(PDaffinityGuid) );
-        ocrSetHintValue( &myDbkAffinityHNT, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(PDaffinityGuid) );
-#endif
 
         PRM_perThread.DBK_seed = DBK_seed;
         PRM_perThread.DBK_xs = DBK_xs;
@@ -636,22 +690,47 @@ ocrGuid_t summaryEdt( EDT_ARGS )
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
 
+    s32 _idep;
+
+    _idep = 1;
+    ocrDBK_t rpXsReductionDBK = depv[_idep].guid;
+
+    _idep = 0;
+    u64* reductionVars = depv[_idep++].ptr;
+    reductionPrivate_t* rpXsReductionPTR = depv[_idep++].ptr;
+
+    // This instance's lanes are folded; fold the same words across the
+    // instances so the value the run reports covers every lookup.
+    u64 xsResult[RS_NRESULT];
+    for( int i = 0; i < RS_NRESULT; i++ )
+        xsResult[i] = reductionVars[i];
+
+    reductionLaunch( rpXsReductionPTR, rpXsReductionDBK, xsResult );
+
+    return NULL_GUID;
+}
+
+ocrGuid_t finalSummaryEdt( EDT_ARGS )
+{
+    DEBUG_PRINTF(( "%s\n", __func__ ));
+
     s32 _idep, _paramc, _depc;
 
     _idep = 0;
     ocrGuid_t DBK_rankH = depv[_idep++].guid;
     ocrDBK_t DBK_rankDataH = depv[_idep++].guid;
     ocrDBK_t maxTimeDBK = depv[_idep++].guid;
-    ocrDBK_t DBK_reductionVars = depv[_idep++].guid;
+    ocrDBK_t DBK_xsResult = depv[_idep++].guid;
 
     _idep = 0;
     rankH_t* PTR_rankH = depv[_idep++].ptr;
     rankDataH_t* PTR_rankDataH = depv[_idep++].ptr;
     double* runtime = depv[_idep++].ptr;
-    u64* reductionVars = depv[_idep++].ptr;
+    u64* xsResult = depv[_idep++].ptr;
 
-    u64* g_abrarov = &reductionVars[0];
-    u64* g_alls = &reductionVars[1];
+    u64* g_abrarov = &xsResult[0];
+    u64* g_alls = &xsResult[1];
+    u64* g_xsDigest = &xsResult[2];
 
     Inputs* PTR_in = &(PTR_rankH->globalParamH.in);
     globalOcrParamH_t* PTR_globalOcrParamH = &(PTR_rankH->globalParamH.ocrParamH);
@@ -666,7 +745,7 @@ ocrGuid_t summaryEdt( EDT_ARGS )
         ocrPrintf("Simulation complete.\n" );
 
         // Print / Save Results and Exit
-        print_results( *PTR_in, mype, *runtime, nprocs, *g_abrarov, *g_alls);
+        print_results( *PTR_in, mype, *runtime, nprocs, *g_abrarov, *g_alls, *g_xsDigest );
     }
 
     //Destroy DBK, events, etc.
@@ -685,6 +764,7 @@ ocrGuid_t summaryEdt( EDT_ARGS )
     //ocrDbDestroy( PTR_rankDataH->DBK_conc_ptrs );
 
     ocrEventDestroy( PTR_rankH->rpPerfTimerEVT );
+    ocrEventDestroy( PTR_rankH->rpXsReductionEVT );
 
     if( mype == 0)
         ocrEventSatisfy(PTR_globalOcrParamH->finalOnceEVT, NULL_GUID );
@@ -730,6 +810,8 @@ ocrGuid_t FNC_initSimulation( EDT_ARGS )
 
     ocrDBK_t rpPerfTimerDBK = PTR_rankH->rpPerfTimerDBK;
     ocrEVT_t rpPerfTimerEVT = PTR_rankH->rpPerfTimerEVT;
+    ocrDBK_t rpXsReductionDBK = PTR_rankH->rpXsReductionDBK;
+    ocrEVT_t rpXsReductionEVT = PTR_rankH->rpXsReductionEVT;
     ocrEVT_t rpLoopReductionEVT = PTR_rankH->rpLoopReductionEVT;
 
     ocrEVT_t loopCompletionLatchEVT = PTR_rankH->loopCompletionLatchEVT;
@@ -775,9 +857,23 @@ ocrGuid_t FNC_initSimulation( EDT_ARGS )
     ocrAddDependence( rpPerfTimerDBK, launchReductionEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( loopCompletionLatchEVT, launchReductionEDT, _idep++, DB_MODE_NULL );
 
-    //Create a wrapUp EDT that depends on the reduction output
+    //Create a summary EDT that folds this instance's result across instances
+    ocrGuid_t summaryTML, summaryEDT;
+    ocrEdtTemplateCreate( &summaryTML, summaryEdt, 0, 2 );
+
+    ocrEdtCreate( &summaryEDT, summaryTML,
+                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PROP_NONE, &myEdtAffinityHNT, NULL );
+
+    ocrEdtTemplateDestroy( summaryTML );
+
+    _idep = 0;
+    ocrAddDependence( rpLoopReductionEVT, summaryEDT, _idep++, DB_MODE_RO );
+    ocrAddDependence( rpXsReductionDBK, summaryEDT, _idep++, DB_MODE_RW );
+
+    //Create a wrapUp EDT that depends on both reduction outputs
     ocrGuid_t wrapUpTML, wrapUpEDT, wrapUpOEVT, wrapUpOEVTS;
-    ocrEdtTemplateCreate( &wrapUpTML, summaryEdt, 0, 4 );
+    ocrEdtTemplateCreate( &wrapUpTML, finalSummaryEdt, 0, 4 );
 
     ocrEdtCreate( &wrapUpEDT, wrapUpTML,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
@@ -789,7 +885,7 @@ ocrGuid_t FNC_initSimulation( EDT_ARGS )
     ocrAddDependence( DBK_rankH, wrapUpEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_rankDataH, wrapUpEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( rpPerfTimerEVT, wrapUpEDT, _idep++, DB_MODE_RO );
-    ocrAddDependence( rpLoopReductionEVT, wrapUpEDT, _idep++, DB_MODE_RO );
+    ocrAddDependence( rpXsReductionEVT, wrapUpEDT, _idep++, DB_MODE_RO );
 
     return NULL_GUID;
 }
@@ -867,10 +963,10 @@ ocrGuid_t channelSetupEdt( EDT_ARGS )
 
     u64 myRank = PRM_channelSetupEdt->myRank;
 
-    ocrDbRelease(DBK_rankH);
-
     ocrHint_t myDbkAffinityHNT = PTR_rankH->myDbkAffinityHNT;
     ocrHint_t myEdtAffinityHNT = PTR_rankH->myEdtAffinityHNT;
+
+    ocrDbRelease(DBK_rankH);
 
     MyOcrTaskStruct_t TS_xsbenchMain; _paramc = 0; _depc = 1;
 
@@ -992,6 +1088,7 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     //for collective operatations among the child EDTs
     globalOcrParamH_t ocrParamH;
     ocrGuidRangeCreate( &(ocrParamH.perfTimerReductionRangeGUID), nRanks, GUID_USER_EVENT_STICKY );
+    ocrGuidRangeCreate( &(ocrParamH.xsReductionRangeGUID), nRanks, GUID_USER_EVENT_STICKY );
 
     ocrGuid_t wrapUpTML, wrapUpEDT;
     ocrEdtTemplateCreate( &wrapUpTML, wrapUpEdt, 0, 1 );

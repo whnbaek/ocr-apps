@@ -27,13 +27,8 @@ static inline ocrHint_t * mgRankEdtHint(ocrHint_t * h, u64 r)
 #endif
 }
 
-// per-box initialization bodies shared with the serial path (init.c)
-void hpgmg_valid_box(level_type *level, box_type *bx);
-void hpgmg_fill_box(level_type *level, box_type *bx, double a, double b);
-double hpgmg_gershgorin_box(level_type *level, box_type *bx, double a, double b);
-void hpgmg_coeff_restrict_box(level_type *level, box_type *cb,
-                              level_type *fromLevel, box_type *fine_bx,
-                              int fb, int count);
+// the spatial map (init.c); the per-box bodies it shares with every
+// decomposition are declared in hpgmg.h
 void boxFactor3(s64 P, int *px, int *py, int *pz);
 int boxHomePD(int box_num, int S, s64 P);
 
@@ -45,7 +40,8 @@ ocrGuid_t pack_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t unpack_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 // the driver (mg_dist.c)
-ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0);
+ocrGuid_t dist_init(mg_type *mg_ptr, int box_dim0, int boxes_in_i0,
+                    ocrGuid_t *startEvt);
 ocrGuid_t dist_solves(ocrGuid_t start, mg_type *mg_ptr, int num, int warmup);
 ocrGuid_t finalize_dist(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 

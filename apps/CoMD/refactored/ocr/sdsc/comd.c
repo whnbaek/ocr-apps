@@ -21,6 +21,8 @@ static void timestamp(const char* msg)
 #endif
 }
 
+ocrGuid_t init_done_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t init_force_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t main_edt2(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t main_edt3(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 ocrGuid_t top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
@@ -45,33 +47,92 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t cmd_i;
   command* cmd_p;
   ocrDbCreate(&cmd_i, (void**)&cmd_p, sizeof(command), 0, NULL_HINT, NO_ALLOC);
-  parse_command(argc, argv, cmd_p);
+  u8 bad_args = parse_command(argc, argv, cmd_p);
   ocrDbDestroy(args);
+  if(bad_args) {
+    ocrDbDestroy(cmd_i);
+    ocrShutdown();
+    return ERROR_GUID;
+  }
 
   ocrGuid_t sim_i;
   simulation* sim_p;
   ocrDbCreate(&sim_i, (void**)&sim_p, sizeof(simulation), 0, NULL_HINT, NO_ALLOC);
   ocrGuid_t* list;
-  u32 insane = init_simulation(cmd_p, sim_p, timer_p, &list);
+  u32 insane = init_simulation(cmd_p, sim_p, &list);
   ocrDbDestroy(cmd_i);
   if(insane) {
     ocrShutdown();
     return ERROR_GUID;
   }
 
-  profile_start(compute_force_timer, timer_p);
+  profile_start(redistribute_timer, timer_p);
+
+  ocrGuid_t tmp,edt;
+  ocrEdtTemplateCreate(&tmp, init_done_edt, 0, 4);
+  ocrHint_t homeHNT;
+  ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  ocrAddDependence(timer_i, edt, 0, DB_MODE_RW);
+  ocrAddDependence(sim_i, edt, 1, DB_MODE_RW);
+  ocrAddDependence(sim_p->bxs.list, edt, 2, DB_MODE_CONST);
+  fork_generate_atoms(sim_i, edt, 3, list, sim_p->bxs.grid);
+  ocrEdtTemplateDestroy(tmp);
+
+  ocrDbDestroy(depv[0].guid);
+
+  return NULL_GUID;
+}
+
+ocrGuid_t init_done_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+  simulation* sim = (simulation*)depv[1].ptr;
+  const init_stats* st = (const init_stats*)depv[3].ptr;
+  profile_stop(redistribute_timer, depv[0].ptr);
+
+  sim->bxs.atoms = st->atoms;
+  sim->bxs.max_occupancy = st->max_occupancy;
+
+  real3 vcm; vcm[0] = vcm[1] = vcm[2] = 0.0;
+  real_t scale = 1.0;
+  if(sim->bxs.temperature != 0.0 && st->atoms > 0) {
+    real_t n = (real_t)st->atoms;
+    for(u32 d = 0; d < 3; ++d) vcm[d] = st->p[d]/n;
+    /* The kinetic energy left after the mean momentum is removed follows from
+     * the same two sums, so no second pass over the atoms is needed. */
+    real_t p2 = st->p2 - n*(vcm[0]*vcm[0]+vcm[1]*vcm[1]+vcm[2]*vcm[2]);
+    real_t temp = ((sim->pot.inv_mass_2*p2)/n)*kB_eV_1_5;
+    if(temp > 0.0) scale = sqrt(sim->bxs.temperature/temp);
+  }
+  ocrDbDestroy(depv[3].guid);
+
+  ocrGuid_t tmp,edt;
+  ocrEdtTemplateCreate(&tmp, init_force_edt, 0, 4);
+  ocrHint_t homeHNT;
+  ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
+  ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
+  ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
+  fork_set_temperature(edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid, vcm, scale);
+  ocrEdtTemplateDestroy(tmp);
+
+  return NULL_GUID;
+}
+
+ocrGuid_t init_force_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
+  simulation* sim = (simulation*)depv[1].ptr;
+  profile_start(compute_force_timer, depv[0].ptr);
 
   ocrGuid_t tmp,edt;
   ocrEdtTemplateCreate(&tmp, main_edt2, 0, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
-  ocrAddDependence(timer_i, edt, 0, DB_MODE_RW);
-  ocrAddDependence(sim_i, edt, 1, DB_MODE_CONST);
-  ocrAddDependence(sim_p->bxs.list, edt, 2, DB_MODE_CONST);
-  sim_p->pot.fork_force_computation(sim_i, sim_p, edt, list, sim_p->bxs.grid);
+  ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
+  ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
+  ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
+  sim->pot.fork_force_computation(depv[1].guid, sim, edt,
+                                  (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
   ocrEdtTemplateDestroy(tmp);
-
-  ocrDbDestroy(depv[0].guid);
 
   return NULL_GUID;
 }
@@ -86,7 +147,7 @@ ocrGuid_t main_edt2(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
-  fork_kinetic_energy(depv[1].guid, edt, 2, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.boxes_num);
+  fork_kinetic_energy(depv[1].guid, edt, 2, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.grid);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;
@@ -129,7 +190,7 @@ ocrGuid_t top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   profile_start(timestep_timer, depv[0].ptr);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
-  timestep(depv[0].guid, depv[0].ptr, depv[1].guid, edt, depv[2].guid, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.boxes_num, ((simulation*)depv[1].ptr)->dt);
+  timestep(depv[0].guid, depv[0].ptr, depv[1].guid, edt, depv[2].guid, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.grid, ((simulation*)depv[1].ptr)->dt);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;

@@ -157,7 +157,7 @@ void print_help_message(void);
 void allocate(void);
 void deallocate(void);
 int check_input(Command cmd);
-Command parseCommandLine(int argc, char** argv);
+Command parseCommandLine(int argc, char** argv, int* PTR_bail);
 void initGlobalOcrParamH( globalOcrParamH_t* ocrParamH, u64 nRanks, Command* cmd );
 void initCommand(Command* cmd);
 
@@ -284,5 +284,9 @@ _OCR_TASK_FNC_( FNC_reduceAllUp );
 _OCR_TASK_FNC_( FNC_reduceAllDown );
 _OCR_TASK_FNC_( FNC_accumulator );
 _OCR_TASK_FNC_( FNC_reduceAllRootNodes );
+
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+void haloSurfacePdGrid_Cart3D( u64 nPDs, u64* rankGrid, u64* blocksPerRank, u64* pdGrid );
+#endif
 
 #endif

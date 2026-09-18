@@ -114,7 +114,8 @@ static ocrGuid_t lj_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   simulation* sim = (simulation*)depv[0].ptr;
   ocrGuid_t res; real_t* res_ptr;
-  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
+  ocrHint_t homeHNT;
+  ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, comdHomeDbHint(&homeHNT), NO_ALLOC);
   *res_ptr = lj_force_box_same((box*)depv[1].ptr, sim->pot.lj.sigma, sim->pot.lj.epsilon, sim->pot.cutoff);
   u32 dep = 1;
   u32 plane = sim->bxs.grid[0]*sim->bxs.grid[1];
@@ -209,9 +210,9 @@ static inline void spawn_pair(ocrGuid_t sim, ocrGuid_t tmp, ocrGuid_t red, ocrGu
   u64 paramv[2];
   paramv[0] = red.guid; paramv[1] = b;
   ocrGuid_t edt;
-  ocrHint_t slabHNT;
+  ocrHint_t blockHNT;
   ocrEdtCreate(&edt, tmp, 2, paramv, 28, NULL, 0,
-               comdSlabEdtHint(&slabHNT, b, (u64)grid[0]*grid[1]*grid[2]), NULL);
+               comdBlockEdtHint(&blockHNT, b, grid), NULL);
   ocrAddDependence(sim, edt, 0, DB_MODE_CONST);
   ocrAddDependence(list[b], edt, 1, DB_MODE_RW);
 

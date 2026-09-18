@@ -104,13 +104,13 @@ Err_t tailRecurElseClause(const TailRecurIterate_t * in_iterate)
         if(in_iterate->current != in_iterate->end ){
             err=__LINE__; IFEB;
         }
-//DEV#       ifdef TAILRECURSION_VERBOSE
+#       ifdef TAILRECURSION_VERBOSE
             ocrPrintf("TESTIO> TAILRECUR ELSE: Performing iteration %ld in [%ld, %ld[\n",
                    in_iterate->current,
                    in_iterate->begin,
                    in_iterate->end
                    );
-//DEV#       endif
+#       endif
         break;
     }
     return err;

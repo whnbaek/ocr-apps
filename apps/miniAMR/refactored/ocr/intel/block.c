@@ -644,6 +644,10 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
 
          // First, give all eight children prongs the datablocks that they will be responsible to copy anew (except postpone meta until last):
 
+         /* The children's block and object sizes read through the control block, so they are taken while that
+          * block is still held: a datablock pointer is valid only between its acquire and its release. */
+         u64 childBlockBytes      = sizeof_Block_t;
+         u64 childAllObjectsBytes = sizeof_AllObjects_t;
          gasket__ocrDbRelease(myDeps->control_Dep.guid,                                                              __FILE__, __func__, __LINE__, nanny, "control");
          gasket__ocrDbRelease(myDeps->block_Dep.guid,                                                                __FILE__, __func__, __LINE__, nanny, "block");
          gasket__ocrDbRelease(myDeps->allObjects_Dep.guid,                                                           __FILE__, __func__, __LINE__, nanny, "allObjects");
@@ -661,8 +665,8 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
             ocrGuid_t newBlock_dblk;
             ocrGuid_t newAllObjects_dblk;
             gasket__ocrDbCreate(&newControl_dblk,       &dummy,                               sizeof_Control_t,    __FILE__, __func__, __LINE__, nanny, "control");
-            gasket__ocrDbCreate(&newBlock_dblk,         &dummy,                               sizeof_Block_t,      __FILE__, __func__, __LINE__, nanny, "block");
-            gasket__ocrDbCreate(&newAllObjects_dblk,    &dummy,                               sizeof_AllObjects_t, __FILE__, __func__, __LINE__, nanny, "allObjects");
+            gasket__ocrDbCreate(&newBlock_dblk,         &dummy,                               childBlockBytes,      __FILE__, __func__, __LINE__, nanny, "block");
+            gasket__ocrDbCreate(&newAllObjects_dblk,    &dummy,                               childAllObjectsBytes, __FILE__, __func__, __LINE__, nanny, "allObjects");
             ADD_DEPENDENCE(newControl_dblk,             blockClone_Edt[i], blockClone_Deps_t, control_Dep,           DB_MODE_RW,                   nanny, "control")
             ADD_DEPENDENCE(newBlock_dblk,               blockClone_Edt[i], blockClone_Deps_t, block_Dep,             DB_MODE_RW,                   nanny, "block")
             ADD_DEPENDENCE(newAllObjects_dblk,          blockClone_Edt[i], blockClone_Deps_t, allObjects_Dep,        DB_MODE_RW,                   nanny, "allObjects")

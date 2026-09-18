@@ -2,6 +2,7 @@
 #define HPGMG_H
 
 #include <ocr.h>
+#include <string.h>
 #define WARMUP 0
 #define TIMED 1
 
@@ -10,6 +11,13 @@
 #define NUM_GHOSTS 1
 #define BC_PERIODIC  0
 #define BC_DIRICHLET 1
+
+#ifndef BOX_SIMD_ALIGNMENT
+#define BOX_SIMD_ALIGNMENT 1 // allignment requirement for j+/-1
+#endif
+#ifndef BOX_PLANE_PADDING
+#define BOX_PLANE_PADDING  8 // scratch space to avoid unrolled loop cleanup
+#endif
 
 #define NUM_SMOOTHS      1
 #define CHEBYSHEV_DEGREE 4
@@ -34,6 +42,15 @@
 #define FMG_INTERPOLATE 0
 #define VC_INTERPOLATE 1
 
+// the (a,b) pair of the elliptic operator the program is built for
+#ifdef USE_HELMHOLTZ
+#define HPGMG_A 2.0
+#define HPGMG_B 1.0
+#else
+#define HPGMG_A 0.0
+#define HPGMG_B 1.0
+#endif
+
 #define mu 0.00000001
 
 #ifdef ENABLE_EXTENSION_AFFINITY
@@ -56,6 +73,32 @@ static inline ocrHint_t * mgHomeEdtHint(ocrHint_t * h)
   (void)h;
   return NULL_HINT;
 #endif
+}
+
+/* Home a per-box EDT with the box datablock it will acquire: the query
+ * resolves the box's placement so the EDT lands where its dependency already
+ * lives, turning the acquire local. */
+static inline ocrHint_t * mgBoxEdtHint(ocrHint_t * h, ocrGuid_t box)
+{
+#if defined(OCR_APP_OPTIMIZED_PLACEMENT) && defined(ENABLE_EXTENSION_AFFINITY)
+  u64 count = 1;
+  ocrGuid_t aff = NULL_GUID;
+  ocrAffinityQuery(box, &count, &aff);
+  ocrHintInit(h, OCR_HINT_EDT_T);
+  ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+  return h;
+#else
+  (void)h; (void)box;
+  return NULL_HINT;
+#endif
+}
+
+// A guid rides paramv as its 64-bit representation.
+static inline u64 hpgmg_guid_bits(ocrGuid_t g) {
+  u64 v; memcpy(&v, &g, sizeof(v)); return v;
+}
+static inline ocrGuid_t hpgmg_guid_from(u64 v) {
+  ocrGuid_t g; memcpy(&g, &v, sizeof(g)); return g;
 }
 
 typedef struct {
@@ -98,9 +141,6 @@ typedef struct {
   // offset for box norms: size == num_boxes * sizeof(double)
   u32 b_norms;
 
-  box_type **temp; // used for temporary storage
-  ocrGuid_t tempGuid;
-
   // timing related variables
   double time_operators[5]; //smooth (0), residual (1), restriction(2), interpolation (3), all (4)
   double time_temp[5];
@@ -135,14 +175,39 @@ typedef struct
  double*alpha = (double*)(((char*)depv[0].ptr)+((level_type*)depv[1].ptr)->alpha);
 */
 
-// Initialization functions
-void init_all(mg_type* mg, int box_dim, int boxes_in_i, int bc, int level);
-level_type* create_level(mg_type* mg, int box_dim, int boxes_in_i, int bc, int level);
-box_type* create_box(level_type* l, int num_vecs, int box_dim, int num_ghosts, int box_num);
-void initialize_problem(level_type* f, double a, double b);
-void rebuild_operator(level_type* l, level_type *fl, double a, double b);
-void mg_build(mg_type* mg, level_type* f, double a, double b, int minCoarseDim);
-void initialize_valid_region(level_type * level);
+// Initialization.  init_all lays the hierarchy out and returns the event the
+// solve hangs on; the data itself is produced by per-box tasks that run on
+// the rank owning the box, so the caller must not read a box afterwards.
+ocrGuid_t init_all(mg_type* mg, int box_dim, int boxes_in_i, int bc, ocrGuid_t *startEvt);
+
+// The level table: box dimension and box-grid edge per level, returning the
+// level count.  A geometry whose table cannot be built is rejected loudly.
+int hpgmg_level_table(int box_dim0, int boxes_in_i0, int *box_dim, int *boxes_in_i);
+void hpgmg_check_geometry(int box_dim, int boxes_in_i);
+u32 hpgmg_box_geometry(int box_dim, int *jStrideOut, int *kStrideOut);
+
+// per-box initialization bodies, shared by every decomposition
+void hpgmg_valid_box(level_type *level, box_type *bx);
+void hpgmg_fill_box(level_type *level, box_type *bx, double a, double b);
+double hpgmg_gershgorin_box(level_type *level, box_type *bx, double a, double b);
+double hpgmg_alpha_dot_box(level_type *level, box_type *bx);
+void hpgmg_coeff_restrict_box(level_type *level, box_type *cb,
+                              level_type *fromLevel, box_type *fine_bx,
+                              int fb, int count);
+
+// per-box initialization tasks and the two-value (eigenvalue, alpha dot)
+// max-reduction they feed
+ocrGuid_t hpgmg_prep_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t hpgmg_coeff_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t hpgmg_gersh_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t hpgmg_diag_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t hpgmg_max_merge_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t hpgmg_eigen_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+
+// the verification reduction, shared the same way
+ocrGuid_t hpgmg_error_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t hpgmg_error_level_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
+ocrGuid_t hpgmg_error_final_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]);
 
 void residual_coarse(level_type * level, box_type *box, double *res_id, double *x_id, double *rhs_id, double a, double b);
 

@@ -279,8 +279,8 @@ fprintf(stderr,"Wcy %f %f %f %f %f %f\n",Wcy[0],Wcy[1],Wcy[2],Wcy[3],Wcy[4],Wcy[
 #ifdef RAG_NEW_BLK_SIZE
 	int Xend = image_params->Ix;
 	int Yend = image_params->Iy;
-	int AFFINE_ASYNC_2_BLOCK_SIZE_X = RAG_NEW_BLK_SIZE;
-	int AFFINE_ASYNC_2_BLOCK_SIZE_Y = RAG_NEW_BLK_SIZE;
+	int AFFINE_ASYNC_2_BLOCK_SIZE_X = image_params->blk_tile;
+	int AFFINE_ASYNC_2_BLOCK_SIZE_Y = image_params->blk_tile;
 #else
 	int Xend = image_params->Ix;
 	int Yend = image_params->Iy;

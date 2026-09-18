@@ -153,6 +153,9 @@ ocrPrintf("allocate AffineParams\n");RAG_FLUSH;
 	/* The detects output is written by every build flavor; input paths and
 	 * their argv overrides exist only in the runtime-input build. */
 	const char *out_detects = argv_4;
+	/* Optional knobs, 0 meaning "keep the compiled default". */
+	int arg_blk_tile = 0, arg_blk_cfar = 0, arg_blk_affine = 0;
+	int write_detects = 0;
 #ifndef RAG_IMPLICIT_INPUTS
 	/* Data/output paths and the radar-parameter file: compiled defaults
 	 * (argv.h macros / Parameters.txt), overridable by program argv
@@ -179,6 +182,16 @@ ocrPrintf("allocate AffineParams\n");RAG_FLUSH;
 		}
 		if( rag_argc >= 6 )
 			rag_params_path = ocrGetArgv(depv[0].ptr, 5);
+		/* [6] tile block  [7] detection block  [8] resample block
+		 * [9] write the detections file (0/1). */
+		if( rag_argc >= 7 ) arg_blk_tile   = atoi(ocrGetArgv(depv[0].ptr, 6));
+		if( rag_argc >= 8 ) arg_blk_cfar   = atoi(ocrGetArgv(depv[0].ptr, 7));
+		if( rag_argc >= 9 ) arg_blk_affine = atoi(ocrGetArgv(depv[0].ptr, 8));
+		if( rag_argc >= 10) write_detects  = atoi(ocrGetArgv(depv[0].ptr, 9));
+		if( write_detects != 0 && write_detects != 1 ) {
+			ocrPrintf("detects-file switch must be 0 or 1. %d Exiting.\n",write_detects);RAG_FLUSH;
+			xe_exit(1);
+		}
 	}
 	/* Validation opens only — fail fast on a bad path.  The handles are not
 	 * kept: a FILE* is process-local, so the consuming tasks (ReadData_edt,
@@ -229,18 +242,76 @@ ocrPrintf("// Pulse transmission timestamps\n");RAG_FLUSH;
 		  xe_exit(1);
 	}
 
+	/* Blocking factors: the compiled value is the default and, where a task
+	 * sizes automatic storage from it, also the maximum -- a larger one would
+	 * overrun that storage, so it is refused here rather than discovered as a
+	 * corrupted stack. */
+#ifdef RAG_NEW_BLK_SIZE
+	image_params.blk_tile = RAG_NEW_BLK_SIZE;
+#else
+	image_params.blk_tile = 0;
+#endif
+#ifdef RAG_CFAR_BLK_SIZE
+	image_params.blk_cfar = RAG_CFAR_BLK_SIZE;
+#else
+	image_params.blk_cfar = image_params.blk_tile;
+#endif
+#ifdef RAG_AFFINE_BLK_SIZE
+	image_params.blk_affine = RAG_AFFINE_BLK_SIZE;
+#else
+	image_params.blk_affine = image_params.blk_tile;
+#endif
+	if( arg_blk_tile ) {
+		if( arg_blk_tile < 1 || arg_blk_tile > image_params.Ix ) {
+			ocrPrintf("tile block %d outside [1,%d]. Exiting.\n",arg_blk_tile,image_params.Ix);RAG_FLUSH;
+			xe_exit(1);
+		}
+		image_params.blk_tile = arg_blk_tile;
+	}
+	if( arg_blk_cfar ) {
+#ifdef RAG_CFAR_BLK_SIZE
+		if( arg_blk_cfar < 1 || arg_blk_cfar > RAG_CFAR_BLK_SIZE ) {
+			ocrPrintf("detection block %d outside [1,%d]. Exiting.\n",arg_blk_cfar,RAG_CFAR_BLK_SIZE);RAG_FLUSH;
+			xe_exit(1);
+		}
+#else
+		if( arg_blk_cfar < 1 ) {
+			ocrPrintf("detection block %d must be positive. Exiting.\n",arg_blk_cfar);RAG_FLUSH;
+			xe_exit(1);
+		}
+#endif
+		image_params.blk_cfar = arg_blk_cfar;
+	}
+	if( arg_blk_affine ) {
+#ifdef RAG_AFFINE_BLK_SIZE
+		if( arg_blk_affine < 1 || arg_blk_affine > RAG_AFFINE_BLK_SIZE ) {
+			ocrPrintf("resample block %d outside [1,%d]. Exiting.\n",arg_blk_affine,RAG_AFFINE_BLK_SIZE);RAG_FLUSH;
+			xe_exit(1);
+		}
+#else
+		if( arg_blk_affine < 1 ) {
+			ocrPrintf("resample block %d must be positive. Exiting.\n",arg_blk_affine);RAG_FLUSH;
+			xe_exit(1);
+		}
+#endif
+		image_params.blk_affine = arg_blk_affine;
+	}
+
 #ifdef TG_ARCH
 	pOutFile = NULL;
 #else
 #ifdef TRACE_LVL_1
 ocrPrintf("// Detects.txt\n");RAG_FLUSH;
 #endif
-	/* Validation open only — post_CFAR_edt reopens the path on its node. */
-	if( (pOutFile = fopen(out_detects, "wb")) == NULL ) {
-		ocrPrintf("Error opening %s\n", out_detects);
-		xe_exit(1);
+	/* Validation open only — post_CFAR_edt reopens the path on its node.
+	 * Nothing is opened when the file is not going to be written. */
+	if( write_detects ) {
+		if( (pOutFile = fopen(out_detects, "wb")) == NULL ) {
+			ocrPrintf("Error opening %s\n", out_detects);RAG_FLUSH;
+			xe_exit(1);
+		}
+		fclose(pOutFile);
 	}
-	fclose(pOutFile);
 #endif // TG_ARCH
 
 #ifdef TRACE_LVL_1
@@ -594,6 +665,7 @@ ocrPrintf("// Allocate memory for detection list\n");RAG_FLUSH;
 #endif
 	strncpy(file_args_lcl.out_detects,  out_detects,  RAG_PATH_MAX-1);
 #endif
+	file_args_lcl.write_detects = write_detects;
 	file_args_ptr = (struct file_args_t *)bsm_malloc(&file_args_dbg,sizeof(struct file_args_t));
 	if(file_args_ptr == NULL) {
 		ocrPrintf("Error allocating memory for file_args.\n");RAG_FLUSH;
@@ -693,6 +765,8 @@ ocrPrintf("// main_body_scg = %ld\n",main_body_scg);RAG_FLUSH;
 ocrPrintf("// provide the arguments to main_body_edt.\n");RAG_FLUSH;
 #endif
 
+RAG_DEF_MACRO_BSM( post_main_scg,NULL,NULL,NULL,NULL,main_body_evg,14);
+
 RAG_DEF_MACRO_BSM_RO( main_body_scg,struct complexData **,curImage,NULL,NULL,curImage_dbg,0);
 RAG_DEF_MACRO_BSM_RO( main_body_scg,struct complexData **,refImage,NULL,NULL,refImage_dbg,1);
 RAG_DEF_MACRO_SPAD_RO(main_body_scg,struct ImageParams *,image_params,image_params_ptr,image_params_lcl,image_params_dbg,2);
@@ -705,8 +779,6 @@ RAG_DEF_MACRO_BSM_RO( main_body_scg,float **,NULL,NULL,NULL,Pt_dbg,8);
 RAG_DEF_MACRO_BSM_RO( main_body_scg,float *,NULL,NULL,NULL,Tp_dbg,9);
 RAG_DEF_MACRO_PASS_RO(main_body_scg,struct detects *,NULL,NULL,NULL,Y_dbg,10);
 RAG_DEF_MACRO_BSM_RO( main_body_scg,struct file_args_t,NULL,NULL,NULL,file_args_dbg,11);
-
-RAG_DEF_MACRO_BSM( post_main_scg,NULL,NULL,NULL,NULL,main_body_evg,14);
 
 #ifdef TRACE_LVL_1
 ocrPrintf("// leave mainEdt\n");RAG_FLUSH;
@@ -865,6 +937,7 @@ ocrPrintf("// main out_detects = %s\n",file_args_lcl.out_detects);RAG_FLUSH;
 	memcpy(postCFARParamv.out_detects, file_args_lcl.out_detects,
 	       sizeof(postCFARParamv.out_detects));
 #endif
+	postCFARParamv.write_detects = file_args_lcl.write_detects;
 	retval = ocrEdtCreate(
 			&post_CFAR_scg,		// *created_edt_guid
 			 post_CFAR_clg,		// edt_template_guid

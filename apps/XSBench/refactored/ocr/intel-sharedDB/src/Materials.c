@@ -136,7 +136,7 @@ void assign_concs_ptrs( int* num_nucs, double* concs_all, double** concs )
 }
 
 // Creates a randomized array of 'concentrations' of nuclides in each mat
-double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs )
+double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs, u64 dataSeed )
 {
 	double ** concs; // = (double **)malloc( 12 * sizeof( double *) );
     ocrDbCreate( &PTR_rankDataH->DBK_conc_ptrs, (void **) &concs, 12*sizeof(double *),
@@ -157,45 +157,11 @@ double ** load_concs( rankDataH_t* PTR_rankDataH, int * num_nucs )
 
     assign_concs_ptrs( num_nucs, concs_all, concs );
 
+	u64 key = xs_stream( dataSeed, XS_STREAM_CONCS );
+	u64 slot = 0;
 	for( int i = 0; i < 12; i++ )
 		for( int j = 0; j < num_nucs[i]; j++ )
-			concs[i][j] = (double) rand() / (double) RAND_MAX;
-
-	// test
-	/*
-	for( int i = 0; i < 12; i++ )
-		for( int j = 0; j < num_nucs[i]; j++ )
-			ocrPrintf("concs[%d][%d] = %lf\n", i, j, concs[i][j] );
-	*/
-
-	return concs;
-}
-
-// Verification version of this function (tighter control over RNG)
-double ** load_concs_v( rankDataH_t* PTR_rankDataH, int * num_nucs, u64* seed )
-{
-	double ** concs; // = (double **)malloc( 12 * sizeof( double *) );
-    ocrDbCreate( &PTR_rankDataH->DBK_conc_ptrs, (void **) &concs, 12*sizeof(double *),
-                    0, NULL_HINT, NO_ALLOC );
-
-    int num_nucs_all = 0;
-	for( int i = 0; i < 12; i++ )
-	{
-	//	//concs[i] = (double *)malloc( num_nucs[i] * sizeof(double) );
-    //    ocrDbCreate( &PTR_rankDataH->DBK_concs[i], (void **) &concs[i], num_nucs[i]*sizeof(double),
-    //                    0, NULL_HINT, NO_ALLOC );
-        num_nucs_all += num_nucs[i];
-    }
-
-    double* concs_all;
-    ocrDbCreate( &PTR_rankDataH->DBK_concs_all, (void **) &concs_all, num_nucs_all*sizeof(double),
-                    0, NULL_HINT, NO_ALLOC );
-
-    assign_concs_ptrs( num_nucs, concs_all, concs );
-
-	for( int i = 0; i < 12; i++ )
-		for( int j = 0; j < num_nucs[i]; j++ )
-			concs[i][j] = rn_v(seed);
+			concs[i][j] = xs_draw_unit( key, slot++ );
 
 	// test
 	/*
@@ -232,12 +198,7 @@ int pick_mat( u64* seed )
 	dist[10] = 0.025;	// top of fuel assemblies
 	dist[11] = 0.013;	// bottom of fuel assemblies
 
-	//double roll = (double) rand() / (double) RAND_MAX;
-	#ifdef VERIFICATION
-	double roll = rn_v(seed);
-	#else
 	double roll = rn(seed);
-	#endif
 
 	// makes a pick based on the distro
 	for( int i = 0; i < 12; i++ )

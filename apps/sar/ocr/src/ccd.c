@@ -142,8 +142,8 @@ ocrPrintf("//// enter CCD\n");RAG_FLUSH;
 ocrPrintf("//// Mwins == %d and Nwins == %d, Ncor == %d\n",Mwins,Nwins,image_params->Ncor);RAG_FLUSH;
 #endif
 #ifdef RAG_NEW_BLK_SIZE
-	int CCD_ASYNC_BLOCK_SIZE_M = RAG_NEW_BLK_SIZE;
-	int CCD_ASYNC_BLOCK_SIZE_N = RAG_NEW_BLK_SIZE;
+	int CCD_ASYNC_BLOCK_SIZE_M = image_params->blk_tile;
+	int CCD_ASYNC_BLOCK_SIZE_N = image_params->blk_tile;
 #else
 	int CCD_ASYNC_BLOCK_SIZE_M = blk_size(Mwins,32);
 	int CCD_ASYNC_BLOCK_SIZE_N = blk_size(Nwins,32);

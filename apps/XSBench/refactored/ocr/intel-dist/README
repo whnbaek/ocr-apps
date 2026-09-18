@@ -1,0 +1,33 @@
+Distributed decomposition of the OCR XSBench lookup kernel.
+
+The lookup range is cut into places (-p).  Each place owns a contiguous share
+of the lookups, one producer over that share, and its own replica of the
+physics table, and every object of a place is created at one policy domain
+derived from the place index.  A lookup is still a three-task chain, so the
+runtime work per lookup is what the per-lookup port does; what differs is that
+no chain reaches across a policy domain and that production is as wide as the
+number of places.
+
+The table is generated in parallel by the tasks that own it, from a generator
+that is a pure function of (stream, index), so replicas agree without
+exchanging anything and the instance depends on neither the number of places
+nor the number of nodes.  Verification is a checksum of the lookup results:
+each lookup quantizes its macroscopic cross section to an integer weighted by
+its lookup index, accumulated per place and summed once at the end, so the
+value is invariant under partitioning and completion order.
+
+Arguments
+  -s <size>        H-M configuration (small, large, XL, XXL)
+  -g <gridpoints>  gridpoints per nuclide
+  -l <lookups>     total cross-section lookups
+  -p <places>      partitions of the lookup range, one table replica each
+  -b <batch>       lookup chains in flight per place; also the number of blocks
+                   the unionized index plane is cut into
+
+Offered concurrency is places x batch chains.  Memory is
+places x n_isotopes x gridpoints x (4 x n_isotopes + 56) bytes.
+
+To build and run
+
+x86:
+make -f Makefile.x86 clean run

@@ -75,18 +75,23 @@ void checksum_BlockContribution (blockClone_Params_t * myParams, ocrEdtDep_t dep
    Checksum_t * checksum = myDeps->upboundRequest_Dep.ptr;
 
    int var, i, j, k;
+   double        weighted  = 0.0;
+   unsigned long cellIndex = 0;
 
    for (var = 0; var < control->num_vars; var++) {
       double sum = 0.0;
       for (i = 1; i <= control->x_block_size; i++) {
          for (j = 1; j <= control->y_block_size; j++) {
             for (k = 1; k <= control->z_block_size; k++) {
-               sum += pCells[var][i][j][k];
+               double value = pCells[var][i][j][k];
+               sum      += value;
+               weighted += value * (double) ++cellIndex;
             }
          }
       }
       checksum->sum[var] = sum;
    }
+   checksum->weightedSum = weighted;
 
    // This block's contribution to the checksum will be passed to the parent as operand, requesting the AccumulateChecksum service.
    // In like manner, the partial accumulations will progagate all they way up to the root.
@@ -103,13 +108,7 @@ void checksum_BlockContribution (blockClone_Params_t * myParams, ocrEdtDep_t dep
    gasket__ocrEventCreate(&meta->conveyServiceRequestToParent_Event, OCR_EVENT_STICKY_T, EVT_PROP_TAKES_ARG, __FILE__, __func__, __LINE__, nanny, "conveyServiceRequestToParent(On Deck after Checksum)");  // Create the On Deck Event; record it in our meta.
    checksum->dbCommHeader.onDeck_Event  = meta->conveyServiceRequestToParent_Event;                                           // Convey On Deck Event to parent so that he can make his clone depend upon it.
 
-   static unsigned int seed = 0;
-   static int first = 1;
-   if (first) {
-      first = 0;
-      seed = (unsigned int) (meta->xPos + (meta->yPos * control->npx) + (meta->zPos * control->npx * control->npy));
-   }
-   checksum->dbCommHeader.squawk = rand_r(&seed);
+   checksum->dbCommHeader.squawk = 0xFF04;
 //printf ("Function %36s, File %30s, line %4d, for block at (lvl=%d, xPos=%d, yPos=%d, zPos=%d, squawk=%d)\n", __func__, __FILE__, __LINE__, meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, checksum->dbCommHeader.squawk); fflush(stdout);
 
    gasket__ocrDbRelease(myDeps->upboundRequest_Dep.guid, __FILE__, __func__, __LINE__, nanny, "upboundRequest(Checksum)");
@@ -147,20 +146,15 @@ void checksum_ParentContribution (u32 depc, ocrEdtDep_t depv[]) {
    SUSPEND__RESUME_IN_CLONE_EDT(;)
    Checksum_t * checksum = myDeps->upboundRequest_Dep.ptr;
 
-   static unsigned int seed = 0;
-   static int first = 1;
-   if (first) {
-      first = 0;
-      seed = (unsigned int) (meta->xPos + (meta->yPos * control->npx) + (meta->zPos * control->npx * control->npy));
-   }
    Checksum_t * contribution = myDeps->serviceRequest_Dep[0].ptr;
    memcpy(checksum, contribution, sizeof_Checksum_t);
 
-   checksum->dbCommHeader.squawk = rand_r(&seed);
+   checksum->dbCommHeader.squawk = 0xFF05;
 
    int i, j;
    for (i = 1; i < 8; i++) {
       contribution = myDeps->serviceRequest_Dep[i].ptr;
+      checksum->weightedSum += contribution->weightedSum;
       for (j = 0; j < control->num_vars; j++) {
           checksum->sum[j] += contribution->sum[j];
       }
@@ -225,17 +219,12 @@ void checksum_RootFinalAggregation (u32 depc, ocrEdtDep_t depv[], rootClone_Para
       meta->cloningState.cloningOpcode = SeasoningOneOrMoreDbCreates;
       SUSPEND__RESUME_IN_CLONE_EDT(;)
       accumulator = myDeps->scratchChecksum_Dep.ptr;
-      static unsigned int seed = 0;
-      static int first = 1;
-      if (first) {
-         first = 0;
-         seed = (unsigned int) 9999;
-      }
-      accumulator->dbCommHeader.squawk = rand_r(&seed);
+      accumulator->dbCommHeader.squawk = 0xFF06;
 //printf ("Function %36s, File %30s, line %4d, squawk=%d)\n", __func__, __FILE__, __LINE__, accumulator->dbCommHeader.squawk); fflush(stdout);
    }
 
    int i;
+   accumulator->weightedSum = 0.0;
    for (i = 0; i <control->num_vars; i++) {
        accumulator->sum[i] = 0.0;
    }
@@ -257,6 +246,7 @@ void checksum_RootFinalAggregation (u32 depc, ocrEdtDep_t depv[], rootClone_Para
          ocrShutdown();
       }
 
+      accumulator->weightedSum += operand->weightedSum;
       for (i = 0; i < control->num_vars; i++) {
           accumulator->sum[i] = accumulator->sum[i] + operand->sum[i];
       }
@@ -285,7 +275,17 @@ void checksum_RootFinalAggregation (u32 depc, ocrEdtDep_t depv[], rootClone_Para
          ocrShutdown();
       }
    }
-ocrPrintf ("Grand Total Checksum == %f at timestep %d\n", total, timeStep);
+   // The run's reported result is the last round's aggregate, so each round overwrites the record and the shutdown path prints it once.  The first round is the reference the rest are compared
+   // against, and it is a pure function of the initial fill, so it is reported separately -- reading it as the run's result would validate initialization and nothing else.
+   // Whether this is that first round must be read from state that survives a suspension: the locals of the entry above are not live after a resumption re-enters below them.
+   int isFirstRound = (meta->lastTimeStep < 0);
+   meta->lastChecksum         = total;
+   meta->lastWeightedChecksum = accumulator->weightedSum;
+   meta->lastTimeStep         = timeStep;
+   if (isFirstRound) {
+      // Both reductions of the reference round on one line: a separately named line whose text ended in the reported result's own label would be matched ahead of it by a substring search.
+      ocrPrintf ("Golden Checksum == %f (weighted %f)\n", total, accumulator->weightedSum);
+   }
 
    if (!ocrGuidIsNull(myDeps->scratchChecksum_Dep.guid)) {
       gasket__ocrDbDestroy(&myDeps->scratchChecksum_Dep.guid, &myDeps->scratchChecksum_Dep.ptr, __FILE__, __func__, __LINE__, "scratchChecksum", " "); // Destroy the scratch checksum

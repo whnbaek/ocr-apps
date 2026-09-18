@@ -18,6 +18,14 @@
 
 #include <sys/time.h>
 
+#include "cholesky_instance.h"
+
+/* Output selection: 0..5 are the published levels, OUT_NONE emits no factor at
+ * all.  Writing the whole factor is O(matrixSize^2) of serial file traffic that
+ * belongs to reporting rather than to the factorization, so the run emits only
+ * the correctness scalar unless an output level is asked for explicitly. */
+#define OUT_NONE 6
+
 #ifndef TG_ARCH
 
 // Uncomment the below two lines to include EDT profiling information
@@ -183,65 +191,76 @@ ocrGuid_t wrap_up_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
         outSelLevel = 2;
     }
 
-    FILE* out = fopen("ocr_mkl_cholesky.out", "w");
+    if(outSelLevel != OUT_NONE) {
+        /* Level 0 prints only; the other levels need the file. */
+        FILE* out = NULL;
+        if(outSelLevel != 0) {
+            out = fopen("ocr_mkl_cholesky.out", "w");
+            if( !out ) {
+                ocrPrintf("Cannot open file: %s\n", "ocr_mkl_cholesky.out");
+                ocrShutdown();
+                return NULL_GUID;
+            }
+        }
 
-    for ( i = 0; i < numTiles; ++i ) {
-        for( i_b = 0; i_b < tileSize; ++i_b) {
-            for ( j = 0; j <= i; ++j ) {
-                temp = (double*) (depv[i*(i+1)/2+j].ptr);
+        for ( i = 0; i < numTiles; ++i ) {
+            for( i_b = 0; i_b < tileSize; ++i_b) {
+                for ( j = 0; j <= i; ++j ) {
+                    temp = (double*) (depv[i*(i+1)/2+j].ptr);
 
-                if(i != j) {
-                    for(j_b = 0; j_b < tileSize; ++j_b) {
-                        switch(outSelLevel)
-                        {
-                        case 0:
-                            printf("%lf ", temp[i_b*tileSize+j_b]);
-                            break;
-                        case 1:
-                            fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
-                            break;
-                        case 2:
-                            fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
-                            break;
-                        case 3:
-                            fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
-                            printf("%lf ", temp[i_b*tileSize+j_b]);
-                            break;
-                        case 4:
-                            fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
-                            printf("%lf ", temp[i_b*tileSize+j_b]);
-                            break;
+                    if(i != j) {
+                        for(j_b = 0; j_b < tileSize; ++j_b) {
+                            switch(outSelLevel)
+                            {
+                            case 0:
+                                printf("%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            case 1:
+                                fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            case 2:
+                                fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
+                                break;
+                            case 3:
+                                fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
+                                printf("%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            case 4:
+                                fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
+                                printf("%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            }
                         }
                     }
-                }
-                else {
-                    for(j_b = 0; j_b <= i_b; ++j_b) {
-                        switch(outSelLevel)
-                        {
-                        case 0:
-                            printf("%lf ", temp[i_b*tileSize+j_b]);
-                            break;
-                        case 1:
-                            fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
-                            break;
-                        case 2:
-                            fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
-                            break;
-                        case 3:
-                            fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
-                            printf("%lf ", temp[i_b*tileSize+j_b]);
-                            break;
-                        case 4:
-                            fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
-                            printf("%lf ", temp[i_b*tileSize+j_b]);
-                            break;
+                    else {
+                        for(j_b = 0; j_b <= i_b; ++j_b) {
+                            switch(outSelLevel)
+                            {
+                            case 0:
+                                printf("%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            case 1:
+                                fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            case 2:
+                                fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
+                                break;
+                            case 3:
+                                fprintf(out, "%lf ", temp[i_b*tileSize+j_b]);
+                                printf("%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            case 4:
+                                fwrite(&temp[i_b*tileSize+j_b], sizeof(double), 1, out);
+                                printf("%lf ", temp[i_b*tileSize+j_b]);
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
+        if(out) fclose(out);
     }
-    fclose(out);
 
     /* Correctness scalar: trace of the Cholesky factor L — deterministic and
      * independent of scheduling order for a positive-definite input. */
@@ -262,29 +281,85 @@ ocrGuid_t wrap_up_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) 
     return NULL_GUID;
 }
 
+/* Fills one tile of the lower triangle from the generated instance and hands it
+ * on as that tile's generation 0 -- the same thing a tile read from an input
+ * file is satisfied with, so the rest of the graph cannot tell the two apart.
+ * The value of an element is a function of its global indices alone, so the
+ * fill belongs to the tile and runs wherever the tile is placed, instead of
+ * being a loop in the task that builds the graph. */
+ocrGuid_t generate_tile_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+    u64 *func_args = paramv;
+    u32 row = (u32) func_args[0];
+    u32 col = (u32) func_args[1];
+    u32 tileSize = (u32) func_args[2];
+    ocrGuid_t out_lkji_ij0_event_guid = (ocrGuid_t){.guid = func_args[3]};
+
+    choleskyFillTile((double*) (depv[0].ptr), row, col, tileSize);
+
+    ocrDbRelease(depv[0].guid);
+    ocrEventSatisfy(out_lkji_ij0_event_guid, depv[0].guid);
+
+    return NULL_GUID;
+}
+
 /* 2-D block-cyclic (ScaLAPACK) owner map for a right-looking tiled factorization.
  * Factor the affinity (policy-domain) count into a near-square P x Q grid with
  * P >= Q, then place tile (row,col) on rank (row % P) * Q + (col % Q).  Keying
  * each kernel EDT on the coordinate of the single tile it writes co-locates the
- * kernel with its RW output, so the per-tile ownership acquire settles locally.
- * The two independent mod axes keep the concurrently-active trailing submatrix
- * spread across all P*Q ranks rather than folding a whole frontier onto one rank
- * (which a single linear index mod rank-count would do). */
+ * kernel with its RW output, so the per-tile ownership acquire settles locally;
+ * keying the tile's datablock on the SAME coordinate puts the block's home on
+ * the rank that writes it in every generation, so a released version does not
+ * have to travel to a home that never reads it.  The two independent mod axes
+ * keep the concurrently-active trailing submatrix spread across all P*Q ranks
+ * rather than folding a whole frontier onto one rank (which a single linear
+ * index mod rank-count would do). */
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+static u64 choleskyGridRanks = 0, choleskyGridP = 1, choleskyGridQ = 1;
+
+/* The grid is fixed for the run, so it is derived once.  The lazy
+ * initialisation is unsynchronised, which is correct only because every caller
+ * runs on the single task that builds the graph. */
+static u64 choleskyGridInit(void) {
+    if (choleskyGridRanks == 0) {
+        ocrAffinityCount(AFFINITY_PD, &choleskyGridRanks);
+        for (u64 p = 1; p <= choleskyGridRanks; ++p) {
+            if (choleskyGridRanks % p == 0 && p * p >= choleskyGridRanks) {
+                choleskyGridP = p;
+                break;
+            }
+        }
+        choleskyGridQ = choleskyGridRanks / choleskyGridP;
+    }
+    return choleskyGridRanks;
+}
+
+static u64 choleskyTileOwner(u32 row, u32 col) {
+    return ((u64)row % choleskyGridP) * choleskyGridQ + ((u64)col % choleskyGridQ);
+}
+#endif
+
 static ocrHint_t * choleskyTileHint(ocrHint_t * h, u32 row, u32 col) {
 #ifdef OCR_APP_OPTIMIZED_PLACEMENT
-    u64 nranks;
-    ocrAffinityCount(AFFINITY_PD, &nranks);
-    if (nranks <= 1) return NULL_HINT; /* co-location needs another PD to avoid */
-    u64 P = 1;
-    for (u64 p = 1; p <= nranks; ++p) {
-        if (nranks % p == 0 && p * p >= nranks) { P = p; break; }
-    }
-    u64 Q = nranks / P;
-    u64 home = ((u64)row % P) * Q + ((u64)col % Q);
+    /* A single policy domain has nothing to co-locate against. */
+    if (choleskyGridInit() <= 1) return NULL_HINT;
     ocrGuid_t aff;
-    ocrAffinityGetAt(AFFINITY_PD, home, &aff);
+    ocrAffinityGetAt(AFFINITY_PD, choleskyTileOwner(row, col), &aff);
     ocrHintInit(h, OCR_HINT_EDT_T);
     ocrSetHintValue(h, OCR_HINT_EDT_AFFINITY, ocrAffinityToHintValue(aff));
+    return h;
+#else
+    (void)h; (void)row; (void)col;
+    return NULL_HINT;
+#endif
+}
+
+static ocrHint_t * choleskyTileDbHint(ocrHint_t * h, u32 row, u32 col) {
+#ifdef OCR_APP_OPTIMIZED_PLACEMENT
+    if (choleskyGridInit() <= 1) return NULL_HINT;
+    ocrGuid_t aff;
+    ocrAffinityGetAt(AFFINITY_PD, choleskyTileOwner(row, col), &aff);
+    ocrHintInit(h, OCR_HINT_DB_T);
+    ocrSetHintValue(h, OCR_HINT_DB_AFFINITY, ocrAffinityToHintValue(aff));
     return h;
 #else
     (void)h; (void)row; (void)col;
@@ -376,9 +451,13 @@ inline static void wrap_up_task_prescriber ( ocrGuid_t edtTemp, u32 numTiles, u3
     func_args[1]=(u32)tileSize;
     func_args[2]=(u32)outSelLevel;
 
+    /* The terminal gather names every tile, so no coordinate localises it.  It
+     * is keyed on the origin of the owner map so that its rank is a property of
+     * the map and not of the order in which tasks happened to be created. */
+    ocrHint_t edtHint;
     ocrEdtCreate(&wrap_up_task_guid, edtTemp, 3, func_args,
-                 (numTiles + 1) * numTiles / 2, NULL, PROPERTIES, NULL_HINT,
-                 NULL);
+                 (numTiles + 1) * numTiles / 2, NULL, PROPERTIES,
+                 choleskyTileHint(&edtHint, 0, 0), NULL);
 
     u32 index = 0;
     for ( i = 0; i < numTiles; ++i ) {
@@ -454,8 +533,9 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize, double** matr
           ocrGuid_t db_guid;
           void *temp_db;
           ocrGuid_t tmpdb_guid;
+          ocrHint_t dbHint;
           ocrDbCreate(&db_guid, &temp_db, sizeof(double) * tileSize * tileSize,
-                      FLAGS, NULL_HINT, NO_ALLOC);
+                      FLAGS, choleskyTileDbHint(&dbHint, i, j), NO_ALLOC);
 
           double *temp = (double *)temp_db;
           double **temp2D;
@@ -486,15 +566,9 @@ inline static void satisfyInitialTiles(u32 numTiles, u32 tileSize, double** matr
  * each tileSize*tileSize doubles, row-major within the tile, host byte order --
  * the same layout convertData emits.
  * Streams each tile straight into its datablock, so no whole-matrix buffer is
- * built and no per-element conversion happens.  Returns 0 on success; a short
- * read is reported and fails the run.
- *
- * Reading the same matrix as text costs one fscanf per ELEMENT: at a 10000-wide
- * matrix that is 100 million calls against 5,050 freads, and it is the entire
- * run rather than a detail of it.  With the two ports reading differently, the
- * pair measures two different things -- one the factorization, the other the
- * scanner -- which is the opposite of what a same-DAG/different-kernel pair is
- * for. */
+ * built and no per-element conversion happens: the text path costs one fscanf
+ * per element, this one one fread per tile.  Returns 0 on success; a short read
+ * is reported and fails the run. */
 inline static int satisfyInitialTilesBinary(u32 numTiles, u32 tileSize, FILE* fin,
                                             ocrGuid_t*** lkji_event_guids) {
     u32 i, j;
@@ -503,8 +577,9 @@ inline static int satisfyInitialTilesBinary(u32 numTiles, u32 tileSize, FILE* fi
         for( j = 0 ; j <= i ; ++j ) {
             ocrGuid_t db_guid;
             void *temp_db;
+            ocrHint_t dbHint;
             ocrDbCreate(&db_guid, &temp_db, sizeof(double) * tileSize * tileSize,
-                        FLAGS, NULL_HINT, NO_ALLOC);
+                        FLAGS, choleskyTileDbHint(&dbHint, i, j), NO_ALLOC);
 
             if( fread(temp_db, sizeof(double) * tileSize * tileSize, 1, fin) != 1 ) {
                 ocrPrintf("Tile-binary input ends short at tile (%u,%u)\n", i, j);
@@ -518,12 +593,84 @@ inline static int satisfyInitialTilesBinary(u32 numTiles, u32 tileSize, FILE* fi
     return 0;
 }
 
+/* No input file: the matrix is generated.  The blocks are still created here,
+ * where the graph is built, and one task per tile fills the block it is given.
+ * The creating task never writes a tile, so it does not acquire one either:
+ * creating without a hold is what the standard offers for that, and it is not
+ * the same as acquiring and releasing again -- a release by a holder that is
+ * not the block's home is a write-back of whatever the block holds, which here
+ * would be its uninitialized contents.  The filling task takes the block
+ * read-write through its own dependence, which a datablock source satisfies at
+ * once. */
+inline static void satisfyInitialTilesGenerated(u32 numTiles, u32 tileSize,
+                                                ocrGuid_t genTemplate,
+                                                ocrGuid_t*** lkji_event_guids) {
+    u32 i, j;
+
+    for( i = 0 ; i < numTiles ; ++i ) {
+        for( j = 0 ; j <= i ; ++j ) {
+            ocrGuid_t db_guid, gen_guid;
+            void *temp_db;
+            ocrHint_t dbHint, edtHint;
+            u64 func_args[4];
+
+            ocrDbCreate(&db_guid, &temp_db, sizeof(double) * tileSize * tileSize,
+                        DB_PROP_NO_ACQUIRE, choleskyTileDbHint(&dbHint, i, j),
+                        NO_ALLOC);
+
+            func_args[0] = i;
+            func_args[1] = j;
+            func_args[2] = tileSize;
+            func_args[3] = (u64)(lkji_event_guids[i][j][0].guid);
+
+            ocrEdtCreate(&gen_guid, genTemplate, 4, func_args, 1, NULL,
+                         PROPERTIES, choleskyTileHint(&edtHint, i, j), NULL);
+            ocrAddDependence(db_guid, gen_guid, 0, DB_MODE_RW);
+        }
+    }
+}
+
+static void choleskyUsage(void) {
+    ocrPrintf("OCR-MKL Cholesky\n");
+    ocrPrintf("__________________________________________________________________________________________________\n");
+    ocrPrintf("Solves an OCR version of a Tiled Cholesky Decomposition with all math kernels using Intel MKL only\n\n");
+    ocrPrintf("Usage:\n");
+    ocrPrintf("\tocr_mkl_cholesky.exe {Arguments}\n\n");
+    ocrPrintf("Arguments:\n");
+    ocrPrintf("\t--ds -- Specify the Size of the Input Matrix\n");
+    ocrPrintf("\t--ts -- Specify the Tile Size\n");
+    ocrPrintf("\t--fi -- Specify the Input File Name of the Matrix (whitespace text)\n");
+    ocrPrintf("\t--fib -- Specify the Input File Name of the Matrix (tile-stream binary, see convertData)\n");
+    ocrPrintf("\t          With neither --fi nor --fib the matrix is generated from its indices\n");
+    ocrPrintf("\t          (a positive diagonal plus a rank-one term), one task per tile\n");
+    ocrPrintf("\t--ol -- Output Selection Level:\n");
+    ocrPrintf("\t\t0: Print solution to stdout\n");
+    ocrPrintf("\t\t1: Write solution to text file\n");
+    ocrPrintf("\t\t2: Write solution to binary file\n");
+    ocrPrintf("\t\t3: Write solution to text file and print to stdout\n");
+    ocrPrintf("\t\t4: Write solution to binary file and print to stdout\n");
+    ocrPrintf("\t\t5: Write algorithm timing data to ocr_mkl_cholesky_stats.csv and write solution to binary file\n");
+    ocrPrintf("\t\t6: Emit no solution, only the correctness scalar (default)\n");
+}
+
+/* A decimal u32 with no trailing text.  atoi() maps every malformed argument to
+ * zero, which silently runs a different problem than the one asked for. */
+static int choleskyParseU32(const char *s, u32 *out) {
+    char *end = NULL;
+    unsigned long v;
+    if (s == NULL || *s == '\0') return -1;
+    v = strtoul(s, &end, 10);
+    if (end == s || *end != '\0' || v > 0xFFFFFFFFUL) return -1;
+    *out = (u32)v;
+    return 0;
+}
+
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     u32 matrixSize = -1;
     u32 tileSize = -1;
     u32 numTiles = -1;
     u32 i, j, k, c;
-    u32 outSelLevel = 2;
+    u32 outSelLevel = OUT_NONE;
     double **matrix, ** temp;
     u64 argc;
 
@@ -532,7 +679,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 
     char *nparamv[argc];
 
-    char *fileNameIn = NULL, *fileNameOut = "ocr_mkl_cholesky.out";
+    char *fileNameIn = NULL;
     /* --fib selects the tile-stream binary, --fi the text matrix. */
     int inputIsBinary = 0;
 
@@ -542,31 +689,12 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     }
 
     if ( argc == 1) {
-        ocrPrintf("OCR-MKL Cholesky\n");
-        ocrPrintf("__________________________________________________________________________________________________\n");
-        ocrPrintf("Solves an OCR version of a Tiled Cholesky Decomposition with all math kernels using Intel MKL only\n\n");
-        ocrPrintf("Usage:\n");
-        ocrPrintf("\tocr_mkl_cholesky.exe {Arguments}\n\n");
-        ocrPrintf("Arguments:\n");
-        ocrPrintf("\t--ds -- Specify the Size of the Input Matrix\n");
-        ocrPrintf("\t--ts -- Specify the Tile Size\n");
-        ocrPrintf("\t--fi -- Specify the Input File Name of the Matrix (whitespace text)\n");
-        ocrPrintf("\t--fib -- Specify the Input File Name of the Matrix (tile-stream binary, see convertData)\n");
-//        ocrPrintf("\t--fo -- Specify an Output File Name (default: ocr_mkl_cholesky.out)\n");
-        ocrPrintf("\t--ol -- Output Selection Level:\n");
-        ocrPrintf("\t\t0: Print solution to stdout\n");
-        ocrPrintf("\t\t1: Write solution to text file\n");
-        ocrPrintf("\t\t2: Write solution to binary file (default)\n");
-        ocrPrintf("\t\t3: Write solution to text file and print to stdout\n");
-        ocrPrintf("\t\t4: Write solution to binary file and print to stdout\n");
-        ocrPrintf("\t\t5: Write algorithm timing data to ocr_mkl_cholesky_stats.csv and write solution to binary file\n");
-
+        choleskyUsage();
         ocrShutdown();
         return NULL_GUID;
     }
     else
     {
-        // Reads in 4 arguments, input matrix file name, output matrix filename, datasize, and tilesize
         while (1)
         {
             static struct option long_options[] =
@@ -575,76 +703,81 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
                     {"ts", required_argument, 0, 'b'},
                     {"fi", required_argument, 0, 'c'},
                     {"fib", required_argument, 0, 'f'},
-                    {"fo", required_argument, 0, 'd'},
                     {"ol", required_argument, 0, 'e'},
                     {0, 0, 0, 0}
                 };
 
             u32 option_index = 0;
 
-            c = getopt_long(argc, nparamv, "a:b:c:d:e:f:", long_options, &option_index);
+            c = getopt_long(argc, nparamv, "a:b:c:e:f:", long_options, &option_index);
 
             if (c == -1) // Detect the end of the options
                 break;
             switch (c)
             {
             case 'a':
-                //ocrPrintf("Option a: matrixSize with value '%s'\n", optarg);
-                matrixSize = (u32) atoi(optarg);
+                if (choleskyParseU32(optarg, &matrixSize)) {
+                    ocrPrintf("ERROR: --ds needs a decimal size, got '%s'\n\n", optarg);
+                    choleskyUsage();
+                    ocrShutdown();
+                    return NULL_GUID;
+                }
                 break;
             case 'b':
-                //ocrPrintf("Option b: tileSize with value '%s'\n", optarg);
-                tileSize = (u32) atoi(optarg);
+                if (choleskyParseU32(optarg, &tileSize)) {
+                    ocrPrintf("ERROR: --ts needs a decimal tile size, got '%s'\n\n", optarg);
+                    choleskyUsage();
+                    ocrShutdown();
+                    return NULL_GUID;
+                }
                 break;
             case 'c':
-                //ocrPrintf("Option c: fileNameIn with value '%s'\n", optarg);
+            case 'f':
+                if (fileNameIn != NULL) {
+                    ocrPrintf("ERROR: --%s names a second input; the input file is already '%s'\n\n",
+                              (c == 'f') ? "fib" : "fi", fileNameIn);
+                    choleskyUsage();
+                    ocrShutdown();
+                    return NULL_GUID;
+                }
                 fileNameIn = optarg;
-                break;
-            case 'd':
-                //ocrPrintf("Option d: fileNameOut with value '%s'\n", optarg);
-                /* The default is a string literal, so it cannot be realloc'd;
-                 * getopt's optarg lives as long as argv does, and the sibling
-                 * input option already just points at it. */
-                fileNameOut = optarg;
+                inputIsBinary = (c == 'f');
                 break;
             case 'e':
-                //ocrPrintf("Option e: outSelLevel with value '%s'\n", optarg);
-                outSelLevel = (u32) atoi(optarg);
-                break;
-            case 'f':
-                fileNameIn = optarg;
-                inputIsBinary = 1;
+                if (choleskyParseU32(optarg, &outSelLevel) || outSelLevel > OUT_NONE) {
+                    ocrPrintf("ERROR: --ol takes 0..%d, got '%s'\n\n", OUT_NONE, optarg);
+                    choleskyUsage();
+                    ocrShutdown();
+                    return NULL_GUID;
+                }
                 break;
             default:
                 ocrPrintf("ERROR: Invalid argument switch\n\n");
-                ocrPrintf("OCR-MKL Cholesky\n");
-                ocrPrintf("__________________________________________________________________________________________________\n");
-                ocrPrintf("Solves an OCR version of a Tiled Cholesky Decomposition with all math kernels using Intel MKL only\n\n");
-                ocrPrintf("Usage:\n");
-                ocrPrintf("\tocr_mkl_cholesky.exe {Arguments}\n\n");
-                ocrPrintf("Arguments:\n");
-                ocrPrintf("\t--ds -- Specify the Size of the Input Matrix\n");
-                ocrPrintf("\t--ts -- Specify the Tile Size\n");
-                ocrPrintf("\t--fi -- Specify the Input File Name of the Matrix (whitespace text)\n");
-        ocrPrintf("\t--fib -- Specify the Input File Name of the Matrix (tile-stream binary, see convertData)\n");
-//                ocrPrintf("\t--fo -- Specify an Output File Name (default: ocr_mkl_cholesky.out)\n");
-                ocrPrintf("\t--ol -- Output Selection Level:\n");
-                ocrPrintf("\t\t0: Print solution to stdout\n");
-                ocrPrintf("\t\t1: Write solution to text file\n");
-                ocrPrintf("\t\t2: Write solution to binary file (default)\n");
-                ocrPrintf("\t\t3: Write solution to text file and print to stdout\n");
-                ocrPrintf("\t\t4: Write solution to binary file and print to stdout\n");
-                ocrPrintf("\t\t5: Write algorithm timing data to ocr_mkl_cholesky_stats.csv and write solution to binary file\n");
-
+                choleskyUsage();
                 ocrShutdown();
                 return NULL_GUID;
             }
         }
     }
 
-    if(matrixSize == -1 || tileSize == -1)
+    if((u64)optind < argc)
+    {
+        ocrPrintf("ERROR: unrecognized argument '%s'\n\n", nparamv[optind]);
+        choleskyUsage();
+        ocrShutdown();
+        return NULL_GUID;
+    }
+
+    if(matrixSize == (u32)-1 || tileSize == (u32)-1)
     {
         ocrPrintf("Must specify matrix size and tile size\n");
+        ocrShutdown();
+        return NULL_GUID;
+    }
+    else if(matrixSize == 0 || tileSize == 0)
+    {
+        ocrPrintf("Matrix size and tile size must both be positive (--ds %d --ts %d)\n",
+                  matrixSize, tileSize);
         ocrShutdown();
         return NULL_GUID;
     }
@@ -688,43 +821,43 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
         fclose(outCSV);
     }
 
-    FILE *in;
-    if( fileNameIn == NULL ) {
-        ocrPrintf("Must specify an input matrix with --fi or --fib\n");
-        ocrShutdown();
-        return NULL_GUID;
-    }
-    in = fopen(fileNameIn, inputIsBinary ? "rb" : "r");
-    if( !in ) {
-        ocrPrintf("Cannot find file: %s\n", fileNameIn);
-        ocrShutdown();
-        return NULL_GUID;
-    }
-
-    /* The binary path holds no whole-matrix buffer: its tiles stream straight
-     * into their datablocks below, once the events they satisfy exist. */
+    /* With no input file named the matrix is generated from its indices; a
+     * file is an input the run may be given, not one it requires. */
+    FILE *in = NULL;
     matrix = NULL;
-    if( !inputIsBinary ) {
-        matrix = readMatrix(matrixSize, in);
-        if( !matrix ) {
-            ocrPrintf("Cannot allocate %d x %d matrix\n", matrixSize, matrixSize);
-            fclose(in);
+    if( fileNameIn != NULL ) {
+        in = fopen(fileNameIn, inputIsBinary ? "rb" : "r");
+        if( !in ) {
+            ocrPrintf("Cannot find file: %s\n", fileNameIn);
             ocrShutdown();
             return NULL_GUID;
         }
-    } else {
-        long expect = (long)(numTiles + 1) * numTiles / 2
-                    * (long)tileSize * tileSize * (long)sizeof(double);
-        if( fseek(in, 0, SEEK_END) == 0 ) {
-            long got = ftell(in);
-            if( got != expect ) {
-                ocrPrintf("Tile-binary input is %ld bytes, expected %ld for "
-                          "ds=%d ts=%d\n", got, expect, matrixSize, tileSize);
+
+        /* The binary path holds no whole-matrix buffer: its tiles stream
+         * straight into their datablocks below, once the events they satisfy
+         * exist. */
+        if( !inputIsBinary ) {
+            matrix = readMatrix(matrixSize, in);
+            if( !matrix ) {
+                ocrPrintf("Cannot allocate %d x %d matrix\n", matrixSize, matrixSize);
                 fclose(in);
                 ocrShutdown();
                 return NULL_GUID;
             }
-            rewind(in);
+        } else {
+            long expect = (long)(numTiles + 1) * numTiles / 2
+                        * (long)tileSize * tileSize * (long)sizeof(double);
+            if( fseek(in, 0, SEEK_END) == 0 ) {
+                long got = ftell(in);
+                if( got != expect ) {
+                    ocrPrintf("Tile-binary input is %ld bytes, expected %ld for "
+                              "ds=%d ts=%d\n", got, expect, matrixSize, tileSize);
+                    fclose(in);
+                    ocrShutdown();
+                    return NULL_GUID;
+                }
+                rewind(in);
+            }
         }
     }
 
@@ -746,19 +879,23 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrGuid_t*** lkji_event_guids = allocateCreateEvents(numTiles);
 
     ocrGuid_t templateSeq, templateTrisolve,
-        templateUpdateNonDiag, templateUpdate, templateWrap;
+        templateUpdateNonDiag, templateUpdate, templateWrap, templateGenerate;
 
     ocrEdtTemplateCreate(&templateSeq, lapacke_dpotrf_task, 3, 1);
     ocrEdtTemplateCreate(&templateTrisolve, cblas_dtrsm_task, 4, 2);
     ocrEdtTemplateCreate(&templateUpdateNonDiag, cblas_dgemm_task, 5, 3);
     ocrEdtTemplateCreate(&templateUpdate, cblas_dsyrk_task, 5, 2);
     ocrEdtTemplateCreate(&templateWrap, wrap_up_task, 3, (numTiles+1)*numTiles/2);
+    ocrEdtTemplateCreate(&templateGenerate, generate_tile_task, 4, 1);
 
 //    ocrPrintf("Going to satisfy initial tiles\n");
 #ifdef TG_ARCH
     satisfyInitialTiles(numTiles, tileSize, lkji_event_guids);
 #else
-    if( inputIsBinary ) {
+    if( in == NULL ) {
+        satisfyInitialTilesGenerated(numTiles, tileSize, templateGenerate,
+                                     lkji_event_guids);
+    } else if( inputIsBinary ) {
         if( satisfyInitialTilesBinary(numTiles, tileSize, in, lkji_event_guids) != 0 ) {
             fclose(in);
             ocrShutdown();
@@ -772,7 +909,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
         free(matrix);
         matrix = NULL;
     }
-    fclose(in);
+    if( in ) fclose(in);
 #endif
 
     for ( k = 0; k < numTiles; ++k ) {

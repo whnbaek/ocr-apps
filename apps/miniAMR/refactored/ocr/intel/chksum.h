@@ -34,8 +34,13 @@ typedef struct Checksum_t Checksum_t;
 #include "commhdr.h"
 #include "control.h"
 
+// The per-variable sums are conserved by the refinement arithmetic -- a cell's value is divided among its eight children and summed back on coarsening -- which is what makes them a usable
+// invariant to check a run against, and what makes them blind to the mesh's shape.  weightedSum weights each value by its position within its own block, so it does change when a block is split or
+// joined, and it is therefore the reduction that witnesses the state the mesh actually reached.  It is aggregated alongside the sums and is never compared against the reference.
+
 typedef struct Checksum_t {
    DbCommHeader_t  dbCommHeader;
+   double      weightedSum;
    double      sum[0];
 } Checksum_t;
 
