@@ -748,6 +748,9 @@ ocrGuid_t nekMultiplicity_start(EDT_ARGS)
 
         //----- User section
         err = nekbone_set_multiplicity_start(io_NEKOglobals, o_C); IFEB;
+        o_C[sz_C-1] = 0; //The combine pass below indexes one slot past this rank's own DOF range
+                         // when aliasing into a neighbor rank's element space; a new block's
+                         // contents are unspecified, so that slot must be set here.
         err = start_halo_multiplicity(OA_DEBUG_OUTVARS, io_NEKOtools, Rlattice,Elattice, io_NEKOglobals, sz_C, o_C, riValues4multi, &ga_nekMultiplicity_stop); IFEB;
 
         //----- Release or destroy data blocks
@@ -963,6 +966,9 @@ ocrGuid_t nekSetF_start(EDT_ARGS)
 
         //----- User section
         err = nekbone_set_f_start(io_NEKOstatics, io_NEKOglobals, o_nekF);IFEB;
+        o_nekF[sz_F-1] = 0; //The combine pass below indexes one slot past this rank's own DOF range
+                            // when aliasing into a neighbor rank's element space; a new block's
+                            // contents are unspecified, so that slot must be set here.
         err = start_halo_setf(OA_DEBUG_OUTVARS, io_NEKOtools, Rlattice,Elattice, io_NEKOglobals, sz_F, o_nekF, riValues4setF, &ga_nekSetF_stop); IFEB;
 
         //----- Release or destroy data blocks
@@ -1189,6 +1195,12 @@ ocrGuid_t nekCGstep0_stop(EDT_ARGS)
         //----- User section
         ocrGuid_t ga_setupTailRecursion = *in_gDone2;
         err = nekbone_CGstep0_stop(io_NEKOstatics, io_NEKOglobals, o_nekX, o_nekW, o_nekP, o_nekZ, o_nekCGscalars, o_CGtimes, in_sum_guid, in_sum); IFEB;
+        o_nekW[io_NEKOglobals->pDOF3DperR] = 0; //The AX combine pass indexes one slot past this
+                                                // rank's own DOF range when aliasing into a
+                                                // neighbor rank's element space, every CG
+                                                // iteration this block is reused for; a new
+                                                // block's contents are unspecified, so that slot
+                                                // must be set once here, before the loop starts.
 
         //----- Release or destroy data blocks
         err = ocrDbRelease(gd_nekX); IFEB;
@@ -1482,7 +1494,7 @@ ocrGuid_t setupTailRecursion(EDT_ARGS)
 
         err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 15, DB_MODE_RO, IN_derefs_E11_19_dep_nek_dxTm1.guid); IFEB;
 
-        err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 16, DB_MODE_RO, IN_derefs_E15_19_dep_CGtimes.guid); IFEB;
+        err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 16, DB_MODE_RW, IN_derefs_E15_19_dep_CGtimes.guid); IFEB;
 
         err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 17, DB_MODE_RO, IN_derefs_E15_19_dep_nekC.guid); IFEB;
 
@@ -2133,7 +2145,7 @@ ocrGuid_t nekCG_beta_stop(EDT_ARGS)
 
         err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_nekCG_axi_start, 4, DB_MODE_RO, gd_nekP); IFEB;
 
-        err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_nekCG_axi_start, 5, DB_MODE_RO, IN_derefs_E24_25_dep_nekW.guid); IFEB;
+        err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_nekCG_axi_start, 5, DB_MODE_RW, IN_derefs_E24_25_dep_nekW.guid); IFEB;
 
         err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_nekCG_axi_start, 6, DB_MODE_RO, IN_derefs_E24_25_dep_NEKOtools.guid); IFEB;
 
@@ -3019,7 +3031,7 @@ ocrGuid_t tailRecurTransitEND(EDT_ARGS)
 
         err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 15, DB_MODE_RO, IN_derefs_E31_32_dep_nek_dxTm1.guid); IFEB;
 
-        err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 16, DB_MODE_RO, IN_derefs_E31_32_dep_CGtimes.guid); IFEB;
+        err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 16, DB_MODE_RW, IN_derefs_E31_32_dep_CGtimes.guid); IFEB;
 
         err = ocrXHookup(OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG, ga_tailRecursionIFThen, 17, DB_MODE_RO, IN_derefs_E31_32_dep_nekC.guid); IFEB;
 
