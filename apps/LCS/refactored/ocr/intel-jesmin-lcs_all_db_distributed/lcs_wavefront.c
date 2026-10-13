@@ -10,13 +10,16 @@
  *     tile's rightmost column, the north tile's bottom row, the northwest
  *     corner cell), so those strips are what travels: each leaf emits an
  *     rc/br/corner block and hands each to its single consumer through a
- *     labeled STICKY event that both parties create and the consumer
- *     destroys.  Full score tiles are never materialized: the leaf
- *     computes with two rolling rows.
- *   - Leaves are created by a free-running per-row spawner chain and become
- *     runnable exactly when their three input strips exist — anti-diagonal
- *     wavefront parallelism of width up to N/base, not the source
- *     recursion's quadrant ordering.
+ *     labeled STICKY event.  Every event has exactly one creator, a task
+ *     that precedes the strip's producer and the task that registers its
+ *     consumer in the dependence order (see createLeaf), and is destroyed by
+ *     its single consumer, so a label lives exactly one generation.  Full
+ *     score tiles are never materialized: the leaf computes with two rolling
+ *     rows.
+ *   - Each leaf is created by its north neighbour (row 1 by a seeding task)
+ *     and becomes runnable exactly when its three input strips exist —
+ *     anti-diagonal wavefront parallelism of width up to N/base, not the
+ *     source recursion's quadrant ordering.
  *   - Consumed strips are destroyed by their single consumer, and a leaf's
  *     scratch is transient, so the resident set follows the wavefront
  *     frontier instead of the score matrix.
@@ -103,19 +106,18 @@ static ocrGuid_t stripName(ocrGuid_t range, u64 bi, u64 bj, u64 L)
     return g;
 }
 
-/* The event itself.  A reserved name is not an object: a dependence may
- * only be added to, and a strip only handed to, an event that exists.  So
- * producer and consumer both create it under fail-if-exists — whichever
- * comes first installs it and the other joins the installed one — and the
- * consumer, the only party that knows the strip has been delivered,
- * destroys it. */
-static ocrGuid_t stripEvt(ocrGuid_t range, u64 bi, u64 bj, u64 L)
+/* The event itself, created exactly once.  A reserved name is not an
+ * object: a dependence may only be added to, and a strip only handed to, an
+ * event that exists.  The creator is therefore a task that precedes both
+ * parties: the task that creates the emitting leaf (createLeaf), or mainEdt
+ * for the final corner strip.  The consumer, the only party that knows the
+ * strip has been delivered, destroys it. */
+static ocrGuid_t createStripEvt(ocrGuid_t range, u64 bi, u64 bj, u64 L)
 {
     ocrGuid_t g = stripName(range, bi, bj, L);
     u8 rc = ocrEventCreate(&g, OCR_EVENT_STICKY_T,
-                           GUID_PROP_IS_LABELED | GUID_PROP_CHECK
-                               | EVT_PROP_TAKES_ARG);
-    if (rc != 0 && rc != OCR_EGUIDEXISTS) {
+                           GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+    if (rc != 0) {
         ocrPrintf("strip event (%lu,%lu) could not be created: %u\n",
                   (unsigned long)bi, (unsigned long)bj, (unsigned)rc);
         ocrAbort(rc);
@@ -135,19 +137,38 @@ static void emitStrip(ocrGuid_t range, u64 bi, u64 bj, u64 L,
         p[k] = src[k];
     ocrDbRelease(db);
 
-    ocrEventSatisfy(stripEvt(range, bi, bj, L), db);
+    ocrEventSatisfy(stripName(range, bi, bj, L), db);
 }
 
 /* One leaf of the wavefront, wired to the three strips it consumes.  Every
  * leaf is created by its north neighbour (row 1 by the seeding task), so the
- * creation plane is as wide as the wavefront and never runs more than one
- * row ahead of it. */
+ * creation plane is as wide as the wavefront and never runs more than one row
+ * ahead of it.
+ *
+ * The creator also creates the events the leaf will emit on.  That makes it
+ * the one creator of each strip event, and it precedes every use: the leaf
+ * satisfies them only after it was created; the east consumer (bi, bj+1) is
+ * created by (bi-1, bj+1), which runs only after this creator emitted its own
+ * rc strip, and a leaf creates its child before emitting (on row 1 the seeding
+ * task creates both leaves, in order); the south and southeast consumers are
+ * created by the leaf itself or by its east neighbour, both later still.  The
+ * final corner event is the one exception: mainEdt creates it, since it also
+ * registers its consumer.  The events are created before the leaf's
+ * dependences are added, because the last dependence can make the leaf
+ * runnable at once. */
 static void createLeaf(const wf_params_t *p, u64 bi, u64 bj)
 {
     u64 L = p->N / p->base;
     wf_params_t lp = *p;
     lp.bi = bi;
     lp.bj = bj;
+
+    if (bj < L)
+        createStripEvt(p->rc_labels, bi, bj, L);
+    if (bi < L)
+        createStripEvt(p->br_labels, bi, bj, L);
+    if (bi < L && bj < L)
+        createStripEvt(p->co_labels, bi, bj, L);
 
     ocrHint_t h;
     ocrGuid_t leaf;
@@ -159,12 +180,12 @@ static void createLeaf(const wf_params_t *p, u64 bi, u64 bj)
     ocrGuidFromIndex(&tTile, p->t_labels, bj - 1);
     ocrAddDependence(sTile, leaf, 0, DB_MODE_RO);
     ocrAddDependence(tTile, leaf, 1, DB_MODE_RO);
-    ocrAddDependence(bj > 1 ? stripEvt(p->rc_labels, bi, bj - 1, L) : NULL_GUID,
+    ocrAddDependence(bj > 1 ? stripName(p->rc_labels, bi, bj - 1, L) : NULL_GUID,
                      leaf, 2, DB_MODE_RO);
-    ocrAddDependence(bi > 1 ? stripEvt(p->br_labels, bi - 1, bj, L) : NULL_GUID,
+    ocrAddDependence(bi > 1 ? stripName(p->br_labels, bi - 1, bj, L) : NULL_GUID,
                      leaf, 3, DB_MODE_RO);
     ocrAddDependence((bi > 1 && bj > 1)
-                         ? stripEvt(p->co_labels, bi - 1, bj - 1, L)
+                         ? stripName(p->co_labels, bi - 1, bj - 1, L)
                          : NULL_GUID,
                      leaf, 4, DB_MODE_RO);
 }
@@ -252,6 +273,12 @@ static ocrGuid_t leafEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     }
     /* prev now holds the tile's bottom row; rc its right column. */
 
+    /* The south leaf, and the events it will emit on, exist before this
+     * leaf's rc strip is handed over: the task that strip wakes creates the
+     * southeast leaf, which registers on the south leaf's rc event. */
+    if (bi < L)
+        createLeaf(p, bi + 1, bj);
+
     if (bj < L)
         emitStrip(p->rc_labels, bi, bj, L, rc, n);
     if (bi < L)
@@ -266,9 +293,6 @@ static ocrGuid_t leafEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
         int c0 = prev[n - 1];
         emitStrip(p->co_labels, bi, bj, L, &c0, 1);
     }
-
-    if (bi < L)
-        createLeaf(p, bi + 1, bj);
 
     free(scratch);
 
@@ -468,7 +492,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     long start = cilk_getticks();
 
     ocrGuid_t wrapTml, wrap, wrapOut;
-    ocrGuid_t finEvt = stripEvt(p.co_labels, L, L, L);
+    ocrGuid_t finEvt = createStripEvt(p.co_labels, L, L, L);
     ocrEdtTemplateCreate(&wrapTml, wrapupEdt, 2, 1);
     u64 wp[2] = {(u64)start, (u64)finEvt.guid};
     ocrEdtCreate(&wrap, wrapTml, EDT_PARAM_DEF, wp, EDT_PARAM_DEF, NULL,
