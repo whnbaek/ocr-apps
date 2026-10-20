@@ -109,7 +109,8 @@ void parent_PropagateShutdownMessage (u32 depc, ocrEdtDep_t depv[]);
 // **************************************************************************************************************************************************************************************************************
 // parent_ProcessJoinForUnrefine
 //
-// Send the join-clone (unrefine) the stuff that was stashed for it when the corresponding fork-clone (refine) was done.  Then clean up and die.
+// Record the event by which the join-clone (unrefine) receives this parent's meta datablock; parentClone_Func sends it after its last access to it,
+// and the parent then dies.
 //
 void parent_ProcessJoinForUnrefine (u32 depc, ocrEdtDep_t depv[]);
 
@@ -139,6 +140,7 @@ typedef struct ParentMeta_t {
    unsigned char cloneWritesSlot;                            // One bit per serviceRequest_Dep / replyToChild_Dep slot, valid for the next seasoning clone only: set for a slot carrying a datablock this
                                                              // EDT created for that clone to fill in, clear for one carrying a child's request, which the clone only reads.  A slot's acquire mode follows
                                                              // its bit; a datablock the clone writes must not be acquired read-only, and one it only reads must not be taken exclusively.
+   ocrGuid_t parentMetaToJoinClone_Event;                    // Join only: the event by which the join-clone receives this datablock, satisfied after this EDT's last access to it.
 
 // CAREFUL:  See notes above!
 

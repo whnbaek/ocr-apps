@@ -147,6 +147,9 @@ static ocrGuid_t gen_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     res_ptr->p2 += bx->p[a][0]*bx->p[a][0] + bx->p[a][1]*bx->p[a][1]
                  + bx->p[a][2]*bx->p[a][2];
   }
+  ocrDbRelease(res);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
   ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -175,6 +178,7 @@ static ocrGuid_t gen_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     res_ptr->p2 += s->p2;
     ocrDbDestroy(depv[b].guid);
   }
+  ocrDbRelease(res);
   ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;

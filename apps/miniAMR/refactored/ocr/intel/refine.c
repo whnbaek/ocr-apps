@@ -104,6 +104,143 @@ void dumpComms(ocrEdtDep_t depv[], int callNum, int const ts) {
 #define dumpComms(a,b,c)
 #endif
 
+// Halo channels opened by refinement and unrefinement.  A channel's first exchange goes through a label created by the side that changes
+// level, in the task that tells the other side of the change, so the label exists before either end names it.  When both sides of a
+// face change at once, each has created labels for its own new blocks; the channel uses the lower side's, and the upper side destroys
+// its own once it hears of the other side's change.
+
+// Position, at the next finer level, of the neighbor across quarter qrtr of the block's face (axis, pole).
+static void haloFinerNeighbor(BlockMeta_t * meta, int axis, int pole, int qrtr, int * x, int * y, int * z) {
+   int across = (pole == 0) ? -1 : 2, lr = qrtr >> 1, ud = qrtr & 1;
+   *x = (meta->xPos << 1) + ((axis == 0) ? across : lr);
+   *y = (meta->yPos << 1) + ((axis == 0) ? lr : ((axis == 1) ? across : ud));
+   *z = (meta->zPos << 1) + ((axis == 2) ? across : ud);
+}
+
+// Position, at the next coarser level, of the neighbor across the block's face (axis, pole), and the quarter of that neighbor's face the
+// block covers.
+static int haloCoarserNeighbor(BlockMeta_t * meta, int axis, int pole, int * x, int * y, int * z) {
+   *x = (meta->xPos >> 1) + ((axis == 0) ? (pole << 1) - 1 : 0);
+   *y = (meta->yPos >> 1) + ((axis == 1) ? (pole << 1) - 1 : 0);
+   *z = (meta->zPos >> 1) + ((axis == 2) ? (pole << 1) - 1 : 0);
+   if (axis == 0) return ((meta->yPos & 1) << 1) + (meta->zPos & 1);
+   if (axis == 1) return ((meta->xPos & 1) << 1) + (meta->zPos & 1);
+   return ((meta->xPos & 1) << 1) + (meta->yPos & 1);
+}
+
+// The quarter of its parent's face (axis, *) that a block covers.
+static int haloQuarterOfParentFace(BlockMeta_t * meta, int axis) {
+   if (axis == 0) return ((meta->yPos & 1) << 1) + (meta->zPos & 1);
+   if (axis == 1) return ((meta->xPos & 1) << 1) + (meta->zPos & 1);
+   return ((meta->xPos & 1) << 1) + (meta->yPos & 1);
+}
+
+// Channels a refining block's children will have: each pair of siblings (the lower sibling's labels), and each face toward a same-level
+// neighbor or toward finer neighbors.  A coarser neighbor must refine too, and creates the labels of that face.  finerIsRefining holds,
+// four bits per face with finer neighbors in direction order, which of them refine as well.
+static void haloCreateForRefine(BlockMeta_t * meta, Control_t * control, int round, int finerIsRefining) {
+   ocrGuid_t range = meta->labeledGuidRangeForHaloExchange;
+   int level = meta->refinementLevel + 1;
+   int axis, pole, child, qrtr, j;
+   for (child = 0; child < 8; child++) {
+      for (axis = 0; axis < 3; axis++) {
+         if ((child >> axis) & 1) continue;
+         haloLabelsCreate(range, control, round, level, (meta->xPos << 1) + (child & 1), (meta->yPos << 1) + ((child >> 1) & 1), (meta->zPos << 1) + (child >> 2), axis, 1, 0);
+      }
+   }
+   for (axis = 0; axis < 3; axis++) {
+      for (pole = 0; pole < 2; pole++) {
+         int nbr = meta->neighborRefinementLevel[axis][pole];
+         if (nbr == NEIGHBOR_IS_OFF_EDGE_OF_MESH || nbr < meta->refinementLevel) continue;
+         for (qrtr = 0; qrtr < 4; qrtr++) {
+            int lr = qrtr >> 1, ud = qrtr & 1;
+            int x = (meta->xPos << 1) + ((axis == 0) ? pole : lr);
+            int y = (meta->yPos << 1) + ((axis == 0) ? lr : ((axis == 1) ? pole : ud));
+            int z = (meta->zPos << 1) + ((axis == 2) ? pole : ud);
+            if (nbr > meta->refinementLevel && ((finerIsRefining >> qrtr) & 1)) {
+               for (j = 0; j < 4; j++) haloLabelsCreate(range, control, round, level, x, y, z, axis, pole, j);
+            } else {
+               haloLabelsCreate(range, control, round, level, x, y, z, axis, pole, 0);
+            }
+         }
+         if (nbr > meta->refinementLevel) finerIsRefining >>= 4;
+      }
+   }
+}
+
+// Both this block and its same-level neighbor across (axis, pole) refine, and this block is the upper one: its children's labels for
+// that face go unused.
+static void haloDestroyForRefine(BlockMeta_t * meta, Control_t * control, int round, int axis, int pole) {
+   int qrtr;
+   for (qrtr = 0; qrtr < 4; qrtr++) {
+      int lr = qrtr >> 1, ud = qrtr & 1;
+      haloLabelsDestroy(meta->labeledGuidRangeForHaloExchange, control, round, meta->refinementLevel + 1,
+                        (meta->xPos << 1) + ((axis == 0) ? pole : lr),
+                        (meta->yPos << 1) + ((axis == 0) ? lr : ((axis == 1) ? pole : ud)),
+                        (meta->zPos << 1) + ((axis == 2) ? pole : ud), axis, pole, 0);
+   }
+}
+
+// A block that just became one of eight children opens its channels: siblings on the lower sibling's labels, the other faces on the labels
+// of whichever side created them (neighborChanged tells a neighbor that changed level in this step from one that did not).
+static void haloOpenForChild(BlockMeta_t * meta, Control_t * control, int round) {
+   int level = meta->refinementLevel;
+   int axis, j;
+   for (axis = 0; axis < 3; axis++) {
+      int pos   = (axis == 0) ? meta->xPos : ((axis == 1) ? meta->yPos : meta->zPos);
+      int outer = pos & 1;
+      int nbr   = meta->neighborRefinementLevel[axis][outer];
+      int changed = (meta->neighborChanged >> (axis * 2 + outer)) & 1;
+      if (outer == 0) {
+         haloChannelOpenOwn(meta, control, round, axis, 1, 0);
+      } else {
+         haloChannelOpenPeer(meta, control, round, axis, 0, 0, level, meta->xPos - (axis == 0), meta->yPos - (axis == 1), meta->zPos - (axis == 2), 1, 0);
+      }
+      if (nbr == NEIGHBOR_IS_OFF_EDGE_OF_MESH) continue;
+      if (nbr == level + 1) {
+         for (j = 0; j < 4; j++) haloChannelOpenOwn(meta, control, round, axis, outer, j);
+      } else if (nbr == level) {
+         if (changed && outer == 0) {
+            haloChannelOpenPeer(meta, control, round, axis, 0, 0, level, meta->xPos - (axis == 0), meta->yPos - (axis == 1), meta->zPos - (axis == 2), 1, 0);
+         } else {
+            haloChannelOpenOwn(meta, control, round, axis, outer, 0);
+         }
+      } else if (changed) {
+         int x, y, z;
+         int qrtr = haloCoarserNeighbor(meta, axis, outer, &x, &y, &z);
+         haloChannelOpenPeer(meta, control, round, axis, outer, 0, level - 1, x, y, z, 1 - outer, qrtr);
+      } else {
+         haloChannelOpenOwn(meta, control, round, axis, outer, 0);
+      }
+   }
+}
+
+// The block that eight children just joined into opens its channels.  Its prongs created the labels of every face, except where the
+// same-level neighbor joined too and is the lower side.
+static void haloOpenForJoin(BlockMeta_t * meta, Control_t * control, int round) {
+   int level = meta->refinementLevel;
+   int axis, pole, j;
+   for (axis = 0; axis < 3; axis++) {
+      for (pole = 0; pole < 2; pole++) {
+         int nbr = meta->neighborRefinementLevel[axis][pole];
+         int changed = (meta->neighborChanged >> (axis * 2 + pole)) & 1;
+         if (nbr == NEIGHBOR_IS_OFF_EDGE_OF_MESH) continue;
+         if (nbr == level + 1) {
+            for (j = 0; j < 4; j++) haloChannelOpenOwn(meta, control, round, axis, pole, j);
+         } else if (nbr == level) {
+            if (changed && pole == 0) {
+               haloChannelOpenPeer(meta, control, round, axis, 0, 0, level, meta->xPos - (axis == 0), meta->yPos - (axis == 1), meta->zPos - (axis == 2), 1, 0);
+            } else {
+               haloChannelOpenOwn(meta, control, round, axis, pole, 0);
+            }
+         } else {
+            *((int *) 123) = 456;                                                    // A block that joined has no coarser neighbor.
+         }
+      }
+   }
+}
+
+
 //  Understanding refinement decisions:
 //
 //  for (i = 0; i < num_refine_step; i++) {   // The number of times we try to refine any particular block is unlimited at time=0, and thereafter is a maximum of block_change (from command line arg).
@@ -157,6 +294,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
    blockClone_Deps_t * myDeps       = (blockClone_Deps_t *) depv;
    BlockMeta_t       * meta         = myDeps->meta_Dep.ptr;
    Control_t         * control      = myDeps->control_Dep.ptr;
+   int const haloRound = haloRoundOf(control, ts);   // Refinement round of this refine pass.
 
    int axis;
    int pole;
@@ -172,6 +310,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
    dumpComms(depv, 0, ts);
 
    while (num_refine_step-- > 0) {
+
+      meta->neighborChanged = 0;
 
       // Count how many halo faces and/or quarter faces there are across all faces of our block.
 
@@ -235,35 +375,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #endif
                      ocrGuid_t dispIn = meta->onDeckToReceiveFace_Event[axis][pole][idep];             // Assure our clone gets the info from the finer nbr.
                      meta->onDeckToReceiveFace_Event[axis][pole][idep] = NULL_GUID;                    // Assure we don't reuse a stale guid later.
-                     if (ocrGuidIsNull(dispIn)) {                                                      // First time.  Use labeled guid.
-                        int nbr_xPos = meta->xPos << 1;                                                // For starters, our own position at finer level is just our position scaled up one level.
-                        int nbr_yPos = meta->yPos << 1;
-                        int nbr_zPos = meta->zPos << 1;
-                        if (axis == 0) {
-                           nbr_xPos += (pole == 0) ? -1 : 2;
-                           nbr_yPos += qrtrLeftRight;
-                           nbr_zPos += qrtrUpDown;
-                        } else if (axis == 1) {
-                           nbr_yPos += (pole == 0) ? -1 : 2;
-                           nbr_xPos += qrtrLeftRight;
-                           nbr_zPos += qrtrUpDown;
-                        } else {
-                           nbr_zPos += (pole == 0) ? -1 : 2;
-                           nbr_xPos += qrtrLeftRight;
-                           nbr_yPos += qrtrUpDown;
-                        }
-                        unsigned long index =                                                          // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                           (((((0111111111111111111111L >> (60L - (meta->refinementLevel*3))) *        // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                               meta->numBaseResBlocks) +                                               // ... scaled up by number of blocks in the totally-unrefined mesh.
-                              (((((nbr_xPos) * (control->npy << (meta->refinementLevel+1))) +          // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                                 (nbr_yPos)) * (control->npz << (meta->refinementLevel+1))) +          // to the above base. ...
-                               (nbr_zPos))) *                                                          // ...
-                             36) +                                                                     // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                            axis * 2 + pole)                                                           // ... select which of 36 to use: 0=W, 1=E, 2=S, 3=N, 4=D, 5=U; nbr's nbr is coarser
-                           ^ 1;                                                                        // BUT FLIP POLE: my W comms with nbrs E; etc.
-                        gasket__ocrGuidFromIndex(&dispIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
-#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
-                        gasket__ocrEventCreate  (&dispIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,         __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
+                     if (ocrGuidIsNull(dispIn)) {                                               // An open channel always holds its label or an On Deck event.
+                        *((int *) 123) = 456;
                      }
                      EVT_DEPENDENCE(dispIn, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx+idep], DB_MODE_RW, nanny, "dispIn[...]");
                      idep++;
@@ -280,6 +393,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                ocrGuid_t dispOut;
                void * dummy;
                gasket__ocrDbCreate(&dispOut, (void **) &dummy, sizeof_RefinementDisposition_t, __FILE__, __func__, __LINE__, nanny, "dispOut[...]");
+               gasket__ocrDbRelease(dispOut, __FILE__, __func__, __LINE__, nanny, "dispOut[...]");
                ADD_DEPENDENCE(dispOut, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RW, nanny, "dispOut[...]");
                auxDepIdx++;
             }
@@ -440,6 +554,10 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
          }
 
 
+         if (myRefinementDisposition == REFINE_BLK) {                                                // My disposition is final: create the channels of my children before telling anyone.
+            haloCreateForRefine(meta, control, haloRound, finerNeighborIsRefining);
+         }
+
          // Step 3: Tell ALL my neighbors what my own refinement disposition is.  Coarser neighbors will then be able to proceed with their Step 2.  Finer neighbors and those currently at the same refinement
          //         level will be able to proceed with Step 4.  Also record the refinement dispositions of my finer neighbors, taking into account the following tricky case:  Where one or more of my finer
          //         neighbors indicated it is going finer still, that forced me to go finer, and my eight child prongs will have to record the appropriate relationship to the blocks that are now in that
@@ -460,19 +578,10 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #else
 #define nanny NULL
 #endif
-                  if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                                   // First time.  Use labeled guid.
-                     unsigned long index =                                                           // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                        ((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *          // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                           meta->numBaseResBlocks) +                                                 // ... scaled up by number of blocks in the totally-unrefined mesh.
-                          ((((meta->xPos * (control->npy << meta->refinementLevel)) +                // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                             meta->yPos) * (control->npz << meta->refinementLevel)) +                // to the above base. ...
-                           meta->zPos))  *
-                         36) +                                                                       // Then we scale all that by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).
-                        axis * 2 + pole +                                                            // Now select which of the 36 comm events to use: for nbr coarser, 0=W, 1=E, 2=S, 3=N,  4=D,  5=U, ...
-                        (meta->neighborRefinementLevel[axis][pole] < meta->refinementLevel ? 0 : 6); // ... but for nbr at same refinement level:                       6=W, 7=E, 8=S, 9=N, 10=D, 11=U.
-                     gasket__ocrGuidFromIndex(&conveyDispToNeighbor_Event, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor");
-                     gasket__ocrEventCreate(&conveyDispToNeighbor_Event, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS, __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor_Event[...][...][0]");  // Create the On Deck Event; record it in our meta.
+                  if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                              // An open channel always holds its label or an On Deck event.
+                     *((int *) 123) = 456;
                   }
+                  haloConveySent(meta, axis, pole, 0);
                   dispOut->dbCommHeader.atBat_Event = conveyDispToNeighbor_Event;                    // Convey At Bat Event to neighbor so that she can destroy the event.
                   if (myRefinementDisposition == REFINE_BLK) {                                       // If I am refining, squash the channel to my coarser or same-level neighbor (and to finer nbrs, below).
                      meta->conveyFaceToNeighbor_Event[axis][pole][0] = NULL_GUID;
@@ -497,18 +606,10 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                         RefinementDisposition_t * dispOut = myDeps->aux_Dep[auxDepIdx+idep].ptr;
                         dispOut->refinementDisposition = myRefinementDisposition;
                         ocrGuid_t conveyDispToNeighbor_Event = meta->conveyFaceToNeighbor_Event[axis][pole][idep];
-                        if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                             // First time.
-                           unsigned long index =                                                     // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                              ((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *    // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                                 meta->numBaseResBlocks) +                                           // ... scaled up by number of blocks in the totally-unrefined mesh.
-                                ((((meta->xPos * (control->npy << meta->refinementLevel)) +          // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                                   meta->yPos) * (control->npz << meta->refinementLevel)) +          // to the above base. ...
-                                 meta->zPos))  *
-                               36) +                                                                 // Then we scale all that by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).
-                              axis * 8 + pole *4 + idep + 12;                                        // Now select: 12:15 = W, 16:19 = E, 20:23 = S, 24:27 = N, 28:31 = D, 32:35 = U, neighbor finer.
-                           gasket__ocrGuidFromIndex(&conveyDispToNeighbor_Event, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor");
-                           gasket__ocrEventCreate(&conveyDispToNeighbor_Event, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS, __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[...][...][...]");  // Create the On Deck Event; record it in our meta.
+                        if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                        // An open channel always holds its label or an On Deck event.
+                           *((int *) 123) = 456;
                         }
+                        haloConveySent(meta, axis, pole, idep);
                         dispOut->dbCommHeader.atBat_Event = conveyDispToNeighbor_Event;              // Convey At Bat Event to neighbor so that she can destroy the event.
                         if (myRefinementDisposition == REFINE_BLK) {                                 // If I am refining, squash the channel to my finer neighbor (regardless of whether or not she is refining).
                            meta->conveyFaceToNeighbor_Event[axis][pole][idep] = NULL_GUID;
@@ -567,7 +668,6 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                   if (meta->neighborRefinementLevel[axis][pole] > meta->refinementLevel)         continue;   // Neighbor is finer.  Already handled earlier.
                   ocrGuid_t dispIn = meta->onDeckToReceiveFace_Event[axis][pole][0];
                   meta->onDeckToReceiveFace_Event[axis][pole][0] = NULL_GUID;                                // Assure we don't reuse a stale guid later.
-                  unsigned long index = 9999;
 #ifdef NANNY_ON_STEROIDS
                   char nanny[NANNYLEN];
 #else
@@ -577,55 +677,15 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #ifdef NANNY_ON_STEROIDS
                      sprintf(nanny, "lvl=%2d, xPos=%4d, yPos=%4d, zPos=%4d, clone=%5d, axis=%d, pole=%d, [auxDepIdx=%d], nei=coarser", meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, meta->cloningState.cloneNum, axis, pole, auxDepIdx);
 #endif
-                     if (ocrGuidIsNull(dispIn)) {                                               // First time.  Use labeled guid.
-                        int nbr_xPos = meta->xPos >> 1;                                         // For starters, our own position at coarser level is just our position scaled down one level.
-                        int nbr_yPos = meta->yPos >> 1;
-                        int nbr_zPos = meta->zPos >> 1;
-                        int qrtrFaceOfNbrToUse = 999;
-                        if (axis == 0) {                                                        // Then neighbor's position is one away, depending on axis and pole; and we need to note which qrtr-face to use.
-                           nbr_xPos += (pole << 1) - 1;                                         // Adjust by -1 or 1.
-                           qrtrFaceOfNbrToUse = ((meta->yPos & 1) << 1) + (meta->zPos & 1);
-                        } else if (axis == 1) {
-                           nbr_yPos += (pole << 1) - 1;                                         // Adjust by -1 or 1.
-                           qrtrFaceOfNbrToUse = ((meta->xPos & 1) << 1) + (meta->zPos & 1);
-                        } else {
-                           nbr_zPos += (pole << 1) - 1;                                         // Adjust by -1 or 1.
-                           qrtrFaceOfNbrToUse = ((meta->xPos & 1) << 1) + (meta->yPos & 1);
-                        }
-                        unsigned long index =                                                   // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                           (((((0111111111111111111111L >> (66L - (meta->refinementLevel*3))) * // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                               meta->numBaseResBlocks) +                                        // ... scaled up by number of blocks in the totally-unrefined mesh.
-                              (((((nbr_xPos) * (control->npy << (meta->refinementLevel-1))) +   // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                                 (nbr_yPos)) * (control->npz << (meta->refinementLevel-1))) +   // to the above base. ...
-                               (nbr_zPos))) *                                                   // ...
-                             36) +                                                              // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                            ((axis * 8 + pole * 4) ^ 4) + qrtrFaceOfNbrToUse + 12);             // Now select: 12:15 = W, 16:19 = E, 20:23 = S, 24:27 = N, 28:31 = D, 32:35 = U, neighbor finer.
-                                                                                                // BUT note that the "^4" operation is to FLIP POLE: my W comms with nbrs E; etc.
-                        gasket__ocrGuidFromIndex(&dispIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
-                        gasket__ocrEventCreate(  &dispIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,         __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
+                     if (ocrGuidIsNull(dispIn)) {                                               // An open channel always holds its label or an On Deck event.
+                        *((int *) 123) = 456;
                      }
                   } else {                                                                      // Neighbor is the same level.  Set up to receive the disposition datablock from her.
 #ifdef NANNY_ON_STEROIDS
                      sprintf(nanny, "lvl=%2d, xPos=%4d, yPos=%4d, zPos=%4d, clone=%5d, axis=%d, pole=%d, [auxDepIdx=%d], nei=sameLvl", meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, meta->cloningState.cloneNum, axis, pole, auxDepIdx);
 #endif
-                     if (ocrGuidIsNull(dispIn)) {                                               // First time.  Use labeled guid.
-                        int nbr_xPos = meta->xPos +                                             // If NOT doing x-axis halo exchange, neighbor's xPos is the same as ours...
-                           ((axis != 0) ? 0 : (pole == 0) ? -1 : 1);                            // otherwise, it is one off in the direction of the pole being processed.
-                        int nbr_yPos = meta->yPos +                                             // If NOT doing y-axis halo exchange, neighbor's yPos is the same as ours...
-                           ((axis != 1) ? 0 : (pole == 0) ? -1 : 1);                            // otherwise, it is one off in the direction of the pole being processed.
-                        int nbr_zPos = meta->zPos +                                             // If NOT doing z-axis halo exchange, neighbor's zPos is the same as ours...
-                           ((axis != 2) ? 0 : (pole == 0) ? -1 : 1);                            // otherwise, it is one off in the direction of the pole being processed.
-                        index =                                                                 // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                           (((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) * // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                               meta->numBaseResBlocks) +                                        // ... scaled up by number of blocks in the totally-unrefined mesh.
-                              (((((nbr_xPos) * (control->npy << (meta->refinementLevel))) +     // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                                 (nbr_yPos)) * (control->npz << (meta->refinementLevel))) +     // to the above base. ...
-                               (nbr_zPos))) *                                                   // ...
-                             36) +                                                              // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                            axis * 2 + pole + 6)                                                // ... select which of 36 to use: 6=W, 7=E, 8=S, 9=N, 10=D, 11=U; nbr is at same refinement level.
-                           ^ 1;                                                                 // BUT FLIP POLE: my W comms with nbrs E; etc.
-                        gasket__ocrGuidFromIndex(&dispIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
-                        gasket__ocrEventCreate(  &dispIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,         __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
+                     if (ocrGuidIsNull(dispIn)) {                                               // An open channel always holds its label or an On Deck event.
+                        *((int *) 123) = 456;
                      }
                   }
                   EVT_DEPENDENCE(dispIn, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RO,   nanny, "dispIn[...]")
@@ -672,6 +732,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                         RefinementDisposition_t * dispIn = myDeps->aux_Dep[auxDepIdx].ptr;
                         if (dispIn->refinementDisposition == REFINE_BLK) {                                   // If neighbor is refining...
                            meta->neighborRefinementLevel[axis][pole]++;                                      // ... note her new refinement level.
+                           meta->neighborChanged |= 1 << (axis * 2 + pole);
                            if (!ocrGuidIsNull(meta->conveyFaceToNeighbor_Event[axis][pole][0])) {            // I should have severed the channel.  Crash if not.
                               (*(int *) 123) = 456;
                            }
@@ -690,6 +751,10 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                         RefinementDisposition_t * dispIn = myDeps->aux_Dep[auxDepIdx].ptr;
                         if (dispIn->refinementDisposition == REFINE_BLK) {                                   // If neighbor is refining...
                            meta->neighborRefinementLevel[axis][pole]++;                                      // ... note her new refinement level.
+                           meta->neighborChanged |= 1 << (axis * 2 + pole);
+                           if (pole == 0) {                                                                  // Both refine and I am the upper side: the lower side's labels serve this face.
+                              haloDestroyForRefine(meta, control, haloRound, axis, pole);
+                           }
                            if (!ocrGuidIsNull(meta->conveyFaceToNeighbor_Event[axis][pole][0])) {            // I should have severed the channel.  Crash if not.
                               (*(int *) 123) = 456;
                            }
@@ -741,6 +806,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                            }
                            gasket__ocrEventAbandon(&meta->conveyFaceToNeighbor_Event[axis][pole][0],         // Abandon the event that I had speculatively created, thus doing my part of severing the channel
                               __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor[...][...][0]");
+                           haloChannelOpenPeer(meta, control, haloRound, axis, pole, 0, meta->refinementLevel,  // The refined neighbor's child across this face created the channel.
+                                               meta->xPos + ((axis == 0) ? (pole << 1) - 1 : 0), meta->yPos + ((axis == 1) ? (pole << 1) - 1 : 0), meta->zPos + ((axis == 2) ? (pole << 1) - 1 : 0), 1 - pole, 0);
                         } else if (dispIn->refinementDisposition == LEAVE_BLK_AT_LVL) {
                            if (ocrGuidIsNull(meta->conveyFaceToNeighbor_Event[axis][pole][0])) {             // I should have (speculatively) perpetuated the channel.  Crash if not.
                               (*(int *) 123) = 456;
@@ -773,6 +840,13 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                            }
                            gasket__ocrEventAbandon(&meta->conveyFaceToNeighbor_Event[axis][pole][0],         // Abandon the event that I had speculatively created, thus doing my part of severing the channel
                               __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor[...][...][0]");
+                           {                                                                                 // The refined neighbor created the channels of her four children across this face.
+                              int qrtr, x, y, z;
+                              for (qrtr = 0; qrtr < 4; qrtr++) {
+                                 haloFinerNeighbor(meta, axis, pole, qrtr, &x, &y, &z);
+                                 haloChannelOpenPeer(meta, control, haloRound, axis, pole, qrtr, meta->refinementLevel + 1, x, y, z, 1 - pole, 0);
+                              }
+                           }
                         } else if (dispIn->refinementDisposition == LEAVE_BLK_AT_LVL) {
                            if (ocrGuidIsNull(meta->conveyFaceToNeighbor_Event[axis][pole][0])) {             // I should have (speculatively) perpetuated the channel.  Crash if not.
                               (*(int *) 123) = 456;
@@ -818,6 +892,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                            }
                            gasket__ocrEventAbandon(&meta->conveyFaceToNeighbor_Event[axis][pole][0],         // Abandon the event that I had speculatively created, thus doing my part of severing the channel
                               __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor[...][...][0]");
+                           haloChannelOpenPeer(meta, control, haloRound, axis, pole, 0, meta->refinementLevel,  // The refined neighbor's child across this face created the channel.
+                                               meta->xPos + ((axis == 0) ? (pole << 1) - 1 : 0), meta->yPos + ((axis == 1) ? (pole << 1) - 1 : 0), meta->zPos + ((axis == 2) ? (pole << 1) - 1 : 0), 1 - pole, 0);
                         } else if (dispIn->refinementDisposition == LEAVE_BLK_AT_LVL) {
                            if (ocrGuidIsNull(meta->conveyFaceToNeighbor_Event[axis][pole][0])) {             // I should have (speculatively) perpetuated the channel.  Crash if not.
                               (*(int *) 123) = 456;
@@ -876,10 +952,17 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
       if (myRefinementDisposition == REFINE_BLK) {   // Step 3:  I'm marked to refine.  Time to do so.
  //printf ("**************************** REFINE called, Refining pos=%d,%d%d to level %d at timestep %d.\n", meta->xPos, meta->yPos, meta->zPos, meta->refinementLevel+1, ts); fflush(stdout);
 
+         if (meta->neighborRefinementLevel[0][0] == NEIGHBOR_IS_OFF_EDGE_OF_MESH && meta->neighborRefinementLevel[0][1] == NEIGHBOR_IS_OFF_EDGE_OF_MESH &&
+             meta->neighborRefinementLevel[1][0] == NEIGHBOR_IS_OFF_EDGE_OF_MESH && meta->neighborRefinementLevel[1][1] == NEIGHBOR_IS_OFF_EDGE_OF_MESH &&
+             meta->neighborRefinementLevel[2][0] == NEIGHBOR_IS_OFF_EDGE_OF_MESH && meta->neighborRefinementLevel[2][1] == NEIGHBOR_IS_OFF_EDGE_OF_MESH) {
+            haloCreateForRefine(meta, control, haloRound, 0);                                       // With no neighbor there was no Step 3; my children's channels are only between siblings.
+         }
          meta->cloningState.cloningOpcode = Fork;
          SUSPEND__RESUME_IN_CLONE_EDT(;)
 
          adjustBlockAndMetaRefineOperation(depv, myParams);
+         haloOpenForChild(meta, control, haloRound);
+         meta->neighborChanged = 0;
 
          if (meta->refinementLevel == control->num_refine) {
             myRefinementDisposition = LEAVE_BLK_AT_LVL;
@@ -942,6 +1025,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
    meta->finerNeighborNotUnrefiningAndNotTalkingAnyMore = 0;
 
    do {
+
+      meta->neighborChanged = 0;
 
 //        Step 1: Look at the neighborRefinementLevel of ALL of my cardinal neighbors.  If ANY of them are finer than me, clone a copy of myself to hear from all such finer cardinal neighbors, to update
 //                whether or not they unrefine.  (Note that I only need to hear from the qrtr[0][0] neighbor, since the other quarter-faces in the same direction would give redundant results.)  If not all
@@ -1012,28 +1097,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #endif
                   ocrGuid_t dispIn = meta->onDeckToReceiveFace_Event[axis][pole][0];         // Assure our clone gets the info from the finer nbr.
                   meta->onDeckToReceiveFace_Event[axis][pole][0] = NULL_GUID;                // Assure we don't reuse a stale guid later.
-                  if (ocrGuidIsNull(dispIn)) {                                               // First time.  Use labeled guid.
-                     int nbr_xPos = meta->xPos << 1;                                         // For starters, our own position at finer level is just our position scaled up one level.
-                     int nbr_yPos = meta->yPos << 1;
-                     int nbr_zPos = meta->zPos << 1;
-                     if (axis == 0) {
-                        nbr_xPos += (pole == 0) ? -1 : 2;
-                     } else if (axis == 1) {
-                        nbr_yPos += (pole == 0) ? -1 : 2;
-                     } else {
-                        nbr_zPos += (pole == 0) ? -1 : 2;
-                     }
-                     unsigned long index =                                                   // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                        (((((0111111111111111111111L >> (60L - (meta->refinementLevel*3))) * // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                            meta->numBaseResBlocks) +                                        // ... scaled up by number of blocks in the totally-unrefined mesh.
-                           (((((nbr_xPos) * (control->npy << (meta->refinementLevel+1))) +   // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                              (nbr_yPos)) * (control->npz << (meta->refinementLevel+1))) +   // to the above base. ...
-                            (nbr_zPos))) *                                                   // ...
-                          36) +                                                              // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                         axis * 2 + pole)                                                    // ... select which of 36 to use: 0=W, 1=E, 2=S, 3=N, 4=D, 5=U; nbr's nbr is coarser
-                        ^ 1;                                                                 // BUT FLIP POLE: my W comms with nbrs E; etc.
-                     gasket__ocrGuidFromIndex(&dispIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
-                     gasket__ocrEventCreate  (&dispIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,         __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
+                  if (ocrGuidIsNull(dispIn)) {                                                  // An open channel always holds its label or an On Deck event.
+                     *((int *) 123) = 456;
                   }
                   EVT_DEPENDENCE(dispIn, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RW, nanny, "dispIn[...]");
                   auxDepIdx++;
@@ -1094,6 +1159,9 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                            gasket__ocrEventAbandon(&meta->conveyFaceToNeighbor_Event[axis][pole][3],
                               __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor[...][...][3]");
                      }
+                     meta->conveyLabelUnsent &= ~(0xFu << ((axis * 2 + pole) * 4));
+                     haloChannelOpenPeer(meta, control, haloRound, axis, pole, 0, meta->refinementLevel,       // The joining neighbor created the channel before telling me.
+                                         meta->xPos + ((axis == 0) ? (pole << 1) - 1 : 0), meta->yPos + ((axis == 1) ? (pole << 1) - 1 : 0), meta->zPos + ((axis == 2) ? (pole << 1) - 1 : 0), 1 - pole, 0);
 
                   } else {                                                                   // Finer neighbor won't unrefine, so neither will I.
 //021 *((int *) 123) = 456; // COVERAGE!
@@ -1251,7 +1319,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #else
 #define nanny NULL
 #endif
-                  gasket__ocrEventFlush(&meta->conveyFaceToNeighbor_Event[axis][pole][(qrtrLR<<1)+qrtrUD],  __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[...][...][...]"); // (Other side of comm abandons the event)); // Abandon the event that I had speculatively created, thus doing my part of severing the channel
+                  haloConveyFlush(meta, axis, pole, (qrtrLR<<1)+qrtrUD, "conveyDispToNeighbor_Event[...][...][...]");
                }
 
                if (!ocrGuidIsNull(meta->onDeckToReceiveFace_Event[axis][pole][(qrtrLR<<1)+qrtrUD])) {
@@ -1293,6 +1361,7 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #define nanny NULL
 #endif
             auxDepIdx--;
+            gasket__ocrDbRelease(dbDispOut[auxDepIdx], __FILE__, __func__, __LINE__, nanny, "dbDispOut[...]");
             ADD_DEPENDENCE(dbDispOut[auxDepIdx], meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RW, nanny, "dbDispOut[...]");
          } while (auxDepIdx > 0);
 
@@ -1315,21 +1384,13 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                RefinementDisposition_t * dispOut = myDeps->aux_Dep[auxDepIdx].ptr;
                dispOut->refinementDisposition = myRefinementDisposition;
                ocrGuid_t conveyDispToNeighbor_Event = meta->conveyFaceToNeighbor_Event[axis][pole][0];
-               if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                             // First time.  Use labeled guid.
-//034 *((int *) 123) = 456; // COVERAGE!
-                  unsigned long index =                                                     // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                     ((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *    // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                        meta->numBaseResBlocks) +                                           // ... scaled up by number of blocks in the totally-unrefined mesh.
-                       ((((meta->xPos * (control->npy << meta->refinementLevel)) +          // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                          meta->yPos) * (control->npz << meta->refinementLevel)) +          // to the above base. ...
-                        meta->zPos))  *
-                      36) +                                                                 // Then we scale all that by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).
-                     axis * 2 + pole +                                                      // Now select which of the 36 comm events to use: for nbr coarser, 0=W, 1=E, 2=S, 3=N,  4=D,  5=U, ...
-                     6;                                                                     // ... but for nbr at same refinement level:                       6=W, 7=E, 8=S, 9=N, 10=D, 11=U.
-                  gasket__ocrGuidFromIndex(&conveyDispToNeighbor_Event, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor");
-                  gasket__ocrEventCreate(&conveyDispToNeighbor_Event, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS, __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[...][...][0]");  // Create the On Deck Event; record it in our meta.
-               } else {
-//047 *((int *) 123) = 456; // COVERAGE!
+               if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                                 // An open channel always holds its label or an On Deck event.
+                  *((int *) 123) = 456;
+               }
+               haloConveySent(meta, axis, pole, 0);
+               if (myRefinementDisposition == UNREFINE_BLK) {                               // I join: create the channel of my join product across my quarter of this face before telling the neighbor.
+                  haloLabelsCreate(meta->labeledGuidRangeForHaloExchange, control, haloRound, meta->refinementLevel - 1, meta->xPos >> 1, meta->yPos >> 1, meta->zPos >> 1,
+                                   axis, pole, haloQuarterOfParentFace(meta, axis));
                }
 
                dispOut->dbCommHeader.atBat_Event = conveyDispToNeighbor_Event;              // Convey At Bat Event to neighbor so that she can destroy the event.
@@ -1359,21 +1420,13 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                   RefinementDisposition_t * dispOut = myDeps->aux_Dep[auxDepIdx].ptr;
                   dispOut->refinementDisposition = myRefinementDisposition;
                   ocrGuid_t conveyDispToNeighbor_Event = meta->conveyFaceToNeighbor_Event[axis][pole][0];
-                  if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                             // First time.  Use labeled guid.
-//016 *((int *) 123) = 456; // COVERAGE!
-                     unsigned long index =                                                     // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                        ((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *    // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                           meta->numBaseResBlocks) +                                           // ... scaled up by number of blocks in the totally-unrefined mesh.
-                          ((((meta->xPos * (control->npy << meta->refinementLevel)) +          // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                             meta->yPos) * (control->npz << meta->refinementLevel)) +          // to the above base. ...
-                           meta->zPos))  *
-                         36) +                                                                 // Then we scale all that by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).
-                        axis * 2 + pole +                                                      // Now select which of the 36 comm events to use: for nbr coarser, 0=W, 1=E, 2=S, 3=N,  4=D,  5=U, ...
-                        0;                                                                     // ... but for nbr at same refinement level:                       6=W, 7=E, 8=S, 9=N, 10=D, 11=U.
-                  gasket__ocrGuidFromIndex(&conveyDispToNeighbor_Event, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor");
-                  gasket__ocrEventCreate(&conveyDispToNeighbor_Event, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS, __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[...][...][0]");  // Create the On Deck Event; record it in our meta.
-                  } else {
-//027 *((int *) 123) = 456; // COVERAGE!
+                  if (ocrGuidIsNull(conveyDispToNeighbor_Event)) {                              // An open channel always holds its label or an On Deck event.
+                     *((int *) 123) = 456;
+                  }
+                  haloConveySent(meta, axis, pole, 0);
+                  if (myRefinementDisposition == UNREFINE_BLK) {                               // I join: create the channel of my join product across this face before telling the neighbor.
+                     haloLabelsCreate(meta->labeledGuidRangeForHaloExchange, control, haloRound, meta->refinementLevel - 1, meta->xPos >> 1, meta->yPos >> 1, meta->zPos >> 1,
+                                      axis, pole, 0);
                   }
 
                   dispOut->dbCommHeader.atBat_Event = conveyDispToNeighbor_Event;              // Convey At Bat Event to neighbor so that she can destroy the event.
@@ -1457,27 +1510,8 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #endif
                ocrGuid_t dispIn = meta->onDeckToReceiveFace_Event[axis][pole][0];             // Assure my clone gets the info from the neighbor, who is at the same refinement level as me.
                meta->onDeckToReceiveFace_Event[axis][pole][0] = NULL_GUID;                    // Assure I don't reuse a stale guid later.
-               if (ocrGuidIsNull(dispIn)) {                                                   // First time.  Use labeled guid.
-//040 *((int *) 123) = 456; // COVERAGE!
-                  int nbr_xPos = meta->xPos +                                                 // If NOT doing x-axis disposition exchange, neighbor's xPos is the same as ours...
-                     ((axis != 0) ? 0 : (pole == 0) ? -1 : 1);                                // otherwise, it is one off in the direction of the pole being processed.
-                  int nbr_yPos = meta->yPos +                                                 // If NOT doing y-axis disposition exchange, neighbor's yPos is the same as ours...
-                     ((axis != 1) ? 0 : (pole == 0) ? -1 : 1);                                // otherwise, it is one off in the direction of the pole being processed.
-                  int nbr_zPos = meta->zPos +                                                 // If NOT doing z-axisdispositionhalo exchange, neighbor's zPos is the same as ours...
-                     ((axis != 2) ? 0 : (pole == 0) ? -1 : 1);                                // otherwise, it is one off in the direction of the pole being processed.
-                  unsigned long index =                                                       // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                     (((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *     // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                         meta->numBaseResBlocks) +                                            // ... scaled up by number of blocks in the totally-unrefined mesh.
-                        (((((nbr_xPos) * (control->npy << (meta->refinementLevel))) +         // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                           (nbr_yPos)) * (control->npz << (meta->refinementLevel))) +         // to the above base. ...
-                         (nbr_zPos))) *                                                       // ...
-                       36) +                                                                  // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                      axis * 2 + pole + 6)                                                    // ... select which of 36 to use: 6=W, 7=E, 8=S, 9=N, 10=D, 11=U; nbr's nbr is same level
-                     ^ 1;                                                                     // BUT FLIP POLE: my W comms with nbrs E; etc.
-                  gasket__ocrGuidFromIndex(&dispIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
-                  gasket__ocrEventCreate  (&dispIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,         __FILE__, __func__, __LINE__, nanny, "dispIn[...]");
-               } else {
-//049 *((int *) 123) = 456; // COVERAGE!
+               if (ocrGuidIsNull(dispIn)) {                                                     // An open channel always holds its label or an On Deck event.
+                  *((int *) 123) = 456;
                }
                EVT_DEPENDENCE(dispIn, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RW, nanny, "dispIn[...]");
                auxDepIdx++;
@@ -1523,6 +1557,17 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
                         gasket__ocrEventAbandon(&meta->conveyFaceToNeighbor_Event[axis][pole][0],
                            __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor[...][...][0]");
                   }
+                  if (myRefinementDisposition == UNREFINE_BLK) {                          // We both join: our join products share one channel, on the lower side's quarter-0 labels.
+                     int qrtr = haloQuarterOfParentFace(meta, axis);
+                     meta->neighborChanged |= 1 << (axis * 2 + pole);
+                     if (pole == 0 || qrtr != 0) {
+                        haloLabelsDestroy(meta->labeledGuidRangeForHaloExchange, control, haloRound, meta->refinementLevel - 1, meta->xPos >> 1, meta->yPos >> 1, meta->zPos >> 1, axis, pole, qrtr);
+                     }
+                  } else {                                                                // The neighbor's prongs created the channel to her join product before telling me.
+                     int x, y, z;
+                     int qrtr = haloCoarserNeighbor(meta, axis, pole, &x, &y, &z);
+                     haloChannelOpenPeer(meta, control, haloRound, axis, pole, 0, meta->refinementLevel - 1, x, y, z, 1 - pole, qrtr);
+                  }
                } else if (myRefinementDisposition == UNREFINE_BLK) {                      // Neighbor won't unrefine, but I plan to, so we need to sever communications anyway.
                   meta->finerNeighborNotUnrefiningAndNotTalkingAnyMore |= (1<<((axis<<1)+pole));// Tell my next iteration of step 1 NOT to expect to hear from this neighbor any more.  She is NOT unrefining!
 //058 *((int *) 123) = 456; // COVERAGE!
@@ -1553,22 +1598,22 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
 #define nanny NULL
 #endif
       if (!ocrGuidIsNull(       meta->conveyFaceToNeighbor_Event[0][0][0])) {
-         gasket__ocrEventFlush(&meta->conveyFaceToNeighbor_Event[0][0][0], __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[0][0][0]"); // (Other side of comm abandons the event)
+         haloConveyFlush(meta, 0, 0, 0, "conveyDispToNeighbor_Event[0][0][0]");
       }
       if (!ocrGuidIsNull(       meta->conveyFaceToNeighbor_Event[0][1][0])) {
-         gasket__ocrEventFlush(&meta->conveyFaceToNeighbor_Event[0][1][0], __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[0][1][0]"); // (Other side of comm abandons the event)
+         haloConveyFlush(meta, 0, 1, 0, "conveyDispToNeighbor_Event[0][1][0]");
       }
       if (!ocrGuidIsNull(       meta->conveyFaceToNeighbor_Event[1][0][0])) {
-         gasket__ocrEventFlush(&meta->conveyFaceToNeighbor_Event[1][0][0], __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[1][0][0]"); // (Other side of comm abandons the event)
+         haloConveyFlush(meta, 1, 0, 0, "conveyDispToNeighbor_Event[1][0][0]");
       }
       if (!ocrGuidIsNull(       meta->conveyFaceToNeighbor_Event[1][1][0])) {
-         gasket__ocrEventFlush(&meta->conveyFaceToNeighbor_Event[1][1][0], __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[1][1][0]"); // (Other side of comm abandons the event)
+         haloConveyFlush(meta, 1, 1, 0, "conveyDispToNeighbor_Event[1][1][0]");
       }
       if (!ocrGuidIsNull(       meta->conveyFaceToNeighbor_Event[2][0][0])) {
-         gasket__ocrEventFlush(&meta->conveyFaceToNeighbor_Event[2][0][0], __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[2][0][0]"); // (Other side of comm abandons the event)
+         haloConveyFlush(meta, 2, 0, 0, "conveyDispToNeighbor_Event[2][0][0]");
       }
       if (!ocrGuidIsNull(       meta->conveyFaceToNeighbor_Event[2][1][0])) {
-         gasket__ocrEventFlush(&meta->conveyFaceToNeighbor_Event[2][1][0], __FILE__, __func__, __LINE__, nanny, "conveyDispToNeighbor_Event[2][1][0]"); // (Other side of comm abandons the event)
+         haloConveyFlush(meta, 2, 1, 0, "conveyDispToNeighbor_Event[2][1][0]");
       }
       if (!ocrGuidIsNull(       meta->onDeckToReceiveFace_Event[0][0][0])) {
          gasket__ocrEventFlush(&meta->onDeckToReceiveFace_Event[0][0][0], __FILE__, __func__, __LINE__, nanny, "onDeckToReceiveFace_Event[0][0][0]"); // (Other side of comm abandons the event)
@@ -1602,6 +1647,9 @@ void refine(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const ts) {
       // Now do the join-clone operation.
       meta->cloningState.cloningOpcode = Join;
       SUSPEND__RESUME_IN_CLONE_EDT(;)
+
+      haloOpenForJoin(meta, control, haloRound);
+      meta->neighborChanged = 0;
 
       // Only the 000 prong cloned to this join; the other seven prongs fed their blocks to the appropriate dependences of the join-fork and just died.
 
@@ -1839,6 +1887,7 @@ void adjustBlockAndMetaRefineOperation(ocrEdtDep_t depv[], blockClone_Params_t *
    // We are done with the predecessor's coarser block.  We cannot destroy it, because there are seven siblings who are asyncrhonously using it to upsample their workload.  Instead, we leave it lying
    // around until it is convenient to destroy it, which happens when the parent receives its first service request.
 
+   gasket__ocrDbRelease(myDeps->blockPred_Dep.guid, __FILE__, __func__, __LINE__, " ", "blockPred");
    myDeps->blockPred_Dep.guid = NULL_GUID;
    myDeps->blockPred_Dep.ptr  = NULL;
 

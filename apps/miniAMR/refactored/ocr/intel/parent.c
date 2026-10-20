@@ -270,6 +270,11 @@ ocrGuid_t parentClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
          }
          return NULL_GUID;
       case Join:
+         {
+            ocrGuid_t parentMetaToJoinClone_Event = meta->parentMetaToJoinClone_Event;
+            gasket__ocrDbRelease(myDeps->meta_Dep.guid, __FILE__, __func__, __LINE__, nanny, "meta");
+            gasket__ocrEventSatisfy(parentMetaToJoinClone_Event, myDeps->meta_Dep.guid, __FILE__, __func__, __LINE__, nanny, "meta via parentMetaToJoinClone"); // Satisfy the join-clone's parentMeta_t datablock dependence.
+         }
          gasket__ocrDbDestroy(&myDeps->control_Dep.guid, &myDeps->control_Dep.ptr, __FILE__, __func__, __LINE__, nanny, "control");
    // Defeat OCR's habit of releasing the input ocrEdtDep_t's, because we have changed many of them to other guids, including some events, which simply must not be released.  This is just a debugging expedient.
          REPORT_EDT_DEMISE(myDeps->whoAmI_Dep);
@@ -348,6 +353,7 @@ ocrGuid_t parentClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
    gasket__ocrDbRelease(   myDeps->control_Dep.guid,                                                                       __FILE__, __func__, __LINE__, nanny, "control");
    ADD_DEPENDENCE(         myDeps->control_Dep.guid,           parentClone_Edt, parentClone_Deps_t, control_Dep,           DB_MODE_RW,                   nanny, "control")
    ADD_DEPENDENCE(         NULL_GUID,                          parentClone_Edt, parentClone_Deps_t, controlFromBlock_Dep,  DB_MODE_NULL,                 nanny, "controlFromBlock")
+   gasket__ocrDbRelease(   myDeps->upboundRequest_Dep.guid,                                                                __FILE__, __func__, __LINE__, nanny, "upboundRequest");
    ADD_DEPENDENCE(         myDeps->upboundRequest_Dep.guid,    parentClone_Edt, parentClone_Deps_t, upboundRequest_Dep,    DB_MODE_RW,                   nanny, "upboundRequest")
    if (meta->cloningState.cloningOpcode == SeasoningOneOrMoreDbCreates) {
       // A slot the clone is going to fill in must be acquired for writing; one carrying a request the clone only reads must not be.  The two roles share this slot array, so the mode is per slot.
@@ -356,6 +362,7 @@ ocrGuid_t parentClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
          int islot;
          for (islot = 0; islot < 8; islot++) {
             slotMode[islot] = (meta->cloneWritesSlot & (1u << islot)) ? DB_MODE_RW : DB_MODE_RO;
+            gasket__ocrDbRelease(myDeps->serviceRequest_Dep[islot].guid, __FILE__, __func__, __LINE__, nanny, "serviceRequest[...]");
          }
       }
       ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[0].guid, parentClone_Edt, parentClone_Deps_t, serviceRequest_Dep[0], slotMode[0],                  nanny, "serviceRequest[0]")
@@ -700,12 +707,7 @@ void parent_ProcessJoinForUnrefine (u32 depc, ocrEdtDep_t depv[]) {
 
    parentClone_Deps_t * myDeps  = (parentClone_Deps_t *) depv;
    DbCommHeader_t * commHdr = myDeps->serviceRequest_Dep[0].ptr;
-#ifdef NANNY_ON_STEROIDS
    ParentMeta_t       * meta    = myDeps->meta_Dep.ptr;
-   char nanny[NANNYLEN];
-   sprintf(nanny, "lvl=%2d, xPos=%4d, yPos=%4d, zPos=%4d, clone=%5d", meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, meta->cloningState.cloneNum);
-#else
-#define nanny NULL
-#endif
-   gasket__ocrEventSatisfy(commHdr->parentMetaToJoinClone_Event, myDeps->meta_Dep.guid, __FILE__, __func__, __LINE__, nanny, "upboundRequest(Join) via conveyServiceRequestToParent"); // Satisfy the join-clone's parentMeta_t datablock dependence.
+   // The join-clone destroys this datablock, so the parent hands it over only after its last access to it, in parentClone_Func.
+   meta->parentMetaToJoinClone_Event = commHdr->parentMetaToJoinClone_Event;
 } // parent_ProcessJoinForUnrefine

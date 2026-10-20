@@ -72,10 +72,16 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtTemplateCreate(&tmp, init_done_edt, 0, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  /* A fork reads the held blocks; the continuation's data slots, which lead
+   * to the blocks' destroy, are wired once the holds are released. */
+  fork_generate_atoms(sim_i, edt, 3, list, sim_p->bxs.grid);
+  ocrGuid_t list_i = sim_p->bxs.list;
+  ocrDbRelease(timer_i);
+  ocrDbRelease(sim_i);
+  ocrDbRelease(list_i);
   ocrAddDependence(timer_i, edt, 0, DB_MODE_RW);
   ocrAddDependence(sim_i, edt, 1, DB_MODE_RW);
-  ocrAddDependence(sim_p->bxs.list, edt, 2, DB_MODE_CONST);
-  fork_generate_atoms(sim_i, edt, 3, list, sim_p->bxs.grid);
+  ocrAddDependence(list_i, edt, 2, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
 
   ocrDbDestroy(depv[0].guid);
@@ -109,10 +115,13 @@ ocrGuid_t init_done_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtTemplateCreate(&tmp, init_force_edt, 0, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  fork_set_temperature(edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid, vcm, scale);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
+  ocrDbRelease(depv[2].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
-  fork_set_temperature(edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid, vcm, scale);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;
@@ -127,11 +136,14 @@ ocrGuid_t init_force_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtTemplateCreate(&tmp, main_edt2, 0, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 0, NULL, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  sim->pot.fork_force_computation(depv[1].guid, sim, edt,
+                                  (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
+  ocrDbRelease(depv[2].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
-  sim->pot.fork_force_computation(depv[1].guid, sim, edt,
-                                  (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;
@@ -145,9 +157,10 @@ ocrGuid_t main_edt2(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtTemplateCreate(&tmp, main_edt3, 0, 3);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  ocrDbRelease(depv[0].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
-  fork_kinetic_energy(depv[1].guid, edt, 2, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.grid);
+  fork_kinetic_energy(depv[1].guid, edt, 2, depv[2].guid, (ocrGuid_t*)depv[2].ptr, ((simulation*)depv[1].ptr)->bxs.grid);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;
@@ -170,9 +183,12 @@ ocrGuid_t main_edt3(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtTemplateCreate(&tmp, top_edt, 0, 3);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  ocrGuid_t list = sim->bxs.list;
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
-  ocrAddDependence(sim->bxs.list, edt, 2, DB_MODE_CONST);
+  ocrAddDependence(list, edt, 2, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;
@@ -209,9 +225,12 @@ ocrGuid_t bot_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 0, NULL, 3, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  ocrGuid_t list = sim->bxs.list;
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
-  ocrAddDependence(sim->bxs.list, edt, 2, DB_MODE_CONST);
+  ocrAddDependence(list, edt, 2, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
 
   return NULL_GUID;

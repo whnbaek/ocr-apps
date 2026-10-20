@@ -158,7 +158,7 @@ void initGlobalOcrParamH( globalOcrParamH_t* ocrParamH, u64 nRanks, Command* cmd
 
     int r;
     for( r=0; r<MAX_REDUCTION_HANDLES; r++ ) {
-    ocrGuidRangeCreate(&(ocrParamH->redUpRangeGUID[r]), nRanks*coarseBlocksPerRank, GUID_USER_EVENT_STICKY);
+    reductionRangeCreate(&(ocrParamH->redUpRangeGUID[r]), nRanks*coarseBlocksPerRank);
     }
 
     s64 totalBlocks = 0;
@@ -167,11 +167,17 @@ void initGlobalOcrParamH( globalOcrParamH_t* ocrParamH, u64 nRanks, Command* cmd
     {
          totalBlocks += nRanks*coarseBlocksPerRank*p8;
          ocrGuidRangeCreate(&(ocrParamH->haloRangeGUID[i]), 6*(nRanks*coarseBlocksPerRank)*p8, GUID_USER_EVENT_STICKY);
+         //Every block's six halo events at this level, created once here, before any block that satisfies or depends on them
+         for( u64 ievent = 0; ievent < 6*(nRanks*coarseBlocksPerRank)*p8; ievent++ ) {
+             ocrGuid_t stickyEVT;
+             ocrGuidFromIndex( &stickyEVT, ocrParamH->haloRangeGUID[i], ievent );
+             ocrEventCreate( &stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG );
+         }
          p8 *= 8;
     }
 
     DEBUG_PRINTF(("INIT PARTICIPANTS 1 %d\n", totalBlocks ));
-    ocrGuidRangeCreate(&(ocrParamH->initRedRangeGUID),totalBlocks, GUID_USER_EVENT_STICKY);
+    reductionRangeCreate(&(ocrParamH->initRedRangeGUID), totalBlocks);
 
 }
 
@@ -812,8 +818,15 @@ void sharedOcrObjCreate( rankH_t* PTR_rankH )
     sharedOcrObj_t* PTR_sharedOcrObjH = &(PTR_rankH->sharedOcrObjH);
     Command* PTR_cmd = &(PTR_rankH->globalParamH.cmdParamH);
 
-    ocrGuidRangeCreate(&(PTR_sharedOcrObjH->childrenredRangeGUID[0]), 8, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(PTR_sharedOcrObjH->childrenredRangeGUID[1]), 8, GUID_USER_EVENT_STICKY);
+    //The ranges of the reductions among this block's eight children; a block at the finest level has no children
+    if( PTR_rankH->ilevel != PTR_cmd->num_refine ) {
+        reductionRangeCreate(&(PTR_sharedOcrObjH->childrenredRangeGUID[0]), 8);
+        reductionRangeCreate(&(PTR_sharedOcrObjH->childrenredRangeGUID[1]), 8);
+    }
+    else {
+        ocrGuidRangeCreate(&(PTR_sharedOcrObjH->childrenredRangeGUID[0]), 8, GUID_USER_EVENT_STICKY);
+        ocrGuidRangeCreate(&(PTR_sharedOcrObjH->childrenredRangeGUID[1]), 8, GUID_USER_EVENT_STICKY);
+    }
 
     ocrEventParams_t params;
     params.EVENT_CHANNEL.maxGen = 2;
@@ -1087,9 +1100,7 @@ ocrGuid_t blockSetupEdt( EDT_ARGS )
 
                 u32 nbrRank_c;
 
-                //Collective event create for sends
                 ocrGuidFromIndex(&(stickyEVT), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel], nNbrs*id_l + nbr);//send
-                ocrEventCreate( &stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
                 sharedOcrObj_t* PTR_sharedOcrObjH_copy;
                 ocrGuid_t eventsDBK;
@@ -1109,7 +1120,6 @@ ocrGuid_t blockSetupEdt( EDT_ARGS )
                 //Map the sends to receive events
                 //receive: (id, nbr) will be the send event from the (nbrRank,nbrImage)
                 ocrGuidFromIndex( &(stkyEVT_nbrImg), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel], nNbrs*nbrRank + nbrImage );
-                ocrEventCreate( &stkyEVT_nbrImg, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
                 if( ilevel != 0 ) {
                     ix_c = MOD((iblock_g)/2+i, gx/2); //periodic index
@@ -1118,7 +1128,6 @@ ocrGuid_t blockSetupEdt( EDT_ARGS )
                     nbrRank_c = globalRankFromCoords_Cart3D(ix_c, iy_c, iz_c, gx/2, gy/2, gz/2);
 
                     ocrGuidFromIndex( &(stkyEVT_nbrImg_c), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel-1], nNbrs*nbrRank_c + nbrImage );
-                    ocrEventCreate( &stkyEVT_nbrImg_c, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
                 }
                 else {
                     createEventHelper(&stkyEVT_nbrImg_c, 1);
@@ -1147,13 +1156,9 @@ ocrGuid_t blockSetupEdt( EDT_ARGS )
                     nbrRank_r[3] = globalRankFromCoords_Cart3D(ix_r[3], iy_r[3], iz_r[3], gx*2, gy*2, gz*2);
 
                     ocrGuidFromIndex( &(stkyEVT_nbrImg_r[0]), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel+1], nNbrs*nbrRank_r[0] + nbrImage );
-                    ocrEventCreate( &stkyEVT_nbrImg_r[0], OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
                     ocrGuidFromIndex( &(stkyEVT_nbrImg_r[1]), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel+1], nNbrs*nbrRank_r[1] + nbrImage );
-                    ocrEventCreate( &stkyEVT_nbrImg_r[1], OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
                     ocrGuidFromIndex( &(stkyEVT_nbrImg_r[2]), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel+1], nNbrs*nbrRank_r[2] + nbrImage );
-                    ocrEventCreate( &stkyEVT_nbrImg_r[2], OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
                     ocrGuidFromIndex( &(stkyEVT_nbrImg_r[3]), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel+1], nNbrs*nbrRank_r[3] + nbrImage );
-                    ocrEventCreate( &stkyEVT_nbrImg_r[3], OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
                 }
                 else {
                     createEventHelper(&stkyEVT_nbrImg_r[0], 1);
@@ -1188,7 +1193,6 @@ ocrGuid_t blockSetupEdt( EDT_ARGS )
                 parentRank = globalRankFromCoords_Cart3D(ix_parent, iy_parent, iz_parent, gx/2, gy/2, gz/2);
 
                 ocrGuidFromIndex( &(stkyEVT_parent), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel-1], nNbrs*parentRank + 0 );
-                ocrEventCreate( &stkyEVT_parent, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
             }
             else {
                 createEventHelper(&stkyEVT_parent, 1);
@@ -1209,7 +1213,6 @@ ocrGuid_t blockSetupEdt( EDT_ARGS )
                     iz_child[i][j][k] = MOD((kblock_g)*2+k, gz*2);
                     childRanks[i][j][k] = globalRankFromCoords_Cart3D(ix_child[i][j][k], iy_child[i][j][k], iz_child[i][j][k], gx*2, gy*2, gz*2);
                     ocrGuidFromIndex( &(stkyEVT_child[ichild]), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel+1], nNbrs*childRanks[i][j][k] + 0 ); //pick nbr '0'
-                    ocrEventCreate( &stkyEVT_child[ichild], OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
                 }
                 else {
                     createEventHelper(&stkyEVT_child[ichild], 1);
@@ -1232,7 +1235,6 @@ ocrGuid_t blockSetupEdt( EDT_ARGS )
                     iz_sibling[i][j][k] = MOD((kblock_g/2)*2+k, gz);
                     siblingRanks[i][j][k] = globalRankFromCoords_Cart3D(ix_sibling[i][j][k], iy_sibling[i][j][k], iz_sibling[i][j][k], gx, gy, gz);
                     ocrGuidFromIndex( &(stkyEVT_sibling[isibling]), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID[ilevel], nNbrs*siblingRanks[i][j][k] + 0 ); //pick nbr '0'
-                    ocrEventCreate( &stkyEVT_sibling[isibling], OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
                 }
                 else {
                     createEventHelper(&stkyEVT_sibling[isibling], 1);

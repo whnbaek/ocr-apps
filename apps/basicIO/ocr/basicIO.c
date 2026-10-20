@@ -82,7 +82,8 @@ ocrGuid_t mainEdt ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrGuid_t triggerEventGuid;
     ocrEventCreate(&triggerEventGuid, OCR_EVENT_STICKY_T, true);
 
-    ocrAddDependence(triggerEventGuid, add_edt_guid, 0, DB_MODE_EW);
+    ocrAddDependence(triggerEventGuid, add_edt_guid, 0, DB_MODE_RW);
+    ocrDbRelease(dataGuid);
     ocrEventSatisfy(triggerEventGuid, dataGuid);
     return NULL_GUID;
 }

@@ -51,6 +51,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     ocrDbCreate( &DBK_reductionEventsH, (void **) &PTR_reductionEventsH, (N+1)*sizeof(ocrGuid_t),
                  DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+    ocrDbRelease( DBK_reductionEventsH );
 
     ocrGuid_t TS_globalInit_OET, TS_globalCompute_OET, TS_globalFinalize_OET;
 
@@ -170,9 +171,14 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
         ocrAddDependence( DBK_reduction_in, TS_rankPartialSumCompute.EDT, _idep++, DB_MODE_RW );
     }
 
+    /* The link below admits the finalizer, which destroys the event array, so
+     * the root event is read out and the array released first. */
+    ocrGuid_t EVT_reductionRoot = PTR_reductionEventsH[N];
+    ocrDbRelease( DBK_reductionEventsH );
+
     /* Adding a dep on a sticky event is safe even after it has fired: the
      * stored value propagates to the new waiter. */
-    ocrAddDependence( PTR_reductionEventsH[N], TS_globalCompute_OET_local, 0, DB_MODE_RO );
+    ocrAddDependence( EVT_reductionRoot, TS_globalCompute_OET_local, 0, DB_MODE_RO );
 
     return NULL_GUID;
 }

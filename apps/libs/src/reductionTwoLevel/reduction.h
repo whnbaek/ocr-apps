@@ -64,7 +64,7 @@ typedef enum {
     reductionType;
 
 typedef struct reductionPrivateBase {
-    u64 new; //should be set to true on first call or if any parameters change
+    u64 new; //should be set to true on first call or if any parameters change, with a fresh rangeGUID from reductionRangeCreate
     u64 nrank;
     u64 myrank;
     // Ranks per place.  The tree is built in two levels around it: a place's
@@ -75,7 +75,7 @@ typedef struct reductionPrivateBase {
                     //for BROADCAST, number of BYTES being sent
     reductionType type;
     reductionOperator_t reductionOperator; //which reduction to do (in reduction.h)
-    ocrGuid_t rangeGUID; //nrank-1 labeled STICKY GUIDs (used only once to set up channels)
+    ocrGuid_t rangeGUID; //from reductionRangeCreate: nrank-1 labeled STICKY events (used only once to set up channels)
     ocrGuid_t returnEVT; //event to return the result, different for each rank
 //used internally
     u64 size; //number of bytes being sent/received
@@ -94,6 +94,8 @@ typedef struct reductionPrivateBase {
 //prototypes
 
 u64 reductionsizeof(reductionOperator_t operator);
+
+void reductionRangeCreate(ocrGuid_t * rangeGUID, u64 nrank);
 
 void reductionLaunch(reductionPrivate_t * rbPTR, ocrGuid_t reductionPrivateGUID, void * mydataPTR);
 

@@ -25,7 +25,8 @@ However before calling reductionLaunch the user must
       type: an enum type {ALLREDUCE, REDUCE, BROADCAST}
       new: set to TRUE for the first call
       reductionOperator: choose which reduction to do (not needed for BROADCAST, choices in reduction.h)
-      rangeGUID: a set of at least nrank-1 labeled STICKY event GUIDs
+      rangeGUID: made by reductionRangeCreate(&rangeGUID, nrank), which creates its nrank-1 labeled STICKY
+         events once; the task that calls it must precede every participant (e.g. pass the GUID to the tasks it creates)
       returnEVT: an event to return the "answer"
          ALLREDUCE: everyone gets the (same) answer back
          REDUCE: only returned to rank 0's event, everyone else's event is ignored
@@ -62,7 +63,7 @@ contribute to the global reduction before the answer comes back
 
 Reductions can be run as often as desired.
 
-If multiple reductions need to be in flight at the same time, they will require separate reductionPrivate datablocks
+If multiple reductions need to be in flight at the same time, they will require separate reductionPrivate datablocks, each with its own rangeGUID
 
 If different reductions are needed at different times, it is only necessary to change the reductionOperator and/or the type in the reductionPrivate block
 

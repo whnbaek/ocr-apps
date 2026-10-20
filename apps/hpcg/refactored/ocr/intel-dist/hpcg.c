@@ -2249,7 +2249,6 @@ if(pbPTR->debug > 1) ocrPrintf("ind %d \n", ind);
                     ocrDbCreate(&channelDBK, (void**) &channelPTR, sizeof(ocrGuid_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
 //ocrPrintf("I%d i%d j%d k%d ind%d index out %d \n", myrank, i, j, k, ind, 26*myrank+ind);
                     ocrGuidFromIndex(&(stickyEVT), sbPTR->haloRangeGUID, 26*myrank + ind);
-                    ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
                     ocrEventCreateParams(&(pbPTR->haloSendEVT[ind]), OCR_EVENT_CHANNEL_T, false, &params);
                     *channelPTR = pbPTR->haloSendEVT[ind];
                     ocrDbRelease(channelDBK);
@@ -2259,7 +2258,6 @@ if(pbPTR->debug > 1) ocrPrintf("ind %d \n", ind);
                     index = 26*(myrank + k*pbPTR->npx*pbPTR->npy + j*pbPTR->npx + i) + 25-ind;
 //ocrPrintf("I%d i%d j%d k%d ind%d index in %d \n", myrank, i, j, k, ind, index);
                     ocrGuidFromIndex(&(stickyEVT), sbPTR->haloRangeGUID, index);
-                    ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
                     ocrAddDependence(stickyEVT, channelInitEDT, SLOTARRAY(channelInit,channel,ind), DB_MODE_RW);
 
 
@@ -2504,7 +2502,20 @@ Passes the shared blocks to realMain
     u64 nrank = npx * npy * npz;
 
     ocrGuidRangeCreate(&(sbPTR->haloRangeGUID), 26*nrank, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(sbPTR->reductionRangeGUID), nrank, GUID_USER_EVENT_STICKY);
+//each halo label a rank has a neighbour for is created once here, before the
+//rank tasks that satisfy it or depend on it
+    {
+        u64 r, nbr;
+        u32 dir;
+        for(r=0;r<nrank;r++)
+            for(dir=0;dir<26;dir++)
+                if(haloNeighbor(r, dir, npx, npy, npz, &nbr)) {
+                    ocrGuid_t haloEVT;
+                    ocrGuidFromIndex(&haloEVT, sbPTR->haloRangeGUID, 26*r + dir);
+                    ocrEventCreate(&haloEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+                }
+    }
+    reductionRangeCreate(&(sbPTR->reductionRangeGUID), nrank);
 
 
     ocrGuid_t wrapUpTML, wrapUpEDT;

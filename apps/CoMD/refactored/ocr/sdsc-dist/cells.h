@@ -179,6 +179,16 @@ static inline u32 spawn_cell(const spawn_ctx* x, u32 i)
   return brick_cell(x->c, x->blo, x->bdim, i);
 }
 
+/* A leaf's holds on the configuration and the directory end before the last
+ * of its tasks is wired: the completions of its tasks lead to their destroy. */
+static inline void spawn_last(const spawn_ctx* x, u32 i, u32 hi)
+{
+  if(i+1 == hi) {
+    ocrDbRelease(x->cfg);
+    ocrDbRelease(x->list);
+  }
+}
+
 /* The layer of a brick facing direction d is the cells the brick one step
  * along d reads: the boundary plane, row or corner d names, free on the axes
  * d does not move on.  It is enumerated in the grid's own axis order over the

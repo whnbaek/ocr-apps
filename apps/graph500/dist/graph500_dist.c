@@ -380,7 +380,7 @@ static ocrGuid_t genEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   u64 x0 = prng_jump(tbl, GRAPH_SEED, 2*i0);
   u64 x;
   vmap_t vm;
-  ocrGuid_t blk;
+  ocrGuid_t blk, hub;
   u64* b;
   u64* off;
   u64* pairs;
@@ -430,8 +430,10 @@ static ocrGuid_t genEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   for (q = 0; q < nrank; ++q)
     ocrAddDependence(blk, dir[paramv[GN_GROUP]*nrank + q],
                      (u32)paramv[GN_RSLOT], DB_MODE_CONST);
-  ocrAddDependence(blk, dir[paramv[GP_NROUTE]*nrank],
-                   (u32)paramv[GN_HSLOT], DB_MODE_CONST);
+  hub = dir[paramv[GP_NROUTE]*nrank];
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
+  ocrAddDependence(blk, hub, (u32)paramv[GN_HSLOT], DB_MODE_CONST);
   return NULL_GUID;
 }
 
@@ -510,11 +512,12 @@ static ocrGuid_t routeEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
 /* Receives the routed edges addressed to this node and issues the tasks that
  * turn them into adjacency.  It also reclaims the slices, which is safe
- * exactly here: a node's routing has published before this fires, and a
- * slice is read by nothing else.
+ * exactly here: every routing task of this node has completed before this
+ * fires, and a slice is read by nothing else.
  *
  * paramv: globals, my node, build task count, jump-table and directory
- * guids.  depv: this node's slices, then the routed blocks. */
+ * guids.  depv: this node's slices, then the routed blocks, then the
+ * completions of this node's routing tasks. */
 enum { BH_RANK = GP_N, BH_NBUILD, BH_JUMP, BH_DIR = BH_JUMP + GUID_WORDS,
        BH_PRIV = BH_DIR + GUID_WORDS, BH_NPARAM = BH_PRIV + GUID_WORDS };
 enum { BD_RANK = GP_N, BD_LO, BD_HI, BD_SLOT, BD_JOIN,
@@ -550,6 +553,8 @@ static ocrGuid_t buildHubEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
   ocrEdtCreate(&joinEDT, joinTML, GP_N + 1, pv, (u32)(1 + nbuild + nrte),
                NULL, EDT_PROP_NONE, &hnt, NULL);
   ocrEdtTemplateDestroy(joinTML);
+  for (i = 0; i < nrte; ++i)
+    ocrDbRelease(depv[nw + i].guid);
   for (i = 0; i < nrte; ++i)
     ocrAddDependence(depv[nw + i].guid, joinEDT,
                      (u32)(1 + nbuild + i), DB_MODE_CONST);
@@ -662,6 +667,8 @@ static ocrGuid_t buildEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     og[2*(k - lo) + 1] = visDBK;
     (void)w;
   }
+  for (i = 0; i < depc; ++i)
+    if (!ocrGuidIsNull(depv[i].guid)) ocrDbRelease(depv[i].guid);
   ocrDbRelease(out);
   ocrAddDependence(out, guid_load(paramv + BD_JOIN), (u32)paramv[BD_SLOT],
                    DB_MODE_CONST);
@@ -841,6 +848,8 @@ static ocrGuid_t hubEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     }
     if (has) active[nactive++] = i;
   }
+  if (level > 0)
+    for (p = 0; p < nrank; ++p) ocrDbRelease(depv[1 + p].guid);
 
   memcpy(pv, paramv, GP_N*sizeof(u64));
   pv[GP_N] = priv->myrank;
@@ -976,6 +985,9 @@ static ocrGuid_t workerEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     }
   }
   free(cur);
+  ocrDbRelease(depv[nrank + 1].guid);
+  if (level > 0)
+    for (p = 0; p < nrank; ++p) ocrDbRelease(depv[p].guid);
   ocrDbRelease(blk);
   ocrDbRelease(depv[nrank].guid);
   ocrAddDependence(blk, guid_load(paramv + WK_PACK), (u32)paramv[WK_SLOT],
@@ -1196,13 +1208,9 @@ static ocrGuid_t rankInitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     *slot = priv_send(priv)[q];
     ocrDbRelease(holder);
     ocrGuidFromIndex(&stickyEVT, sh->channelRange, myrank*nrank + q);
-    ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T,
-                   GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
     ocrEventSatisfy(stickyEVT, holder);
 
     ocrGuidFromIndex(&stickyEVT, sh->channelRange, q*nrank + myrank);
-    ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T,
-                   GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
     ocrAddDependence(stickyEVT, chanEDT, (u32)(1 + q), DB_MODE_CONST);
   }
 
@@ -1219,25 +1227,28 @@ static ocrGuid_t rankInitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     guid_store(pv + BH_DIR, dirDBK);
     guid_store(pv + BH_PRIV, privDBK);
     ocrEdtTemplateCreate(&hubTMLc, buildHubEdt, BH_NPARAM,
-                         (u32)(nw + nrank*nroute));
+                         (u32)(nw + 2*nrank*nroute));
     ocrEdtCreate(&priv->buildHubEDT, hubTMLc, BH_NPARAM, pv,
-                 (u32)(nw + nrank*nroute), NULL, EDT_PROP_NONE,
+                 (u32)(nw + 2*nrank*nroute), NULL, EDT_PROP_NONE,
                  &priv->myHNT, NULL);
     ocrEdtTemplateDestroy(hubTMLc);
     dir[nroute*nrank] = priv->buildHubEDT;
   }
+  ocrDbRelease(depv[0].guid);
 
   ocrEdtTemplateCreate(&rteTML, routeEdt, RT_NPARAM, (u32)chunk);
   for (r = 0; r < nroute; ++r) {
     u64 have = (r*chunk < nw) ? (nw - r*chunk < chunk ? nw - r*chunk : chunk) : 0;
     for (q = 0; q < nrank; ++q) {
-      ocrGuid_t edt;
+      ocrGuid_t edt, done;
       u64 s;
       memcpy(pv, paramv, GP_N*sizeof(u64));
       pv[RT_DEST] = q;
       guid_store(pv + RT_EVT, priv_send(priv)[q]);
       ocrEdtCreate(&edt, rteTML, RT_NPARAM, pv, (u32)chunk, NULL,
-                   EDT_PROP_NONE, &priv->myHNT, NULL);
+                   EDT_PROP_NONE, &priv->myHNT, &done);
+      ocrAddDependence(done, priv->buildHubEDT,
+                       (u32)(nw + nrank*nroute + r*nrank + q), DB_MODE_NULL);
       dir[r*nrank + q] = edt;
       for (s = have; s < chunk; ++s)
         ocrAddDependence(NULL_GUID, edt, (u32)s, DB_MODE_NULL);
@@ -1283,11 +1294,11 @@ static ocrGuid_t chanInitEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv
     ocrDbDestroy(depv[1 + p].guid);
   }
   for (p = 0; p < nrank; ++p)
-    for (r = 0; r < nroute; ++r)
-      ocrAddDependence(priv_recv(priv)[p], priv->buildHubEDT,
-                       (u32)(nw + p*nroute + r), DB_MODE_CONST);
-
-  ocrDbRelease(depv[0].guid);
+    for (r = 0; r < nroute; ++r) {
+      ocrGuid_t src = priv_recv(priv)[p], hub = priv->buildHubEDT;
+      if (p + 1 == nrank && r + 1 == nroute) ocrDbRelease(depv[0].guid);
+      ocrAddDependence(src, hub, (u32)(nw + p*nroute + r), DB_MODE_CONST);
+    }
   return NULL_GUID;
 }
 
@@ -1399,6 +1410,14 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   sh->nroute = nroute; sh->nbuild = nbuild;
   sh->finishEDT = finishEDT;
   ocrGuidRangeCreate(&sh->channelRange, nrank*nrank, GUID_USER_EVENT_STICKY);
+  /* Created once here, before any rankInitEdt satisfies or depends on them. */
+  for (q = 0; q < nrank*nrank; ++q) {
+    ocrGuid_t stickyEVT;
+    if (q/nrank == q%nrank) continue;
+    ocrGuidFromIndex(&stickyEVT, sh->channelRange, q);
+    ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T,
+                   GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+  }
 
   guid_store(pv + ST_FINISH, finishEDT);
   guid_store(pv + ST_SHARED, sharedDBK);

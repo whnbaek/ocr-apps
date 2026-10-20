@@ -172,7 +172,7 @@ ocrGuid_t adjustVcmAndComputeKeEdt(EDT_ARGS)
 
     adjustVcm(sim, oldVcm, newVcm );
 
-    kineticEnergy(sim);
+    kineticEnergy(sim, DBK_rankH, DBK_sim, DBK_nAtoms, DBK_iSpecies, DBK_p);
 
     return NULL_GUID;
 }

@@ -29,7 +29,7 @@
 #define DURATION 100
 
 #endif
-#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
+#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG
 #define N   0
 #define E   1
 #define S   2
@@ -700,6 +700,21 @@ u32 findNeighborRelation( u64 patchNum, u64 neighborPatchNum, u64 k )
     return relation;
 }
 
+/* Creates the handshake slot (r, patchNum) of each neighbour of patchNum in
+ * direction r that lies in patchNum's panel (samePanel) or outside it. */
+static void createHandshakeSlots( ocrGuid_t * guidRanges, u64 patchNum, u64 k, u32 samePanel )
+{
+    u32 r;
+    for( r = 0; r < 8; r++ ){
+        s64 neighbor = findNeighborPatch( patchNum, k, r );
+        if( neighbor < 0 ) continue;
+        if( ( findPanelNum( neighbor, k ) == findPanelNum( patchNum, k ) ) != samePanel ) continue;
+        ocrGuid_t slot;
+        ocrGuidFromIndex( &slot, guidRanges[r], patchNum );
+        ocrEventCreate( &slot, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+    }
+}
+
 
 ocrGuid_t channelSetupEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 {
@@ -791,7 +806,8 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
      * ocrGuidFromIndex(guidRanges[r], q): I publish my recvChannels[dir] at
      * (r = neighbor's relation back to me, q = neighbor's patchNum) and learn
      * sendChannels[dir] from (r = dir, q = my patchNum).  The encodings are
-     * symmetric, so both endpoints agree on every slot. */
+     * symmetric, so both endpoints agree on every slot.  Every slot already
+     * exists: it is created once, before either endpoint's init task. */
 
     s64 *dirptr = &patchPTR->n;
 
@@ -817,7 +833,6 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
             rel = findNeighborRelation( patchPTR->patchNum, dirptr[i], patchPTR->k );
             ocrGuid_t pubSticky;
             ocrGuidFromIndex( &pubSticky, panelPTR->guidRanges[rel], dirptr[i] );
-            ocrEventCreate( &pubSticky, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
 
             ocrGuid_t chanDb;
             ocrGuid_t *chanSlot;
@@ -829,7 +844,6 @@ ocrGuid_t patchInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
             /* learn the neighbor's recv channel (my send target in dir i) */
             ocrGuid_t learnSticky;
             ocrGuidFromIndex( &learnSticky, panelPTR->guidRanges[i], patchPTR->patchNum );
-            ocrEventCreate( &learnSticky, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
             ocrAddDependence( learnSticky, setupEdtGUID, i, DB_MODE_RO );
         }else{
             patchPTR->recvChannels[i] = NULL_GUID;
@@ -875,6 +889,10 @@ ocrGuid_t panelInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     patch_t * dummyPatch;
 
     ocrEdtTemplateCreate( &patchInitTPT, patchInitEdt, 1, 2 );
+
+    /* The slots between two patches of this panel, before either init task exists. */
+    for( i = 0; i < (k * k); i++ )
+        createHandshakeSlots( panelPTR->guidRanges, ((k * k) * panelNum) + i, k, 1 );
 
     ocrDbRelease( panelGUID );
     for( i = 0; i < (k * k); i++ ){     //we use the xy array, such that we can just pass
@@ -926,6 +944,14 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     for( i = 0; i < 8; i++ )
     {
         ocrGuidRangeCreate( &(ranges[i]), 6 * (k * k), GUID_USER_EVENT_STICKY );
+    }
+    /* The slots between patches of two panels, before any panel's init task
+     * exists; each panel's init creates the slots inside it. */
+    for( u64 q = 0; q < 6 * (k * k); q++ ){
+        u64 x = findX( findLocalPatchNum( q, k ), k );
+        u64 y = findY( findLocalPatchNum( q, k ), k );
+        if( x == 0 || y == 0 || x == k - 1 || y == k - 1 )
+            createHandshakeSlots( ranges, q, k, 0 );
     }
     for( i = 0; i < 6; i++ )
     {

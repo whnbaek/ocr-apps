@@ -630,8 +630,8 @@ _OCR_TASK_FNC_( timestepEdt )
     {
         profile_start( total_timer, PTR_timers );
         //ocrPrintf("Starting profile\n");
-        ocrDbRelease( DBK_timers );
     }
+    ocrDbRelease( DBK_timers );
 
     ocrHint_t myEdtAffinityHNT = PTR_rankH->myEdtAffinityHNT;
     ocrHint_t myDbkAffinityHNT = PTR_rankH->myDbkAffinityHNT;
@@ -1035,6 +1035,15 @@ _OCR_TASK_FNC_( FNC_stencil )
 
     rankTemplateH_t* PTR_rankTemplateH = &(PTR_rankH->rankTemplateH);
 
+    //The work created below leads to the summary that destroys these blocks.
+    ocrDbRelease( DBK_xIn );
+    ocrDbRelease( DBK_xOut );
+    ocrDbRelease( DBK_weight );
+    ocrDbRelease( DBK_refNorm );
+    ocrDbRelease( DBK_timers );
+    ocrDbRelease( DBK_norm_reductionH );
+    ocrDbRelease( DBK_timer_reductionH );
+
     ocrGuid_t initializeDataTML, initializeDataEDT, initializeDataOEVT, initializeDataOEVTS;
 
     ocrEdtTemplateCreate( &initializeDataTML, FNC_initialize, 0, 9 );
@@ -1316,6 +1325,23 @@ ocrGuid_t channelSetupEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t DBK_timer_reductionH = PTR_rankH->DBK_timer_reductionH;
     ocrGuid_t DBK_spmdJoin_reductionH = PTR_rankH->DBK_spmdJoin_reductionH;
 
+    //The work created below leads to the summary that destroys these blocks.
+    ocrDbRelease(DBK_xIn);
+    ocrDbRelease(DBK_xOut);
+    ocrDbRelease(DBK_weight);
+    ocrDbRelease(DBK_refNorm);
+    ocrDbRelease(DBK_timers);
+    ocrDbRelease(DBK_norm_reductionH);
+    ocrDbRelease(DBK_timer_reductionH);
+    ocrDbRelease(PTR_rankH->DBK_LsendBufs[0]);
+    ocrDbRelease(PTR_rankH->DBK_LsendBufs[1]);
+    ocrDbRelease(PTR_rankH->DBK_RsendBufs[0]);
+    ocrDbRelease(PTR_rankH->DBK_RsendBufs[1]);
+    ocrDbRelease(PTR_rankH->DBK_TsendBufs[0]);
+    ocrDbRelease(PTR_rankH->DBK_TsendBufs[1]);
+    ocrDbRelease(PTR_rankH->DBK_BsendBufs[0]);
+    ocrDbRelease(PTR_rankH->DBK_BsendBufs[1]);
+
     ocrDbRelease(DBK_rankH);
 
     MyOcrTaskStruct_t TS_init_rankH; _paramc = 0; _depc = 9;
@@ -1444,9 +1470,8 @@ _OCR_TASK_FNC_( initEdt )
         ocrGuid_t eventsDBK;
         ocrDbCreate( &eventsDBK, (void**) &eventsPTR, (nChannels+1)*sizeof(ocrGuid_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
-        //Collective event create for sends
+        //The send event: created by mainEdt, satisfied here, destroyed by the receiver
         ocrGuidFromIndex(&(stickyEVT), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID, nbrUb*id + nbr);//send
-        ocrEventCreate( &stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
         //ocrPrintf("s %d r %d se %d re %d s(%d %d) r(%d %d)\n", id, nbrRank, nbr, nbrImage, ix0, iy0, ix, iy );
 
@@ -1478,7 +1503,6 @@ _OCR_TASK_FNC_( initEdt )
         //Map the sends to receive events
         //receive: (id, nbr) will be the send event from the (nbrRank,nbrImage)
         ocrGuidFromIndex( &(stickyEVT_new), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID, nbrUb*nbrRank + nbrImage );
-        ocrEventCreate( &stickyEVT_new, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
         ocrAddDependence( stickyEVT_new, channelSetupEDT, 1+nbr, DB_MODE_CONST );
     }
@@ -1590,9 +1614,17 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     globalOcrParamH_t ocrParamH;
     int nbrUb = 4;
     ocrGuidRangeCreate(&(ocrParamH.haloRangeGUID), nbrUb*nRanks, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(ocrParamH.normReductionRangeGUID), nRanks, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(ocrParamH.timerReductionRangeGUID),nRanks, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(ocrParamH.spmdJoinReductionRangeGUID),nRanks, GUID_USER_EVENT_STICKY);
+    //Each halo event is created once here, before any task that satisfies or depends on it
+    u64 h;
+    for( h = 0; h < nbrUb*nRanks; h++ )
+    {
+        ocrGuid_t haloEVT;
+        ocrGuidFromIndex( &haloEVT, ocrParamH.haloRangeGUID, h );
+        ocrEventCreate( &haloEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG );
+    }
+    reductionRangeCreate(&(ocrParamH.normReductionRangeGUID), nRanks);
+    reductionRangeCreate(&(ocrParamH.timerReductionRangeGUID),nRanks);
+    reductionRangeCreate(&(ocrParamH.spmdJoinReductionRangeGUID),nRanks);
 
     ocrEventCreate( &(ocrParamH.EVT_OUT_spmdJoin_reduction), OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG );
 

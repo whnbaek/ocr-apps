@@ -13,7 +13,8 @@ void computeForce(SimFlat* s);
 ocrGuid_t computeForceEdt( EDT_ARGS );
 ocrGuid_t advanceVelocityEdt( EDT_ARGS );
 ocrGuid_t advancePositionEdt( EDT_ARGS );
-void kineticEnergy(SimFlat* s);
+void kineticEnergy(SimFlat* s, ocrDBK_t DBK_rankH, ocrDBK_t DBK_sim, ocrDBK_t DBK_nAtoms,
+                   ocrDBK_t DBK_iSpecies, ocrDBK_t DBK_p);
 ocrGuid_t kineticEnergyEdt( EDT_ARGS );
 ocrGuid_t timestepLoopEdt( EDT_ARGS );
 ocrGuid_t timestepEdt( EDT_ARGS );
@@ -23,5 +24,6 @@ void redistributeAtoms(struct SimFlatSt* sim);
 ocrGuid_t redistributeAtomsEdt( EDT_ARGS );
 
 ocrGuid_t printThingsEdt( EDT_ARGS );
+ocrGuid_t finalizeEdt( EDT_ARGS );
 
 #endif

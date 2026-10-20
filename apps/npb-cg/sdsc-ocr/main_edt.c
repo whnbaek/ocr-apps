@@ -164,6 +164,10 @@ ocrGuid_t makea_join_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     /* Writes are only visible to other EDTs after release: release before
        wiring the consumers. */
     ocrDbRelease(aid);
+    u64 na = class->na, blk = class->blk;
+    ocrDbRelease(depv[0].guid);
+    ocrDbRelease(depv[1].guid);
+    ocrDbRelease(depv[2].guid);
 
     ocrGuid_t tmp, edt;
     ocrEdtTemplateCreate(&tmp, head_edt, 0, 6);
@@ -172,7 +176,7 @@ ocrGuid_t makea_join_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
     ocrAddDependence(aid, edt, 2, DB_MODE_CONST);
     ocrAddDependence(depv[2].guid, edt, 3, DB_MODE_RW);
-    conj_grad(class->na, class->blk, aid, depv[2].guid, edt, 4);
+    conj_grad(na, blk, aid, depv[2].guid, edt, 4);
     ocrEdtTemplateDestroy(tmp);
 
     return NULL_GUID;
@@ -208,6 +212,8 @@ ocrGuid_t head_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
        and x is written next by the loop bottom, not the loop top. */
     ocrDbRelease(depv[1].guid);
     ocrDbRelease(depv[3].guid);
+    ocrDbRelease(depv[0].guid);
+    ocrDbRelease(depv[2].guid);
     ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
     ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
     ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
@@ -233,11 +239,15 @@ ocrGuid_t loop_top_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
        actual access: class/a are read-only; x is written by the loop bottom
        (the only x consumer wired RW). */
     ocrDbRelease(depv[1].guid);
+    u64 na = class->na, blk = class->blk;
+    ocrDbRelease(depv[0].guid);
+    ocrDbRelease(depv[2].guid);
+    ocrDbRelease(depv[3].guid);
     ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_CONST);
     ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
     ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
     ocrAddDependence(depv[3].guid, edt, 3, DB_MODE_RW);
-    conj_grad(class->na, class->blk, depv[2].guid, depv[3].guid, edt, 4);
+    conj_grad(na, blk, depv[2].guid, depv[3].guid, edt, 4);
     ocrEdtTemplateDestroy(tmp);
 
     return NULL_GUID;
@@ -265,6 +275,7 @@ ocrGuid_t loop_bottom_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         /* Release before wiring the consumer so it cannot acquire a stale copy. */
         ocrDbRelease(depv[5].guid);
         ocrDbRelease(depv[1].guid);
+        ocrDbRelease(depv[0].guid);
         ocrGuid_t tmp,edt;
         ocrEdtTemplateCreate(&tmp, tail_edt, 0, 3);
         /* The output event fires only after the tail's dependence releases
@@ -289,6 +300,8 @@ ocrGuid_t loop_bottom_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
            acquire a stale copy. */
         ocrDbRelease(depv[3].guid);
         ocrDbRelease(depv[1].guid);
+        ocrDbRelease(depv[0].guid);
+        ocrDbRelease(depv[2].guid);
         ocrGuid_t tmp,edt;
         ocrEdtTemplateCreate(&tmp, loop_top_edt, 1, 4);
         ocrEdtCreate(&edt, tmp, 1, paramv, 4, NULL, 0, NULL_HINT, NULL);

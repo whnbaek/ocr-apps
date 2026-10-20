@@ -54,13 +54,13 @@ ocrGuid_t period_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t OEVT_reduction = build_reduction(simH_g, simH_p->reductionH_g, simH_p->boxDataStH.b_num, leaves_p,
                                              sizeof(PRM_ured_edt_t)/sizeof(u64), &PRM_red, ured_edt, grid, 0 );
 
+  ocrDbRelease(timer_g);
   if(simH_p->step!=simH_p->steps) {
     ocrGuid_t tmp, next_period_edt;
     ocrEdtTemplateCreate(&tmp, period_edt, sizeof(PRM_period_edt_t)/sizeof(u64), 6);
     ocrEdtCreate(&next_period_edt, tmp, EDT_PARAM_DEF, (u64*)PTR_PRM_period_edt, 6, NULL, EDT_PROP_NONE, PICK_1_1(NULL_HINT,NULL_GUID), NULL);
     ocrEdtTemplateDestroy(tmp);
 
-    ocrDbRelease(timer_g);
     ocrAddDependence(timer_g,next_period_edt,0,DB_MODE_RW);
     ocrAddDependence(simH_g,next_period_edt,1,DB_MODE_RW);
     ocrAddDependence(mass_g,next_period_edt,2,DB_MODE_RO);
@@ -153,7 +153,14 @@ ocrGuid_t period_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ++b;
   }
 
-  for(b = 0; b < simH_p->boxDataStH.b_num; ++b)
+  /* From the second period on slot 5 carries the simulation block too, so its
+   * release is this one. */
+  u32 b_num = simH_p->boxDataStH.b_num;
+  ocrDbRelease(simH_g);
+  ocrDbRelease(mass_g);
+  ocrDbRelease(DBK_linkCellGuidsH);
+  ocrDbRelease(DBK_atomDataGuidsH);
+  for(b = 0; b < b_num; ++b)
     ocrAddDependence(ff[b], pe[b], 2, DB_MODE_RO);
 
   ocrDbDestroy(leaves_g);
@@ -222,6 +229,13 @@ ocrGuid_t position_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       ocrAddDependence(*(ocrGuid_t*)depv[n].ptr, tmpg, n, DB_MODE_RO);
   }
 
+  /* On a small grid one block fills two neighbour slots; each is released
+   * once. */
+  for(u8 d = 1; d < 29; ++d) {
+    u8 e = 1;
+    while(e < d && !ocrGuidIsEq(depv[e].guid, depv[d].guid)) ++e;
+    if(e == d) ocrDbRelease(depv[d].guid);
+  }
   ocrDbRelease(DBK_atomDataH);
   ocrAddDependence(DBK_atomDataH, exc, 0, DB_MODE_RW);
   ocrAddDependence(DBK_linkCellH, exc, 1, DB_MODE_RW);

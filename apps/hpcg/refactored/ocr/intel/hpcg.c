@@ -2211,7 +2211,6 @@ if(pbPTR->debug > 1) ocrPrintf("ind %d \n", ind);
                     ocrDbCreate(&channelDBK, (void**) &channelPTR, sizeof(ocrGuid_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
 //ocrPrintf("I%d i%d j%d k%d ind%d index out %d \n", myrank, i, j, k, ind, 26*myrank+ind);
                     ocrGuidFromIndex(&(stickyEVT), sbPTR->haloRangeGUID, 26*myrank + ind);
-                    ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
                     ocrEventCreateParams(&(pbPTR->haloSendEVT[ind]), OCR_EVENT_CHANNEL_T, false, &params);
                     *channelPTR = pbPTR->haloSendEVT[ind];
                     ocrDbRelease(channelDBK);
@@ -2242,7 +2241,6 @@ if(pbPTR->debug > 1) ocrPrintf("ind %d \n", ind);
                     index = 26*(myrank + k*pbPTR->npx*pbPTR->npy + j*pbPTR->npx + i) + 25-ind;
 //ocrPrintf("I%d i%d j%d k%d ind%d index in %d \n", myrank, i, j, k, ind, index);
                     ocrGuidFromIndex(&(stickyEVT), sbPTR->haloRangeGUID, index);
-                    ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
                     ocrAddDependence(stickyEVT, channelInitEDT, SLOTARRAY(channelInit,channel,ind), DB_MODE_RW);
 
 
@@ -2400,7 +2398,29 @@ Passes the shared blocks to realMain
     u64 nrank = npx * npy * npz;
 
     ocrGuidRangeCreate(&(sbPTR->haloRangeGUID), 26*nrank, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(sbPTR->reductionRangeGUID), nrank, GUID_USER_EVENT_STICKY);
+//each halo label a rank has a neighbour for is created once here, before the
+//rank tasks that satisfy it or depend on it
+    {
+        u64 r;
+        s64 hi, hj, hk;
+        for(r=0;r<nrank;r++) {
+            s64 px = r%npx, py = (r/npx)%npy, pz = r/(npx*npy);
+            u32 ind = 0;
+            for(hk=-1;hk<2;hk++)
+                for(hj=-1;hj<2;hj++)
+                    for(hi=-1;hi<2;hi++) {
+                        if(hi==0 && hj==0 && hk==0) continue; //skip "center" of cube
+                        if(px+hi >= 0 && px+hi < (s64) npx && py+hj >= 0 && py+hj < (s64) npy
+                           && pz+hk >= 0 && pz+hk < (s64) npz) {
+                            ocrGuid_t haloEVT;
+                            ocrGuidFromIndex(&haloEVT, sbPTR->haloRangeGUID, 26*r + ind);
+                            ocrEventCreate(&haloEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+                        }
+                        ind++;
+                    }
+        }
+    }
+    reductionRangeCreate(&(sbPTR->reductionRangeGUID), nrank);
 
 
     ocrGuid_t wrapUpTML, wrapUpEDT;

@@ -132,6 +132,9 @@ ocrGuid_t setUpVerify(ocrGuid_t inDB, ocrGuid_t XrealDB, ocrGuid_t XimagDB, u64 
 
     ocrDbCreate(&XrealVDB, (void**)&X, sizeof(float)*N, 0, NULL_HINT, NO_ALLOC);
     ocrDbCreate(&XimagVDB, (void**)&X, sizeof(float)*N, 0, NULL_HINT, NO_ALLOC);
+    // The verify EDT destroys both: release them before it is created.
+    ocrDbRelease(XrealVDB);
+    ocrDbRelease(XimagVDB);
 
     if(IS_GUID_NULL(XimagDB)) {
         ocrGuid_t verifyDependencies[4] = { inDB, XrealVDB, XimagVDB, trigger };

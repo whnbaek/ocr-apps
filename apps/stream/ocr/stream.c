@@ -330,6 +330,9 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrHint_t triadHNT;
   ocrEdtCreate(&edt_triad, tmp_triad_g, EDT_PARAM_DEF, child_param, EDT_PARAM_DEF, NULL, PROPERTIES, streamChainEdtHint(&triadHNT, tid), &triad_output);
 
+  /* This sweep's triad destroys a: release it before wiring it onward. */
+  ocrDbRelease(db_a);
+
   /* edt_triad / edt_add deps are relay-style (slots 1/2 wait on
    * scale_output / add_output / copy_output); none is runnable yet. */
   ocrAddDependence(db_a, edt_triad, 0, DB_MODE_RW);
@@ -396,6 +399,7 @@ ocrGuid_t mainLet(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     for(i = 0; i<pts; i++) {
         a[i] = 2.0;
     }
+    ocrDbRelease(db_a);
 
     /* Forward this thread's finalize event, all templates and runtime sizes. */
     u64 param[LOOP_PARAMC] = {

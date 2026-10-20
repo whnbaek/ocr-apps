@@ -546,6 +546,14 @@ ocrGuid_t rankInitTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     }
     ocrEdtTemplateDestroy(rowTml);
 
+    //The forwarders lead to the grid's destroy, so the grid is released before
+    //the first of them exists; their rendezvous events are copied out first.
+    u64 *fwdEvt = (u64*)malloc(ngrp * places * sizeof(u64));
+    for(gi = 0; gi < ngrp; gi++)
+        for(a = 0; a < places; a++)
+            fwdEvt[gi * places + a] = xevt[(a * ngrp + gi) * places + g];
+    ocrDbRelease(depv[0].guid);
+
     //The forwarders, created only once every local reader has registered, so a
     //single-fire local event never has to serve a late binder.  One per
     //rendezvous, and the only waiter on it.
@@ -558,10 +566,11 @@ ocrGuid_t rankInitTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
             ocrEdtCreate(&fwdEdt, fwdTml, EDT_PARAM_DEF, fwdPrm, EDT_PARAM_DEF,
                          NULL, EDT_PROP_NONE, &h, NULL);
             ocrAddDependence(
-                (ocrGuid_t){.guid = xevt[(a * ngrp + gi) * places + g]}, fwdEdt,
+                (ocrGuid_t){.guid = fwdEvt[gi * places + a]}, fwdEdt,
                 0, DB_MODE_RO);
         }
     ocrEdtTemplateDestroy(fwdTml);
+    free(fwdEvt);
     free(arrEvt);
     return NULL_GUID;
 }

@@ -811,9 +811,10 @@ ocrGuid_t loadEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {		//cr
 #endif
 	ocrAddDependence(arrayDBK, dataEVT, 0, ARRAYDBK_MODE);
 
-	ocrEventSatisfySlot(constguidPTR[INDEX_OF_LOADENDEVT], NULL_GUID, OCR_EVENT_LATCH_DECR_SLOT);
-
+	ocrGuid_t loadEndEVT = constguidPTR[INDEX_OF_LOADENDEVT];
 	ocrDbRelease(depv[LOAD_SLOT_CONSTGUID].guid);
+
+	ocrEventSatisfySlot(loadEndEVT, NULL_GUID, OCR_EVENT_LATCH_DECR_SLOT);
 
 	return NULL_GUID;
 }
@@ -909,7 +910,7 @@ ocrGuid_t createEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) { 	//
 	// add dependences at Level 0
 	ocrAddDependence(toRun0DBK, dEDT, DISTRIBUTE_SLOT_TORUN, DB_MODE_CONST);
 	ocrAddDependence(toRunGuidDBK, dEDT, DISTRIBUTE_SLOT_TORUNGUID, DB_MODE_CONST);
-	myAddDependence(visitedDBK, aEDT, APPLY_SLOT_VISITED, DB_MODE_EW);
+	myAddDependence(visitedDBK, aEDT, APPLY_SLOT_VISITED, DB_MODE_RW);
 	ocrAddDependence(dataEVT, sEDT, SEARCH_SLOT_EDGES, DB_MODE_CONST);
 	ocrAddDependence(nextEVT, dEDT, DISTRIBUTE_SLOT_NEXTEVT, DB_MODE_NULL);
 
@@ -982,13 +983,13 @@ ocrGuid_t startEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {		//s
 	ocrEdtCreate(&stopEDT, stopTMP, EDT_PARAM_DEF, &timeDestroy, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, local_hint, &stopEVT);
 	constguidPTR[INDEX_OF_STOPEDT] = stopEDT;
 
-	ocrAddDependence(stopEVT, finishEDT, FINISH_SLOT_FROMSTOP, DB_MODE_EW);
+	ocrAddDependence(stopEVT, finishEDT, FINISH_SLOT_FROMSTOP, DB_MODE_RW);
 
 	ocrPrintf("START Kernel 2 (id=%" PRId64 ")\n", searchId);
 
 	gettimeofday(pt0, 0);
 	ocrDbRelease(depv[START_SLOT_TIME].guid);
-	myAddDependence(depv[START_SLOT_TIME].guid, stopEDT, STOP_SLOT_TIME, DB_MODE_EW);
+	myAddDependence(depv[START_SLOT_TIME].guid, stopEDT, STOP_SLOT_TIME, DB_MODE_RW);
 
 #ifndef NO_MAP
 	ocrGuid_t create_map = constguidPTR[INDEX_OF_CREATE_MAP];
@@ -1103,6 +1104,7 @@ ocrGuid_t distributeEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	//send necessary DBs to SEARCH with myId
 	ocrGuid_t myNext;
 	myNext = getSearch(constguidPTR, Level, myId, R, C);
+	ocrDbRelease(depv[DISTRIBUTE_SLOT_CONSTGUID].guid);
 	ocrDbRelease(depv[DISTRIBUTE_SLOT_PARAM].guid);
 	myAddDependence(depv[DISTRIBUTE_SLOT_PARAM].guid, myNext, SEARCH_SLOT_PARAM, PARAMDBK_MODE);
 	ocrDbRelease(depv[DISTRIBUTE_SLOT_TORUNGUID].guid);
@@ -1198,6 +1200,8 @@ ocrGuid_t searchEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	for (u64 c = 0; c < C; c++) {
 		assert(counts[c] == 0);
 	}
+	for (u64 c = 0; c < C; c++)
+		ocrDbRelease(depv[SEARCH_SLOT_TORUN(c)].guid);
 #ifdef PRINT_DEBUG_INFORMATION
 	ocrPrintf(" -> ");
 	for (u64 i = 0; i<SIZE / C; i++) {
@@ -1260,6 +1264,7 @@ ocrGuid_t searchEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	//send necessary DBs (edgesDBK - slot R+1, paramDBK - slot R+2, guidDBK - slot R+3) to APPLY with myId
 	ocrGuid_t myNext;
 	myNext = getApply(constguidPTR, Level, myId, R, C);
+	ocrDbRelease(depv[SEARCH_SLOT_CONSTGUID].guid);
 
 	if (Level % 2 == 0) assert(!ocrGuidIsNull(toRunGuidPTR[INDEX_OF_TORUNGUID1]));
 	else assert(!ocrGuidIsNull(toRunGuidPTR[INDEX_OF_TORUNGUID0]));
@@ -1267,8 +1272,8 @@ ocrGuid_t searchEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 #ifdef TORUN_DESTROY_MODE
 	ocrAddDependence(NULL_GUID, myNext, APPLY_SLOT_TORUN, DB_MODE_NULL);
 #else
-	if (Level % 2 == 0) ocrAddDependence(toRunGuidPTR[INDEX_OF_TORUNGUID1], myNext, APPLY_SLOT_TORUN, DB_MODE_EW);
-	else ocrAddDependence(toRunGuidPTR[INDEX_OF_TORUNGUID0], myNext, APPLY_SLOT_TORUN, DB_MODE_EW);
+	if (Level % 2 == 0) ocrAddDependence(toRunGuidPTR[INDEX_OF_TORUNGUID1], myNext, APPLY_SLOT_TORUN, DB_MODE_RW);
+	else ocrAddDependence(toRunGuidPTR[INDEX_OF_TORUNGUID0], myNext, APPLY_SLOT_TORUN, DB_MODE_RW);
 #endif
 
 	ocrDbRelease(depv[SEARCH_SLOT_EDGES].guid);
@@ -1276,7 +1281,7 @@ ocrGuid_t searchEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	ocrDbRelease(depv[SEARCH_SLOT_PARAM].guid);
 	myAddDependence(depv[SEARCH_SLOT_PARAM].guid, myNext, APPLY_SLOT_PARAM, PARAMDBK_MODE);
 	ocrDbRelease(depv[SEARCH_SLOT_TORUNGUID].guid);
-	myAddDependence(depv[SEARCH_SLOT_TORUNGUID].guid, myNext, APPLY_SLOT_TORUNGUID, DB_MODE_EW);
+	myAddDependence(depv[SEARCH_SLOT_TORUNGUID].guid, myNext, APPLY_SLOT_TORUNGUID, DB_MODE_RW);
 
 	return NULL_GUID;
 }
@@ -1410,6 +1415,7 @@ ocrGuid_t applyEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	ocrGuid_t stopEDT = constguidPTR[INDEX_OF_STOPEDT];
 	if (myId == 0) ocrPrintf("%" PRId64 ": %" PRId64 "\n", Level, SUM_COUNT);
 	if (SUM_COUNT == 0) { // whole level had nothing to do - THE END
+		ocrDbRelease(depv[APPLY_SLOT_CONSTGUID].guid);
 #ifdef HAND_OVER_TORUN_IN_DISTRIBUTE
 		ocrDbDestroy(toRunDBK);
 #endif
@@ -1480,7 +1486,7 @@ ocrGuid_t applyEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	myAddDependence(depv[APPLY_SLOT_EDGES].guid, sEDT, SEARCH_SLOT_EDGES, ARRAYDBK_MODE);
 	//ocrPrintf("AAddDep -> %" PRId64 " (sl%" PRId64 ")\n",3*myId+2,R);
 	ocrDbRelease(depv[APPLY_SLOT_VISITED].guid);
-	myAddDependence(depv[APPLY_SLOT_VISITED].guid, aEDT, APPLY_SLOT_VISITED, DB_MODE_EW);
+	myAddDependence(depv[APPLY_SLOT_VISITED].guid, aEDT, APPLY_SLOT_VISITED, DB_MODE_RW);
 
 	ocrGuid_t nextEVT;
 #ifndef NO_MAP
@@ -1708,8 +1714,6 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 	for (u64 i = 0; i<R*C; i++)
 		ocrDbDestroy(depv[FINISH_SLOT_VISITED(i)].guid);
 
-	myAddDependence(depv[FINISH_SLOT_FROMSTOP].guid, shutDownEDT, (u32)searchId, DB_MODE_EW);
-
 #ifndef NO_MAP
 	ocrGuid_t nextEVT;
 	ocrGuidFromIndex(&nextEVT, constguidPTR[INDEX_OF_NEXTEVT_MAP], 0);
@@ -1730,6 +1734,7 @@ ocrGuid_t finishEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 #endif
 	}
 	ocrDbRelease(depv[FINISH_SLOT_CONSTGUID].guid);
+	myAddDependence(depv[FINISH_SLOT_FROMSTOP].guid, shutDownEDT, (u32)searchId, DB_MODE_RW);
 	return NULL_GUID;
 }
 
@@ -2083,8 +2088,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 		ocrEdtCreate(&startEDT, startTMP, EDT_PARAM_DEF, PRMs, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, local_hint, NULL);
 		ocrAddDependence(startEVT, startEDT, START_SLOT_TRIGGER, DB_MODE_NULL);
 		myAddDependence(paramDBK, startEDT, START_SLOT_PARAM, PARAMDBK_MODE);
-		myAddDependence(timeDBK, startEDT, START_SLOT_TIME, DB_MODE_EW);
-		myAddDependence(constguidDBK, startEDT, START_SLOT_CONSTGUID, DB_MODE_EW);
+		myAddDependence(timeDBK, startEDT, START_SLOT_TIME, DB_MODE_RW);
+		myAddDependence(constguidDBK, startEDT, START_SLOT_CONSTGUID, DB_MODE_RW);
 	}
 	ocrEdtTemplateDestroy(startTMP);
 

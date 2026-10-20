@@ -20,6 +20,9 @@ ocrGuid_t alphas_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrDbCreate(&nalpha,(void**)&nalpha_ptr,sizeof(double),0,NULL_HINT,NO_ALLOC);
     *alpha_ptr = *(double*)depv[0].ptr/_dot(paramv[0],depv[1].ptr,depv[2].ptr);
     *nalpha_ptr = -*alpha_ptr;
+    ocrDbRelease(depv[0].guid);
+    ocrDbRelease(depv[1].guid);
+    ocrDbRelease(depv[2].guid);
     ocrDbRelease(nalpha);
     ocrEventSatisfy((ocrGuid_t){.guid = paramv[1]},nalpha);
 
@@ -115,6 +118,7 @@ ocrGuid_t spmv_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
     u64 paramv2[2] = {paramv[0], paramv[2]};
     ocrGuid_t assgnt,assgn;
+    ocrDbRelease(depv[1].guid);
     /* One gather dependence per row block: the count follows the blocking, so
        it can exceed what the runtime accepts as a dependence count.  Both
        calls leave their guid untouched when they refuse, so neither return
@@ -136,6 +140,8 @@ ocrGuid_t spmv_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
         ocrEdtCreate(&rv,rowvect,1,paramv+1,2,NULL,0,NULL_HINT,&rve);
         ocrAddDependence(rve,assgn,e,DB_MODE_CONST);
         ocrAddDependence(((ocrGuid_t*)depv[0].ptr)[e],rv,0,DB_MODE_CONST);
+        if(e + 1 == paramv[0]/paramv[1])
+            ocrDbRelease(depv[0].guid);
         ocrAddDependence(depv[1].guid,rv,1,DB_MODE_CONST);
     }
     ocrEdtTemplateDestroy(rowvect);

@@ -63,7 +63,7 @@ Err_t NEKO_mainEdt_reduction(unsigned long in_nrank,unsigned long in_ndata,
         err = init_Reduct_shared(in_nrank, in_ndata, io_shared); IFEB;
 
         ocrGuid_t reductionRangeGUID = NULL_GUID;
-        err = ocrGuidRangeCreate(&reductionRangeGUID, in_nrank, GUID_USER_EVENT_STICKY); IFEB;
+        reductionRangeCreate(&reductionRangeGUID, in_nrank);
 
         GUID_ASSIGN_VALUE(io_sharedRef->reductionRangeGUID, reductionRangeGUID);
         GUID_ASSIGN_VALUE(io_shared->reductionRangeGUID, reductionRangeGUID);

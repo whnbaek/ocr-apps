@@ -250,6 +250,8 @@ ocrGuid_t veluk_edt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
                mass->inv_mass_2[PTR_atomData->s[a]];
   }
 
+  ocrDbRelease( depv[0].guid );
+  ocrDbRelease( depv[1].guid );
   ocrDbRelease( uk_g );
   ocrEventSatisfy( *(ocrGuid_t*)(paramv+1),uk_g );
 

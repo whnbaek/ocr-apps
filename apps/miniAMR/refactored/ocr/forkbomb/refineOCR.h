@@ -7,7 +7,6 @@
 #define LESS_REFINED  1
 
 #include<stdlib.h>
-#include<time.h>
 
 ocrGuid_t blockEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] );
 
@@ -17,11 +16,16 @@ ocrGuid_t refineControlEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
     memcpy( &PRM_block, paramv, sizeof(block_t) );
     u32 pCount = (sizeof( block_t ) / sizeof( u64 )) +1;
 
-    srand(time(NULL) * PRM_block.id);
+    //The die is a function of the block id alone, drawn from task-local state so concurrent tasks cannot perturb it
+    struct random_data dieState = { 0 };
+    int32_t dieTable[32];
+    initstate_r( (unsigned int)((PRM_block.id + 1) * 2654435761u), (char *)dieTable, sizeof(dieTable), &dieState );
     ocrGuid_t blockDriverGUID, blockTML;
     ocrEdtTemplateCreate( &blockTML, blockEdt, pCount, 1 );
 
-    s64 willRef = rand();
+    int32_t dieDraw;
+    random_r( &dieState, &dieDraw );
+    s64 willRef = dieDraw;
 
     if( (willRef % 20 == 0) && PRM_block.refLvl < PRM_block.maxRefLvl )
     {
@@ -39,12 +43,11 @@ ocrGuid_t refineControlEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
         }
 
     }
-    else if( ( willRef % 20 == 0) && PRM_block.refLvl == PRM_block.maxRefLvl )
-    {
-        ocrPrintf("%ld cannot refine more!\n", PRM_block.id);
-    }
     else
     {
+        //A hit that cannot refine still continues the chain: every block chain must reach its last timestep
+        if( (willRef % 20 == 0) && PRM_block.refLvl == PRM_block.maxRefLvl )
+            ocrPrintf("%ld cannot refine more!\n", PRM_block.id);
         ocrEdtCreate( &blockDriverGUID, blockTML, EDT_PARAM_DEF, (u64 *)&PRM_block, 1, NULL, EDT_PROP_NONE, NULL_HINT, NULL );
         ocrAddDependence( NULL_GUID, blockDriverGUID, 0, DB_MODE_RW );
     }

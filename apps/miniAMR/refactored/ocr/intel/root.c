@@ -192,6 +192,9 @@ ocrGuid_t rootLaunch_Func ( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
 // Plumb the dependencies to the rootInit object.
 
    gasket__ocrDbRelease  (argv_dblk, __FILE__, __func__, __LINE__, " ", "argv -- NOTE: STARTUP DID ocrDbCreate, so IGNORE AUDIT MESSAGES REGARDING THIS."); argv = NULL;
+   gasket__ocrDbRelease  (meta_dblk,              __FILE__, __func__, __LINE__, " ", "meta");
+   gasket__ocrDbRelease  (control_dblk,           __FILE__, __func__, __LINE__, " ", "control");
+   gasket__ocrDbRelease  (scratchAllObjects_dblk, __FILE__, __func__, __LINE__, " ", "scratchAllObjects");
    ADD_DEPENDENCE(argv_dblk,              rootInit_Edt, rootInit_Deps_t, argv_Dep,              DB_MODE_RO, "rootLaunch", "argv -- NOTE: STARTUP DID ocrDbCreate, so IGNORE AUDIT MESSAGES REGARDING THIS."); // Provide datablock containing command line argument list.
    ADD_DEPENDENCE(meta_dblk,              rootInit_Edt, rootInit_Deps_t, meta_Dep,              DB_MODE_RW, "rootLaunch", "meta"); // Provide datablock into which the continuatio cloning stack resides.
    ADD_DEPENDENCE(control_dblk,           rootInit_Edt, rootInit_Deps_t, control_Dep,           DB_MODE_RW, "rootLaunch", "control"); // Provide datablock into which it is to parse the command line.
@@ -476,6 +479,7 @@ TODO:
    ocrGuid_t     goldenChecksum_dblk;
    void * dummy = NULL;
    gasket__ocrDbCreate(&goldenChecksum_dblk,  &dummy, sizeof_Checksum_t, __FILE__, __func__, __LINE__,      "rootInit", "goldenChecksum");
+   gasket__ocrDbRelease(goldenChecksum_dblk,                                 __FILE__, __func__, __LINE__,      "rootInit", "goldenChecksum");
    ADD_DEPENDENCE(goldenChecksum_dblk,  rootClone_Edt, rootClone_Deps_t, goldenChecksum_Dep,  DB_MODE_RW,   "rootInit", "goldenChecksum");
    ADD_DEPENDENCE(NULL_GUID,            rootClone_Edt, rootClone_Deps_t, scratchChecksum_Dep, DB_MODE_NULL, "rootInit", "scratchChecksum");
    ADD_DEPENDENCE(control_dblk,         rootClone_Edt, rootClone_Deps_t, control_Dep,         DB_MODE_RO,   "rootInit", "control");
@@ -504,21 +508,40 @@ TODO:
                          parentClone_Func,                                    // Top level function of EDT
                          countof_parentClone_Params_t,                        // Number of params
                          countof_parentClone_Deps_t);                         // Number of dependencies
-// Create a labeled guid range, providing one index for each potential face exchange (36 per block -- 6 towards coarser neighbors, 6 towards same-grained neighbors, 24 toward finer neighbors) times the
-// number of blocks possible at ALL refinement levels.
-   unsigned long long numBlksAllLevels = (011111111111111111LL & ((1LL << ((control->num_refine+1) * 3LL)) - 1LL)) * control->npx * control->npy * control->npz;
+// Create a labeled guid range, providing for each block possible at ALL refinement levels an inbound and an outbound label for each of its
+// 6 directions and 4 quarter faces (48 per block), times the number of refinement rounds.
    unsigned long long roundRobinSpan   = 1; // TODO:  if we decide we need more than 1 "robin in the nest", modify both here and at usage site.  Usage site presently just assumes ONE, as I think this is enough.
    unsigned long long numCommBatches   = 1; // TODO:  if we decide to fan-out and perform the comm_vars-sized batches in openMP-style parallelism, increase to ceiling(num_vars/comm_vars).  Propagate change.
-   unsigned long long numHaloGuids     = numBlksAllLevels * 36 * roundRobinSpan * numCommBatches;
+   unsigned long long numHaloGuids     = haloLabelCount(control) * roundRobinSpan * numCommBatches;
 // The reservation is indexed by a 32-bit slot number on the implementations this program targets, and an over-large request is truncated rather than refused -- after which two distinct faces share
-// an inbox and the mesh silently exchanges the wrong halo.  Refuse the (block count, refinement depth) pair here instead, where it can still be reported.
+// an inbox and the mesh silently exchanges the wrong halo.  Refuse the (block count, refinement depth, round count) triple here instead, where it can still be reported.
    if (numHaloGuids > 0xFFFFFFFFULL) {
-      printf ("Halo exchange needs %llu labeled event slots for %d unrefined blocks at %d refinement levels, which exceeds the addressable range.\n", numHaloGuids, control->npx*control->npy*control->npz, control->num_refine);
-      printf ("Reduce --num_refine or the block grid: the requirement is npx*npy*npz * 36 * (8^(num_refine+1)-1)/7 <= 4294967295.\n"); fflush(stdout);
+      printf ("Halo exchange needs %llu labeled event slots for %d unrefined blocks at %d refinement levels over %d refinement rounds, which exceeds the addressable range.\n", numHaloGuids, control->npx*control->npy*control->npz, control->num_refine, haloRoundCount(control));
+      if (haloRoundCount(control) > 1) {
+         printf ("Reduce --num_refine, the block grid or the round count: the requirement is npx*npy*npz * 48 * (8^(num_refine+1)-1)/7 * (num_tsteps/refine_freq + 1) <= 4294967295.\n");
+      } else {
+         printf ("Reduce --num_refine or the block grid: the requirement is npx*npy*npz * 48 * (8^(num_refine+1)-1)/7 <= 4294967295.\n");
+      }
+      fflush(stdout);
       *((int *) 123) = 456;
       ocrShutdown();
    }
    ocrGuidRangeCreate (&blockLaunch_Params.labeledGuidRangeForHaloExchange, numHaloGuids, GUID_USER_EVENT_STICKY);
+
+// The channels between two unrefined blocks are established here, in round 0, on the labels of the lower block of each pair; they are created
+// once, before any block that satisfies or depends on them exists.
+   {
+      int x, y, z;
+      for (x = 0; x < control->npx; x++) {
+         for (y = 0; y < control->npy; y++) {
+            for (z = 0; z < control->npz; z++) {
+               if (x < control->npx - 1) haloLabelsCreate(blockLaunch_Params.labeledGuidRangeForHaloExchange, control, 0, 0, x, y, z, 0, 1, 0);
+               if (y < control->npy - 1) haloLabelsCreate(blockLaunch_Params.labeledGuidRangeForHaloExchange, control, 0, 0, x, y, z, 1, 1, 0);
+               if (z < control->npz - 1) haloLabelsCreate(blockLaunch_Params.labeledGuidRangeForHaloExchange, control, 0, 0, x, y, z, 2, 1, 0);
+            }
+         }
+      }
+   }
 
    int xLim, yLim, zLim, idep;
    xLim     = control->npx;
@@ -737,6 +760,7 @@ ocrGuid_t rootClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
 #define nanny NULL
 #endif
          if (meta->cloningState.cloningOpcode == SeasoningOneOrMoreDbCreates) {
+            gasket__ocrDbRelease(myDeps->serviceRequest_Dep[i].guid,                                                                    __FILE__, __func__, __LINE__, nanny, name);
             ADD_DEPENDENCE(      myDeps->serviceRequest_Dep[i].guid, rootClone_Edt, rootClone_Deps_t, serviceRequest_Dep[i], DB_MODE_RO,                   nanny, name);
          } else {
             EVT_DEPENDENCE(      myDeps->serviceRequest_Dep[i].guid, rootClone_Edt, rootClone_Deps_t, serviceRequest_Dep[i], DB_MODE_RO,                   nanny, name);

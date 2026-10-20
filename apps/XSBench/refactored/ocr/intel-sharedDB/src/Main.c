@@ -282,6 +282,12 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
         // from inside the task body precedes the epilogue's implicit release.
         ocrDbRelease( DBK_xs );
         ocrDbRelease( DBK_seed );
+        ocrDbRelease( DBK_nuclide_grids );
+        ocrDbRelease( DBK_uEnergy_grid );
+        ocrDbRelease( DBK_xs_grid );
+        ocrDbRelease( DBK_num_nucs );
+        ocrDbRelease( DBK_mats_all );
+        ocrDbRelease( DBK_concs_all );
         ocrEventSatisfySlot( PTR_rankH->loopCompletionLatchEVT, NULL_GUID, OCR_EVENT_LATCH_DECR_SLOT );
     }
 
@@ -1017,7 +1023,7 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     //Create OCR objects to pass down to the child EDTs
     //for collective operatations among the child EDTs
     globalOcrParamH_t ocrParamH;
-    ocrGuidRangeCreate( &(ocrParamH.perfTimerReductionRangeGUID), nRanks, GUID_USER_EVENT_STICKY );
+    reductionRangeCreate( &(ocrParamH.perfTimerReductionRangeGUID), nRanks );
 
     ocrGuid_t wrapUpTML, wrapUpEDT;
     ocrEdtTemplateCreate( &wrapUpTML, wrapUpEdt, 0, 1 );

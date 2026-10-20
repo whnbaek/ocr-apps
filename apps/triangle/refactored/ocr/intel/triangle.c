@@ -187,6 +187,9 @@ look for legal moves
     u64 *newboard;
 //ocrPrintf("starting Triangle with nummoves %d oldmove %d \n", nummoves, oldmove);
     for(i=0;i<holes;i++) board[i] = oldboard[i];
+    /* the parent's board is destroyed by its summer, which this task's return
+     * leads to */
+    ocrDbRelease(depv[0].guid);
     if(oldmove != -1){
         nummoves++;
         board[pmoves[3*oldmove]] = 0;
@@ -475,6 +478,8 @@ ocrDbCreate(&oldboardDb, (void **)&oldboard, sizeof(u64) * holes, 0,
             NULL_HINT, NO_ALLOC);
 ocrDbCreate(&boardDb, (void **)&board, sizeof(u64) * holes, 0, NULL_HINT,
             NO_ALLOC);
+/* the root's summer destroys the board */
+ocrDbRelease(boardDb);
 ocrDbCreate(&pmovesDb, (void **)&pmoves, sizeof(u64) * nmoves * 3, 0,
             NULL_HINT, NO_ALLOC);
 u64 rparams[3] = { depth, rounds_left, rows };

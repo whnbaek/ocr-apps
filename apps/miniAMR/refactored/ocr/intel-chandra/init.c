@@ -350,7 +350,7 @@ void initDBKs( rankH_t* PTR_rankH, octTreeRedH_t* PTR_octTreeRedH )
         PTR_redRootH->myrank = (ilevel==0)?PTR_rankH->myRank:PTR_rankH->isibling;
         PTR_redRootH->ndata = MAX_REFINE_LEVELS;
         PTR_redRootH->reductionOperator = REDUCTION_U4_ADD;
-        PTR_redRootH->rangeGUID = (ilevel==0)?PTR_rankH->globalParamH.ocrParamH.redUpRangeGUID[r]:PTR_sharedOcrObjH->siblingredRangeGUID[(r-COARSEN_RED_HANDLE_LB)%2];
+        PTR_redRootH->rangeGUID = (ilevel==0)?PTR_rankH->globalParamH.ocrParamH.redUpRangeGUID[r]:PTR_sharedOcrObjH->siblingredRangeGUID[MOD(r-COARSEN_RED_HANDLE_LB,2)];
         PTR_redRootH->reductionTML = NULL_GUID;
         PTR_redRootH->new = 1;  //first time
         PTR_redRootH->type = ALLREDUCE;

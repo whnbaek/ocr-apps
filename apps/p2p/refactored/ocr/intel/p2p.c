@@ -445,14 +445,12 @@ launch initChannel
 
 
     ocrGuidFromIndex(&sendRightEVT, sharedPTR->rangeGuid, myRank);
-    ocrEventCreate(&sendRightEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK |EVT_PROP_TAKES_ARG);
 
     if(myRank != 0) {
         ocrGuidFromIndex(&recvLeftEVT, sharedPTR->rangeGuid, myRank-1);
     } else { //myRank == 0;
         ocrGuidFromIndex(&recvLeftEVT, sharedPTR->rangeGuid, privatePTR->p - 1);
     }
-    ocrEventCreate(&recvLeftEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK |EVT_PROP_TAKES_ARG);
     ocrAddDependence(recvLeftEVT, initChannelEDT, SLOT(initChannel,channel), DB_MODE_RO);
 
 
@@ -534,6 +532,8 @@ launch initp2p
 //used once to send channel events forward
     ocrGuid_t channelDBK;
     ocrDbCreate(&channelDBK, (void**) &dummy, sizeof(ocrGuid_t), 0, NULL_HINT, NO_ALLOC);
+//the receiving neighbour destroys it
+    ocrDbRelease(channelDBK);
     ocrAddDependence(channelDBK, initp2pEDT, SLOT(initp2p,channel), DB_MODE_RW);
 
 
@@ -588,6 +588,12 @@ realMain initializes the shared block and launches p initEdts
     sharedPTR->t = PRM(realMain,t);
     sharedPTR->gf = PRM(realMain,gf);
     ocrGuidRangeCreate(&sharedPTR->rangeGuid, sharedPTR->p, GUID_USER_EVENT_STICKY);
+// Created once here, before any initp2pEdt satisfies or depends on them.
+    for(i=0;i<sharedPTR->p;i++) {
+        ocrGuid_t chanEVT;
+        ocrGuidFromIndex(&chanEVT, sharedPTR->rangeGuid, i);
+        ocrEventCreate(&chanEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED |EVT_PROP_TAKES_ARG);
+    }
     sharedPTR->timerDBK = DEPV(realMain,timer,guid);
 
     ocrEdtTemplateCreate(&initTML, initEdt, PRMNUM(init), DEPVNUM(init));

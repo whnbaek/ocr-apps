@@ -17,10 +17,15 @@ void timestep(ocrGuid_t timer, void* timer_ptr, ocrGuid_t sim, ocrGuid_t cont, o
   ocrEdtTemplateCreate(&tmp, timestep_position, 1, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 1, (u64 *)&cont, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  /* A fork reads the held blocks; the continuation's data slots, which lead
+   * to the blocks' destroy, are wired once the holds are released. */
+  fork_advance_velocity(sim, edt, 3, list_ptr, grid, 0.5*dt);
+  ocrDbRelease(timer);
+  ocrDbRelease(sim);
+  ocrDbRelease(list);
   ocrAddDependence(timer, edt, 0, DB_MODE_RW);
   ocrAddDependence(sim, edt, 1, DB_MODE_CONST);
   ocrAddDependence(list, edt, 2, DB_MODE_CONST);
-  fork_advance_velocity(sim, edt, 3, list_ptr, grid, 0.5*dt);
   ocrEdtTemplateDestroy(tmp);
 }
 
@@ -33,11 +38,14 @@ ocrGuid_t timestep_position(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   ocrEdtTemplateCreate(&tmp, timestep_redistribute, 1, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 1, paramv, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  simulation* sim = (simulation*)depv[1].ptr;
+  fork_advance_position(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
+  ocrDbRelease(depv[2].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
-  simulation* sim = (simulation*)depv[1].ptr;
-  fork_advance_position(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
   ocrEdtTemplateDestroy(tmp);
   return NULL_GUID;
 }
@@ -50,11 +58,14 @@ ocrGuid_t timestep_redistribute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
   ocrEdtTemplateCreate(&tmp, timestep_force, 1, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 1, paramv, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  simulation* sim = (simulation*)depv[1].ptr;
+  fork_redistribute(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.boxes_num);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
+  ocrDbRelease(depv[2].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
-  simulation* sim = (simulation*)depv[1].ptr;
-  fork_redistribute(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.boxes_num);
   ocrEdtTemplateDestroy(tmp);
   return NULL_GUID;
 }
@@ -68,11 +79,14 @@ ocrGuid_t timestep_force(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrEdtTemplateCreate(&tmp, timestep_velocity, 1, 4);
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 1, paramv, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  simulation* sim = (simulation*)depv[1].ptr;
+  sim->pot.fork_force_computation(depv[1].guid, sim, edt, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
+  ocrDbRelease(depv[2].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_RW);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
-  simulation* sim = (simulation*)depv[1].ptr;
-  sim->pot.fork_force_computation(depv[1].guid, sim, edt, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
   ocrEdtTemplateDestroy(tmp);
   return NULL_GUID;
 }
@@ -92,10 +106,13 @@ ocrGuid_t timestep_velocity(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   }
   ocrHint_t homeHNT;
   ocrEdtCreate(&edt, tmp, 1, paramv, 4, NULL, 0, comdHomeEdtHint(&homeHNT), NULL);
+  fork_advance_velocity(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid, dt);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
+  ocrDbRelease(depv[2].guid);
   ocrAddDependence(depv[0].guid, edt, 0, DB_MODE_RW);
   ocrAddDependence(depv[1].guid, edt, 1, DB_MODE_CONST);
   ocrAddDependence(depv[2].guid, edt, 2, DB_MODE_CONST);
-  fork_advance_velocity(depv[1].guid, edt, 3, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid, dt);
   ocrEdtTemplateDestroy(tmp);
   return NULL_GUID;
 }
@@ -103,7 +120,8 @@ ocrGuid_t timestep_velocity(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
 ocrGuid_t timestep_end(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   simulation* sim = (simulation*)depv[1].ptr;
-  fork_kinetic_energy(depv[1].guid, *(ocrGuid_t *)paramv, 2, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
+  ocrDbRelease(depv[0].guid);
+  fork_kinetic_energy(depv[1].guid, *(ocrGuid_t *)paramv, 2, depv[2].guid, (ocrGuid_t*)depv[2].ptr, sim->bxs.grid);
   return NULL_GUID;
 }
 
@@ -126,6 +144,9 @@ static ocrGuid_t ke_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrHint_t homeHNT;
   ocrDbCreate(&res, (void**)&res_ptr, sizeof(real_t), 0, comdHomeDbHint(&homeHNT), NO_ALLOC);
   *res_ptr = kinetic_energy_box((box*)depv[1].ptr, sim->pot.inv_mass_2);
+  ocrDbRelease(res);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[1].guid);
   ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -139,12 +160,13 @@ static ocrGuid_t ke_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
     sim->e_kinetic += *(real_t*)depv[b].ptr;
     ocrDbDestroy(depv[b].guid);
   }
+  ocrDbRelease(depv[0].guid);
   ocrEventSatisfy(*(ocrGuid_t *)paramv, NULL_GUID);
 
   return NULL_GUID;
 }
 
-void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* list, const u32 grid[3])
+void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t list_db, ocrGuid_t* list, const u32 grid[3])
 {
   u32 boxes_num = grid[0]*grid[1]*grid[2];
   ocrGuid_t f,fdb,*fdb_ptr;
@@ -161,7 +183,6 @@ void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* lis
     ocrShutdown();
     return;
   }
-  ocrAddDependence(sim, red, 0, DB_MODE_RW);
   ocrEdtTemplateDestroy(tmp);
 
   ocrEdtTemplateCreate(&tmp, ke_edt, 2, 2);
@@ -174,6 +195,12 @@ void fork_kinetic_energy(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* lis
     ocrAddDependence(list[b], edt, 1, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(tmp);
+  /* The caller holds the simulation and the box list and reads neither after
+   * the fork; the join, which leads to their destroy, is wired after the
+   * holds are released. */
+  ocrDbRelease(sim);
+  ocrDbRelease(list_db);
+  ocrAddDependence(sim, red, 0, DB_MODE_RW);
 }
 
 static inline void advance_velocity_box(box* bxs_ptr, real_t dt)
@@ -211,6 +238,7 @@ void fork_advance_velocity(ocrGuid_t sim, ocrGuid_t cont, u32 depc, ocrGuid_t* l
   ocrHint_t homeHNT;
   ocrDbCreate(&dt, (void**)&dt_ptr, sizeof(real_t), 0, NULL_HINT, NO_ALLOC);
   *dt_ptr = step;
+  ocrDbRelease(dt);
   ocrGuid_t tmp,red,red_event;
   OEVT_COUNTED_PRE(red_event);
   if(ocrEdtTemplateCreate(&tmp, av_red_edt, 0, boxes_num+1) ||

@@ -42,6 +42,7 @@ static ocrGuid_t sum_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   ocrGuid_t out; partial* out_p;
   ocrDbCreate(&out, (void**)&out_p, sizeof(partial), 0, NULL_HINT, NO_ALLOC);
   out_p->pe = pe; out_p->ke = ke; out_p->n = n;
+  ocrDbRelease(out);
   ocrAddDependence(out, guid_load(paramv+SP_PARENT), (u32)paramv[SP_SLOT], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -131,6 +132,7 @@ static ocrGuid_t fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       ocrGuid_t child;
       ocrEdtCreate(&child, tmp, FP_NPARAM, pv, 2, NULL, 0,
                    edt_at(&edtHNT, c, (u32)pv[FP_RLO]), NULL);
+      if(i+1 == k) { ocrDbRelease(depv[0].guid); ocrDbRelease(depv[1].guid); }
       ocrAddDependence(depv[0].guid, child, 0, DB_MODE_CONST);
       ocrAddDependence(depv[1].guid, child, 1, DB_MODE_CONST);
     }
@@ -161,6 +163,7 @@ static ocrGuid_t fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
       ocrGuid_t child;
       ocrEdtCreate(&child, tmp, FP_NPARAM, pv, 2, NULL, 0,
                    edt_at(&edtHNT, c, rank), NULL);
+      if(i+1 == k) { ocrDbRelease(depv[0].guid); ocrDbRelease(depv[1].guid); }
       ocrAddDependence(depv[0].guid, child, 0, DB_MODE_CONST);
       ocrAddDependence(depv[1].guid, child, 1, DB_MODE_CONST);
     }
@@ -201,6 +204,10 @@ void fan_launch(u32 phase, ocrGuid_t cfg, const config* c, ocrGuid_t list,
   ocrHint_t edtHNT;
   ocrEdtTemplateCreate(&tmp, fan_edt, FP_NPARAM, 2);
   ocrEdtCreate(&edt, tmp, FP_NPARAM, pv, 2, NULL, 0, edt_at(&edtHNT, c, 0), NULL);
+  /* Every caller holds both blocks and reads neither after launching the
+   * phase, whose completion leads to their destroy. */
+  ocrDbRelease(cfg);
+  ocrDbRelease(list);
   ocrAddDependence(cfg, edt, 0, DB_MODE_CONST);
   ocrAddDependence(list, edt, 1, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);

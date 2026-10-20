@@ -165,8 +165,28 @@ static ocrGuid_t build_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
   for(u32 f = 0; f < 6; ++f)
     if(b->nbr[f] != NBR_NONE) face_pack(c, b, f, cells, strip[f]);
 
+  ocrDbRelease(depv[BD_MESH].guid);
+  if(!ocrGuidIsNull(depv[BD_OGUIDS].guid)) ocrDbRelease(depv[BD_OGUIDS].guid);
+  for(u32 s = BD_SRC; s < depc; ++s) ocrDbRelease(depv[s].guid);
+  if(!inherits) {
+    ocrDbRelease(g->payload);
+    ocrDbRelease(g->chk);
+    for(u32 f = 0; f < 6; ++f)
+      for(u32 e = 0; e < 2; ++e) ocrDbRelease(g->face[f][e]);
+  }
+  ocrDbRelease(out);
   ocrAddDependence(out, guid_load(paramv+BP_PARENT), (u32)paramv[BP_SLOT], DB_MODE_CONST);
   return NULL_GUID;
+}
+
+/* A leaf's last hand-off can start the last task its collector waits on, so
+ * the leaf gives up what it holds before that hand-off. */
+static void spawn_ctx_release(const spawn_ctx* x)
+{
+  if(!ocrGuidIsNull(x->mesh)) ocrDbRelease(x->mesh);
+  if(!ocrGuidIsNull(x->guids)) ocrDbRelease(x->guids);
+  if(!ocrGuidIsNull(x->omesh)) ocrDbRelease(x->omesh);
+  if(!ocrGuidIsNull(x->oguids)) ocrDbRelease(x->oguids);
 }
 
 void spawn_build(const spawn_ctx* x, u32 lo, u32 hi)
@@ -198,7 +218,6 @@ void spawn_build(const spawn_ctx* x, u32 lo, u32 hi)
     ocrHint_t hnt;
     ocrEdtCreate(&edt, tmp, BP_NPARAM, pv, BD_SRC + nsrc + nstr, NULL, 0,
                  edt_at(&hnt, c, b->owner), NULL);
-    ocrAddDependence(x->mesh, edt, BD_MESH, DB_MODE_CONST);
     ocrAddDependence(x->oguids, edt, BD_OGUIDS,
                      ocrGuidIsNull(x->oguids) ? DB_MODE_NULL : DB_MODE_CONST);
     u32 s = BD_SRC;
@@ -211,6 +230,8 @@ void spawn_build(const spawn_ctx* x, u32 lo, u32 hi)
       for(u32 f = 0; f < 6; ++f)
         if(b->nbr[f] != NBR_NONE)
           ocrAddDependence(x->og[s0[0]].face[f][gen], edt, s++, DB_MODE_RW);
+    if(t + 1 == hi) spawn_ctx_release(x);
+    ocrAddDependence(x->mesh, edt, BD_MESH, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(tmp);
 }
@@ -272,7 +293,6 @@ void spawn_stage(const spawn_ctx* x, u32 lo, u32 hi)
     ocrEdtCreate(&edt, tmp, SP_NPARAM, pv, SD_STRIP + out_faces(b) + in_slots(b), NULL,
                  OEVT_COUNTED_PROP(0), edt_at(&hnt, c, b->owner), &done);
     ocrAddDependence(done, x->join, t - lo, DB_MODE_CONST);
-    ocrAddDependence(x->mesh, edt, SD_MESH, DB_MODE_CONST);
     ocrAddDependence(x->g[i].payload, edt, SD_PAY, DB_MODE_RW);
     if(chk) ocrAddDependence(x->g[i].chk, edt, SD_CHK, DB_MODE_RW);
     else    ocrAddDependence(NULL_GUID, edt, SD_CHK, DB_MODE_NULL);
@@ -285,6 +305,8 @@ void spawn_stage(const spawn_ctx* x, u32 lo, u32 hi)
       for(u32 k = 0; k < n; ++k)
         ocrAddDependence(x->g[b->in[f][k]].face[f ^ 1][rg], edt, s++, DB_MODE_CONST);
     }
+    if(t + 1 == hi) spawn_ctx_release(x);
+    ocrAddDependence(x->mesh, edt, SD_MESH, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(tmp);
 }
@@ -322,6 +344,7 @@ void spawn_release(const spawn_ctx* x, u32 lo, u32 hi)
     OEVT_COUNTED_PRE(done);
     ocrEdtCreate(&edt, tmp, RP_NPARAM, pv, 1, NULL, OEVT_COUNTED_PROP(0),
                  edt_at(&hnt, c, br[i].owner), &done);
+    if(t + 1 == hi) spawn_ctx_release(x);
     ocrAddDependence(done, x->join, t - lo, DB_MODE_CONST);
     ocrAddDependence(x->oguids, edt, 0, DB_MODE_CONST);
   }
@@ -353,6 +376,9 @@ static ocrGuid_t sum8_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   }
   for(u32 j = 0; j < 8; ++j)
     if(nd->child[j] < 0) ocrDbDestroy(depv[1+j].guid);
+    else ocrDbRelease(depv[1+j].guid);
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(out);
 
   ocrAddDependence(out, guid_load(paramv+NP_PARENT), (u32)paramv[NP_SLOT], DB_MODE_CONST);
   return NULL_GUID;
@@ -377,7 +403,10 @@ static ocrGuid_t cbase_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     a->v[j*w] = p->weighted;
     for(s32 v = 0; v < c->num_vars; ++v) a->v[j*w + 1 + v] = p->sum[v];
     if(root[j] < 0) ocrDbDestroy(depv[1+j].guid);
+    else ocrDbRelease(depv[1+j].guid);
   }
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(out);
   ocrAddDependence(out, guid_load(paramv+AP_PARENT), (u32)paramv[AP_SLOT], DB_MODE_CONST);
   return NULL_GUID;
 }
@@ -400,6 +429,8 @@ static ocrGuid_t ccat_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     k += s->n;
     ocrDbDestroy(depv[j].guid);
   }
+  ocrDbRelease(depv[0].guid);
+  ocrDbRelease(out);
   ocrAddDependence(out, guid_load(paramv+AP_PARENT), (u32)paramv[AP_SLOT], DB_MODE_CONST);
   return NULL_GUID;
 }
@@ -472,6 +503,10 @@ static ocrGuid_t chkfan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
       guid_store(kv+KP_PARENT, node);
       ocrGuid_t child;
       ocrEdtCreate(&child, tmp, KP_NPARAM, kv, KD_DEPC, NULL, 0, edt_at(&hnt, c, rank), NULL);
+      if(i + 1 == k) {
+        ocrDbRelease(depv[KD_MESH].guid);
+        ocrDbRelease(depv[KD_GUIDS].guid);
+      }
       ocrAddDependence(depv[KD_MESH].guid, child, KD_MESH, DB_MODE_CONST);
       ocrAddDependence(depv[KD_GUIDS].guid, child, KD_GUIDS, DB_MODE_CONST);
     }
@@ -487,7 +522,6 @@ static ocrGuid_t chkfan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   ocrEdtTemplateCreate(&tmp, cbase_edt, AP_NPARAM, n+1);
   ocrEdtCreate(&node, tmp, AP_NPARAM, pv, n+1, NULL, 0, edt_at(&hnt, c, rank), NULL);
   ocrEdtTemplateDestroy(tmp);
-  ocrAddDependence(depv[KD_MESH].guid, node, 0, DB_MODE_CONST);
   const s32* root = mesh_root(m);
   for(u32 j = lo; j < hi; ++j) {
     u32 p[3];
@@ -496,6 +530,9 @@ static ocrGuid_t chkfan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
     p[2] = j % (u32)c->npz;
     emit_subtree(m, depv[KD_MESH].guid, g, root[j], 0, p, node, 1 + (j - lo));
   }
+  ocrDbRelease(depv[KD_MESH].guid);
+  ocrDbRelease(depv[KD_GUIDS].guid);
+  ocrAddDependence(depv[KD_MESH].guid, node, 0, DB_MODE_CONST);
   return NULL_GUID;
 }
 
@@ -646,6 +683,9 @@ static ocrGuid_t plan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
    * published: every task downstream would resolve a strip or a forest node
    * through it. */
   if(bad) { ocrShutdown(); return NULL_GUID; }
+  ocrDbRelease(depv[SL_MESH].guid);
+  s32 unref_level = m->unref_level;
+  ocrDbRelease(nm);
 
   st->omesh = st->mesh;
   st->oguids = st->guids;
@@ -655,7 +695,7 @@ static ocrGuid_t plan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrDbDestroy(st->omesh);
     st->omesh = NULL_GUID;
     st->oguids = NULL_GUID;
-    if(m->unref_level >= 1) {
+    if(unref_level >= 1) {
       launch_plan(c, st, stg, MP_UNREFINE, ts);
       return NULL_GUID;
     }
@@ -684,6 +724,8 @@ static ocrGuid_t built_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
   ocrGuid_t stg = depv[SL_ST].guid;
 
   st->guids = depv[SL_X].guid;
+  ocrDbRelease(depv[SL_MESH].guid);
+  ocrDbRelease(depv[SL_X].guid);
 
   if(ocrGuidIsNull(st->omesh)) { epoch_next(c, st, stg, obj); return NULL_GUID; }
 
@@ -709,7 +751,9 @@ static ocrGuid_t released_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
   st->omesh = NULL_GUID;
   st->oguids = NULL_GUID;
 
-  if(m->unref_level >= 1) { launch_plan(c, st, stg, MP_UNREFINE, ts); return NULL_GUID; }
+  u8 unref = m->unref_level >= 1;
+  ocrDbRelease(depv[SL_MESH].guid);
+  if(unref) { launch_plan(c, st, stg, MP_UNREFINE, ts); return NULL_GUID; }
   epoch_next(c, st, stg, obj);
   return NULL_GUID;
 }
@@ -720,6 +764,7 @@ static ocrGuid_t staged_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
   const control* c = (const control*)depv[SL_CFG].ptr;
   object* obj = (object*)depv[SL_OBJ].ptr;
   ocrGuid_t stg = depv[SL_ST].guid;
+  ocrDbRelease(depv[SL_MESH].guid);
 
   st->gen ^= 1;
   if(c->checksum_freq && !(st->stage % c->checksum_freq)) {
@@ -743,6 +788,7 @@ static ocrGuid_t chkfinal_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
   const chkarr* a = (const chkarr*)depv[SL_X].ptr;
   s32 ts = (s32)(s64)paramv[0];
   u32 w = (u32)c->num_vars + 1;
+  ocrDbRelease(depv[SL_MESH].guid);
 
   double weighted = 0.0;
   double* sum = (double*)malloc((size_t)c->num_vars*sizeof(double));
@@ -842,6 +888,7 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   u8 bad = mesh_emit(w, m);
   mesh_free(w);
   if(bad) { ocrShutdown(); return ERROR_GUID; }
+  ocrDbRelease(st->mesh);
 
   u64 bpv[1] = { 0 };
   ocrGuid_t next = spine(built_edt, SL_DEPC, 1, bpv, c, st, stg);

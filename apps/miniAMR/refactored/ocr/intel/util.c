@@ -188,6 +188,93 @@ ocrHint_t * amrEdtHintForBlock(ocrHint_t * hint, int x, int y, int z, int level,
 }
 
 
+// A halo channel's first exchange goes through a label: one end block's inbound or outbound label for its channel in direction
+// (axis, pole) and quarter qrtr (non-zero only toward a finer neighbor), in the refinement round that established the channel.
+// Round r is the refine pass at timestep r*refine_freq (round 0, the initial mesh) and the timesteps before the next pass.
+
+#define HALO_LABELS_PER_BLOCK 48
+
+int haloRoundOf(Control_t * control, int ts) {
+   return (control->num_refine && !control->uniform_refine) ? ts / control->refine_freq : 0;
+}
+
+int haloRoundCount(Control_t * control) {
+   return haloRoundOf(control, control->num_tsteps) + 1;
+}
+
+unsigned long long haloLabelCount(Control_t * control) {
+   unsigned long long blocks = (011111111111111111LL & ((1LL << ((control->num_refine+1) * 3LL)) - 1LL)) * control->npx * control->npy * control->npz;
+   return blocks * HALO_LABELS_PER_BLOCK * haloRoundCount(control);
+}
+
+ocrGuid_t haloLabel(ocrGuid_t range, Control_t * control, int round, int level, int x, int y, int z, int axis, int pole, int qrtr, int outbound) {
+   unsigned long long base   = control->npx * control->npy * control->npz;
+   unsigned long long blocks = (011111111111111111LL & ((1LL << ((control->num_refine+1) * 3LL)) - 1LL)) * base;
+   unsigned long long block  = (0111111111111111111111L >> (63L - (level*3))) * base +
+                               ((((unsigned long long) x * (control->npy << level)) + y) * (control->npz << level)) + z;
+   ocrGuid_t label;
+   ocrGuidFromIndex(&label, range, ((round * blocks + block) * HALO_LABELS_PER_BLOCK) + ((axis * 2 + pole) * 4 + qrtr) * 2 + outbound);
+   return label;
+}
+
+// Both labels of one end's channel are created by exactly one task, which precedes every task that names them.
+void haloLabelsCreate(ocrGuid_t range, Control_t * control, int round, int level, int x, int y, int z, int axis, int pole, int qrtr) {
+   int outbound;
+   for (outbound = 0; outbound < 2; outbound++) {
+      ocrGuid_t label = haloLabel(range, control, round, level, x, y, z, axis, pole, qrtr, outbound);
+      gasket__ocrEventCreate(&label, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG, __FILE__, __func__, __LINE__, NULL, "haloLabel");
+   }
+}
+
+// Destroys a pair its creator learned no channel will use.
+void haloLabelsDestroy(ocrGuid_t range, Control_t * control, int round, int level, int x, int y, int z, int axis, int pole, int qrtr) {
+   int outbound;
+   for (outbound = 0; outbound < 2; outbound++) {
+      ocrGuid_t label = haloLabel(range, control, round, level, x, y, z, axis, pole, qrtr, outbound);
+      gasket__ocrEventAbandon(&label, __FILE__, __func__, __LINE__, NULL, "haloLabel");
+   }
+}
+
+// Opens a channel on its labels.  The receiver destroys a label it received on; a label never sent on is destroyed by its sender, the one
+// end that knows it was not sent.
+void haloChannelOpen(BlockMeta_t * meta, int axis, int pole, int qrtr, ocrGuid_t send, ocrGuid_t receive) {
+   meta->conveyFaceToNeighbor_Event[axis][pole][qrtr] = send;
+   meta->onDeckToReceiveFace_Event [axis][pole][qrtr] = receive;
+   meta->conveyLabelUnsent |= HALO_SLOT_BIT(axis, pole, qrtr);
+}
+
+// The channel's labels are this block's own.
+void haloChannelOpenOwn(BlockMeta_t * meta, Control_t * control, int round, int axis, int pole, int qrtr) {
+   ocrGuid_t range = meta->labeledGuidRangeForHaloExchange;
+   haloChannelOpen(meta, axis, pole, qrtr,
+                   haloLabel(range, control, round, meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, axis, pole, qrtr, 1),
+                   haloLabel(range, control, round, meta->refinementLevel, meta->xPos, meta->yPos, meta->zPos, axis, pole, qrtr, 0));
+}
+
+// The channel's labels are those of the peer block (level, x, y, z) for its channel in direction (axis, peerPole), quarter peerQrtr.
+void haloChannelOpenPeer(BlockMeta_t * meta, Control_t * control, int round, int axis, int pole, int qrtr,
+                         int level, int x, int y, int z, int peerPole, int peerQrtr) {
+   ocrGuid_t range = meta->labeledGuidRangeForHaloExchange;
+   haloChannelOpen(meta, axis, pole, qrtr,
+                   haloLabel(range, control, round, level, x, y, z, axis, peerPole, peerQrtr, 0),
+                   haloLabel(range, control, round, level, x, y, z, axis, peerPole, peerQrtr, 1));
+}
+
+void haloConveySent(BlockMeta_t * meta, int axis, int pole, int qrtr) {
+   meta->conveyLabelUnsent &= ~HALO_SLOT_BIT(axis, pole, qrtr);
+}
+
+// Forgets the outgoing slot; a label in it that was never sent on is destroyed.
+void haloConveyFlush(BlockMeta_t * meta, int axis, int pole, int qrtr, const char * name) {
+   if (meta->conveyLabelUnsent & HALO_SLOT_BIT(axis, pole, qrtr)) {
+      gasket__ocrEventAbandon(&meta->conveyFaceToNeighbor_Event[axis][pole][qrtr], __FILE__, __func__, __LINE__, NULL, name);
+   } else {
+      gasket__ocrEventFlush  (&meta->conveyFaceToNeighbor_Event[axis][pole][qrtr], __FILE__, __func__, __LINE__, NULL, name);
+   }
+   haloConveySent(meta, axis, pole, qrtr);
+}
+
+
 // Gaskets for OCR service calls
 
 

@@ -120,6 +120,11 @@ ocrGuid_t blockLaunch_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
                         "blockInit");
 
    gasket__ocrDbRelease  (initialControl_dblk, __FILE__, __func__, __LINE__, nanny, "initialControl"); initialControl = NULL;
+   gasket__ocrDbRelease  (initialAllObjects_dblk, __FILE__, __func__, __LINE__, nanny, "initialAllObjects");
+   gasket__ocrDbRelease  (meta_dblk,           __FILE__, __func__, __LINE__, nanny, "meta");
+   gasket__ocrDbRelease  (control_dblk,        __FILE__, __func__, __LINE__, nanny, "control");
+   gasket__ocrDbRelease  (allObjects_dblk,     __FILE__, __func__, __LINE__, nanny, "allObjects");
+   gasket__ocrDbRelease  (block_dblk,          __FILE__, __func__, __LINE__, nanny, "block");
    ADD_DEPENDENCE(meta_dblk,                blockInit_Edt, blockInit_Deps_t, meta_Dep,               DB_MODE_RW, nanny, "meta")
    ADD_DEPENDENCE(initialControl_dblk,      blockInit_Edt, blockInit_Deps_t, initialControl_Dep,     DB_MODE_RO, nanny, "initialControl")
    ADD_DEPENDENCE(control_dblk,             blockInit_Edt, blockInit_Deps_t, control_Dep,            DB_MODE_RW, nanny, "control")
@@ -235,8 +240,8 @@ ocrGuid_t blockInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
    for (axis = 0; axis < 3; axis++) {
       for (pole = 0; pole <= 1; pole++) {
          for (qrtr = 0; qrtr < 4; qrtr++) {
-            meta->conveyFaceToNeighbor_Event[axis][pole][qrtr] = NULL_GUID; // Create event upon first demand, via labeled-guid lookup
-            meta->onDeckToReceiveFace_Event [axis][pole][qrtr] = NULL_GUID; // Create event upon first demand, via labeled-guid lookup
+            meta->conveyFaceToNeighbor_Event[axis][pole][qrtr] = NULL_GUID;
+            meta->onDeckToReceiveFace_Event [axis][pole][qrtr] = NULL_GUID;
          }
       }
    }
@@ -250,6 +255,19 @@ ocrGuid_t blockInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
    meta->neighborRefinementLevel[1][1] = meta->yPos == control->npy - 1 ? NEIGHBOR_IS_OFF_EDGE_OF_MESH : 0;
    meta->neighborRefinementLevel[2][0] = meta->zPos == 0                ? NEIGHBOR_IS_OFF_EDGE_OF_MESH : 0;
    meta->neighborRefinementLevel[2][1] = meta->zPos == control->npz - 1 ? NEIGHBOR_IS_OFF_EDGE_OF_MESH : 0;
+   meta->neighborChanged               = 0;
+   meta->conveyLabelUnsent             = 0;
+
+// Open the channels to the in-mesh neighbors on the labels of the initial mesh (round 0): the lower block of each pair owns them.
+
+   for (axis = 0; axis < 3; axis++) {
+      if (meta->neighborRefinementLevel[axis][1] != NEIGHBOR_IS_OFF_EDGE_OF_MESH) {
+         haloChannelOpenOwn(meta, control, 0, axis, 1, 0);
+      }
+      if (meta->neighborRefinementLevel[axis][0] != NEIGHBOR_IS_OFF_EDGE_OF_MESH) {
+         haloChannelOpenPeer(meta, control, 0, axis, 0, 0, 0, meta->xPos - (axis == 0), meta->yPos - (axis == 1), meta->zPos - (axis == 2), 1, 0);
+      }
+   }
 
 // Pass baton to the first in a series of clones.
 
@@ -285,6 +303,9 @@ ocrGuid_t blockInit_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
    gasket__ocrDbRelease(meta_dblk,                   __FILE__, __func__, __LINE__,  nanny, "meta");
    gasket__ocrDbRelease(myDeps->control_Dep.guid,    __FILE__, __func__, __LINE__,  nanny, "control");
    gasket__ocrDbRelease(myDeps->allObjects_Dep.guid, __FILE__, __func__, __LINE__,  nanny, "allObjects");
+   gasket__ocrDbRelease(myDeps->initialControl_Dep.guid,    __FILE__, __func__, __LINE__,  nanny, "initialControl");
+   gasket__ocrDbRelease(myDeps->initialAllObjects_Dep.guid, __FILE__, __func__, __LINE__,  nanny, "initialAllObjects");
+   gasket__ocrDbRelease(block_dblk,                  __FILE__, __func__, __LINE__,  nanny, "block");
 
    ADD_DEPENDENCE(meta_dblk,                   blockClone_Edt, blockClone_Deps_t, meta_Dep,             DB_MODE_RW,   nanny, "meta")
    ADD_DEPENDENCE(NULL_GUID,                   blockClone_Edt, blockClone_Deps_t, metaPred_Dep,         DB_MODE_NULL, nanny, "metaPred")
@@ -344,6 +365,9 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          //        allObjects.  But we won't bother copying blockPred to block, because refine will need to upsample (an eighth of) it anyway.
 
          memcpy (myDeps->meta_Dep.ptr,       myDeps->metaPred_Dep.ptr,       DbSize(myDeps->metaPred_Dep));
+         gasket__ocrDbRelease(myDeps->metaPred_Dep.guid,       __FILE__, __func__, __LINE__, " ", "metaPred");
+         gasket__ocrDbRelease(myDeps->controlPred_Dep.guid,    __FILE__, __func__, __LINE__, " ", "controlPred");
+         gasket__ocrDbRelease(myDeps->allObjectsPred_Dep.guid, __FILE__, __func__, __LINE__, " ", "allObjectsPred");
          myDeps->metaPred_Dep.guid       = NULL_GUID; myDeps->metaPred_Dep.ptr       = NULL; // Do NOT destroy; siblings are using asynchronously.  Parent will destroy.
          myDeps->controlPred_Dep.guid    = NULL_GUID; myDeps->controlPred_Dep.ptr    = NULL;
          myDeps->allObjectsPred_Dep.guid = NULL_GUID; myDeps->allObjectsPred_Dep.ptr = NULL;
@@ -410,6 +434,8 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          meta->neighborRefinementLevel[0][1] = block111->neighborRefinementLevel_East;   // Obtain prong111 values for non-sibling neighbors.
          meta->neighborRefinementLevel[1][1] = block111->neighborRefinementLevel_North;
          meta->neighborRefinementLevel[2][1] = block111->neighborRefinementLevel_Up;
+         meta->neighborChanged   = (metaPred->neighborChanged & 0x15) | (block111->neighborChanged & 0x2A);   // Pole-0 directions from prong000, pole-1 directions from prong111.
+         meta->conveyLabelUnsent = 0;
 
          meta->finerNeighborNotUnrefiningAndNotTalkingAnyMore = 0;   // Gather up the bit vectors from the eight prongs.
          for (i = 0; i < 8; i++) {
@@ -527,6 +553,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          gasket__ocrDbRelease(myDeps->allObjects_Dep.guid,                                             __FILE__, __func__, __LINE__,    nanny, "allObjects");
          ADD_DEPENDENCE(      myDeps->allObjects_Dep.guid,       blockClone_Edt, blockClone_Deps_t, allObjects_Dep,       DB_MODE_RW,   nanny, "allObjects")
          ADD_DEPENDENCE(      NULL_GUID,                         blockClone_Edt, blockClone_Deps_t, allObjectsPred_Dep,   DB_MODE_NULL, nanny, "allObjectsPred")
+         gasket__ocrDbRelease(myDeps->upboundRequest_Dep.guid,                                         __FILE__, __func__, __LINE__,    nanny, "upboundRequest");
          ADD_DEPENDENCE(      myDeps->upboundRequest_Dep.guid,   blockClone_Edt, blockClone_Deps_t, upboundRequest_Dep,   DB_MODE_RW,   nanny, "upboundRequest")
          EVT_DEPENDENCE(      myDeps->replyFromRequest_Dep.guid, blockClone_Edt, blockClone_Deps_t, replyFromRequest_Dep, DB_MODE_RW,   nanny, "replyFromRequest")
          myDeps->replyFromRequest_Dep.guid = NULL_GUID;
@@ -634,6 +661,8 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
 #endif
          gasket__ocrDbCreate(&parentMeta_dblk,          &dummy, sizeof_ParentMeta_t,                                 __FILE__, __func__, __LINE__, nanny, "meta");
          gasket__ocrDbCreate(&parentControl_dblk,       &dummy, sizeof_Control_t,                                    __FILE__, __func__, __LINE__, nanny, "control");
+         gasket__ocrDbRelease(parentMeta_dblk,                                                                       __FILE__, __func__, __LINE__, nanny, "meta");
+         gasket__ocrDbRelease(parentControl_dblk,                                                                    __FILE__, __func__, __LINE__, nanny, "control");
 
          ADD_DEPENDENCE(parentMeta_dblk,                parentInit_Edt,    parentInit_Deps_t, meta_Dep,              DB_MODE_RW,                   nanny, "meta")
          ADD_DEPENDENCE(parentControl_dblk,             parentInit_Edt,    parentInit_Deps_t, control_Dep,           DB_MODE_RW,                   nanny, "control")
@@ -667,6 +696,9 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
             gasket__ocrDbCreate(&newControl_dblk,       &dummy,                               sizeof_Control_t,    __FILE__, __func__, __LINE__, nanny, "control");
             gasket__ocrDbCreate(&newBlock_dblk,         &dummy,                               childBlockBytes,      __FILE__, __func__, __LINE__, nanny, "block");
             gasket__ocrDbCreate(&newAllObjects_dblk,    &dummy,                               childAllObjectsBytes, __FILE__, __func__, __LINE__, nanny, "allObjects");
+            gasket__ocrDbRelease(newControl_dblk,                                                                    __FILE__, __func__, __LINE__, nanny, "control");
+            gasket__ocrDbRelease(newBlock_dblk,                                                                      __FILE__, __func__, __LINE__, nanny, "block");
+            gasket__ocrDbRelease(newAllObjects_dblk,                                                                 __FILE__, __func__, __LINE__, nanny, "allObjects");
             ADD_DEPENDENCE(newControl_dblk,             blockClone_Edt[i], blockClone_Deps_t, control_Dep,           DB_MODE_RW,                   nanny, "control")
             ADD_DEPENDENCE(newBlock_dblk,               blockClone_Edt[i], blockClone_Deps_t, block_Dep,             DB_MODE_RW,                   nanny, "block")
             ADD_DEPENDENCE(newAllObjects_dblk,          blockClone_Edt[i], blockClone_Deps_t, allObjects_Dep,        DB_MODE_RW,                   nanny, "allObjects")
@@ -682,6 +714,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          for (i = 0; i < 8; i++) {
             ocrGuid_t newMeta_dblk;
             gasket__ocrDbCreate(&newMeta_dblk,          &dummy,                               sizeof_BlockMeta_t,  __FILE__, __func__, __LINE__, nanny, "meta");
+            gasket__ocrDbRelease(newMeta_dblk,                                                                       __FILE__, __func__, __LINE__, nanny, "meta");
             ADD_DEPENDENCE(myDeps->meta_Dep.guid,       blockClone_Edt[i], blockClone_Deps_t, metaPred_Dep,          DB_MODE_RO,                   nanny, "meta --> metaPred")
             ADD_DEPENDENCE(newMeta_dblk,                blockClone_Edt[i], blockClone_Deps_t, meta_Dep,              DB_MODE_RW,                   nanny, "meta")
          }
@@ -710,6 +743,7 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
             block->neighborRefinementLevel_East   = meta->neighborRefinementLevel[0][1];   // Convey refinement level of East neighbor of prong111 to the aggregation of an unrefine (i.e. join).
             block->neighborRefinementLevel_North  = meta->neighborRefinementLevel[1][1];   //                            North
             block->neighborRefinementLevel_Up     = meta->neighborRefinementLevel[2][1];   //                            Upward
+            block->neighborChanged                = meta->neighborChanged;
          }
          block->finerNeighborNotUnrefiningAndNotTalkingAnyMore = meta->finerNeighborNotUnrefiningAndNotTalkingAnyMore;   // Bridge this to the join operation.
          gasket__ocrDbRelease(myDeps->block_Dep.guid, __FILE__, __func__, __LINE__, nanny, "block");
@@ -812,6 +846,10 @@ ocrGuid_t blockClone_Func (u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
          gasket__ocrDbCreate(    &newMeta_dblk,          &dummy,                          sizeof_BlockMeta_t,      __FILE__, __func__, __LINE__, nanny, "meta");
          gasket__ocrDbCreate(    &newControl_dblk,       &dummy,                          sizeof_Control_t,        __FILE__, __func__, __LINE__, nanny, "control");
          gasket__ocrDbCreate(    &newAllObjects_dblk,    &dummy,                          sizeof_AllObjects_t,     __FILE__, __func__, __LINE__, nanny, "allObjects");
+         gasket__ocrDbRelease(   joinBlock_dblk,                                                                   __FILE__, __func__, __LINE__, nanny, "join block");
+         gasket__ocrDbRelease(   newMeta_dblk,                                                                     __FILE__, __func__, __LINE__, nanny, "meta");
+         gasket__ocrDbRelease(   newControl_dblk,                                                                  __FILE__, __func__, __LINE__, nanny, "control");
+         gasket__ocrDbRelease(   newAllObjects_dblk,                                                               __FILE__, __func__, __LINE__, nanny, "allObjects");
 
          gasket__ocrDbRelease(    myDeps->control_Dep.guid,                                                          __FILE__, __func__, __LINE__, nanny, "control");
          ADD_DEPENDENCE(          newControl_dblk,                        blockClone_Edt, blockClone_Deps_t, control_Dep,            DB_MODE_RW,   nanny, "control")

@@ -32,6 +32,7 @@
 #   define DBG_PRINTF10(txt,a,b,c, d,e,f, g,h,i, j) do{}while(0)
 #endif
 
+//Only names the pairing's two labeled events: init_NEKOstatics created them, before any rank task ran.
 Err_t make_labeledEvents(OA_DEBUG_ARGUMENT, Idz in_did, ocrGuid_t * in_haloLabeledGuids,
                           unsigned int in_myRank, ocrGuid_t * io_myEvent,
                           unsigned int in_neighborRank, ocrGuid_t * io_neighborEvent)
@@ -41,41 +42,17 @@ Err_t make_labeledEvents(OA_DEBUG_ARGUMENT, Idz in_did, ocrGuid_t * in_haloLabel
 #       ifdef NKEBONE_USE_CHANNEL_FOR_HALO_EXCHANGES
         err = ocrGuidFromIndex( io_myEvent, in_haloLabeledGuids[in_did], in_myRank );
         if(err){
-            ocrPrintf("ERROR> TaskTYPE=%d TaskID="GUIDF" rank=%u: make_labeledEvents> Creation of my labeled Guid failed: err=%u.\n",
+            ocrPrintf("ERROR> TaskTYPE=%d TaskID="GUIDF" rank=%u: make_labeledEvents> Naming of my labeled Guid failed: err=%u.\n",
                    in_edtType, GUIDA(in_thisEDT), in_myRank, err);
             IFEB;
-        }
-        err = ocrEventCreate( io_myEvent, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
-        if(err){
-            if( err == OCR_EGUIDEXISTS ){
-                //Someone has already created an object associated with this o_guid.
-                //This is usually the expected behavior. --> Just ignore it.
-                err = 0;
-            }else{
-                ocrPrintf("ERROR> TaskTYPE=%d TaskID="GUIDF" rank=%u make_labeledEvents> Creation of io_myEvent EVT failed: %d\n",
-                       in_edtType, GUIDA(in_thisEDT), in_myRank, err);
-                IFEB;
-            }
         }
 
         err = ocrGuidFromIndex( io_neighborEvent, in_haloLabeledGuids[NEKbone_neighborCount - in_did], in_neighborRank );
         if(err){
-            ocrPrintf("ERROR> TaskTYPE=%d TaskID="GUIDF" rank=%u: make_labeledEvents> Creation of the neighbbor labeled Guid failed: err=%u.\n",
+            ocrPrintf("ERROR> TaskTYPE=%d TaskID="GUIDF" rank=%u: make_labeledEvents> Naming of the neighbor labeled Guid failed: err=%u.\n",
                    in_edtType, GUIDA(in_thisEDT), in_myRank, err);
 
             IFEB;
-        }
-        err = ocrEventCreate( io_neighborEvent, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
-        if(err){
-            if( err == OCR_EGUIDEXISTS ){
-                //Someone has already created an object associated with this o_guid.
-                //This is usually the expected behavior. --> Just ignore it.
-                err = 0;
-            }else{
-                ocrPrintf("ERROR> TaskTYPE=%d TaskID="GUIDF" rank=%u make_labeledEvents> Creation of io_neighborEvent EVT (rank=%u) failed: %d\n",
-                       in_edtType, GUIDA(in_thisEDT), in_myRank, in_neighborRank, err);
-                IFEB;
-            }
         }
 #       endif // NKEBONE_USE_CHANNEL_FOR_HALO_EXCHANGES
         break;  //  while(!err)
@@ -106,7 +83,7 @@ Err_t start_channelExchange(OA_DEBUG_ARGUMENT, NEKOtools_t * in_nekoTools,
                 err = __LINE__; IFEB;
             }
 
-            //===== Create labeled EVTs
+            //===== Name the labeled EVTs
             ocrGuid_t myLabelEvt = NULL_GUID;
             ocrGuid_t neighborLabelEvt = NULL_GUID;
 

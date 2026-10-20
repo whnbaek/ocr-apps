@@ -19,7 +19,9 @@
 #include "ocr-std.h"
 #include "extensions/ocr-affinity.h"
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
 #include "extensions/ocr-labeling.h" //currently needed for labeled guids
 
 #ifndef TG_ARCH
@@ -62,6 +64,7 @@ _OCR_TASK_FNC_( FNC_globalCompute );
             _OCR_TASK_FNC_( FNC_update );                 //      _OCR_TASK_FNC_( FNC_update );            //      _OCR_TASK_FNC_( FNC_update );
     _OCR_TASK_FNC_( FNC_reduction );
     _OCR_TASK_FNC_( FNC_summary );
+    _OCR_TASK_FNC_( FNC_shutdown );
 
 _OCR_TASK_FNC_( FNC_globalFinalize );
 //END mainEdt
@@ -321,8 +324,8 @@ ocrGuid_t FNC_init_globalH_part1(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t 
     ocrEventCreate( &PTR_globalH->EVT_OUT_norm_reduction, OCR_EVENT_STICKY_T, true );
     ocrEventCreate( &PTR_globalH->EVT_OUT_timer_reduction, OCR_EVENT_STICKY_T, true );
 
-    ocrGuidRangeCreate(&(PTR_globalH->EVT_RANGE_reduction), NR, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(PTR_globalH->EVT_RANGE_timer_reduction), NR, GUID_USER_EVENT_STICKY);
+    reductionRangeCreate(&(PTR_globalH->EVT_RANGE_reduction), NR);
+    reductionRangeCreate(&(PTR_globalH->EVT_RANGE_timer_reduction), NR);
 
     return NULL_GUID;
 }
@@ -860,7 +863,19 @@ ocrGuid_t FNC_globalCompute(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
 
     ocrEdtCreate( &TS_summary.EDT, TS_summary.TML,
                   EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
+                  EDT_PROP_NONE, NULL_HINT, &TS_summary.OET );
+
+    //An EDT's output event fires only after the EDT has released its dependences, so shutdown waits on it
+    MyOcrTaskStruct_t TS_shutdown; _paramc = 0; _depc = 1;
+
+    TS_shutdown.FNC = FNC_shutdown;
+    ocrEdtTemplateCreate( &TS_shutdown.TML, TS_shutdown.FNC, _paramc, _depc );
+
+    ocrEdtCreate( &TS_shutdown.EDT, TS_shutdown.TML,
+                  EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL,
                   EDT_PROP_NONE, NULL_HINT, NULL );
+
+    ocrAddDependence( TS_summary.OET, TS_shutdown.EDT, 0, DB_MODE_NULL );
 
     _idep = 0;
     ocrAddDependence( PTR_globalH->DBK_globalParamH, TS_summary.EDT, _idep++, DB_MODE_CONST );
@@ -1968,6 +1983,11 @@ ocrGuid_t FNC_summary(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrPrintf("Rate (MFlops/s): %f  Avg time (s): %f\n",
            1.0E-06 * flops/avgtime, avgtime);
 
+    return NULL_GUID;
+}
+
+ocrGuid_t FNC_shutdown(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
+{
     ocrShutdown();
 
     return NULL_GUID;

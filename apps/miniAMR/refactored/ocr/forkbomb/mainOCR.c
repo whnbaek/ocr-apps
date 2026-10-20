@@ -275,19 +275,16 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     //begin set rcv labeled GUIDs
     for( dir = 0; dir < 6; dir++ ) {
         ocrGuidFromIndex( &sends[dir], rStruct->range[dir], id );
-        ocrEventCreate( &sends[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
         switch(dir){
             case 0:
                 if( (xPos > 0) ){
                     ocrGuidFromIndex( &rcvs[dir], rStruct->range[dir+1], id-1 );
-                    ocrEventCreate( &rcvs[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
                 } else memcpy( &rcvs[dir], &sends[dir], sizeof(ocrGuid_t) );
 
                 break;
             case 1:
                 if( xPos < (xDim - 1) ){
                     ocrGuidFromIndex( &rcvs[dir], rStruct->range[dir-1], id+1 );
-                    ocrEventCreate( &rcvs[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
                 } else memcpy( &rcvs[dir], &sends[dir], sizeof(ocrGuid_t) );
 
                 break;
@@ -296,8 +293,6 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                     u64 rangeIndex = (id - xDim);
                     ocrGuidFromIndex( &sends[dir], rStruct->range[dir], id );
                     ocrGuidFromIndex( &rcvs[dir], rStruct->range[dir+1], rangeIndex );
-                    ocrEventCreate( &rcvs[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
-                    ocrEventCreate( &sends[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
                 } else memcpy( &rcvs[dir], &sends[dir], sizeof(ocrGuid_t) );
 
                 break;
@@ -305,7 +300,6 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                 if( (yPos < yDim - 1) ) {
                     u64 rangeIndex = (id + xDim);
                     ocrGuidFromIndex( &rcvs[dir], rStruct->range[dir-1], rangeIndex );
-                    ocrEventCreate( &rcvs[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
                 } else memcpy( &rcvs[dir], &sends[dir], sizeof(ocrGuid_t) );
 
                 break;
@@ -313,7 +307,6 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                 if( (zPos > 0) ){
                     u64 rangeIndex = (id - pSize);
                     ocrGuidFromIndex( &rcvs[dir], rStruct->range[dir+1], rangeIndex );
-                    ocrEventCreate( &rcvs[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
                 } else memcpy( &rcvs[dir], &sends[dir], sizeof(ocrGuid_t) );
 
                 break;
@@ -321,7 +314,6 @@ ocrGuid_t blockInit( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                 if( (zPos < zDim - 1) ) {
                     u64 rangeIndex = (id + pSize);
                     ocrGuidFromIndex( &rcvs[dir], rStruct->range[dir-1], rangeIndex );
-                    ocrEventCreate( &rcvs[dir], OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
                 } else memcpy( &rcvs[dir], &sends[dir], sizeof(ocrGuid_t) );
 
                 break;
@@ -518,6 +510,15 @@ ocrGuid_t mainEdt( u32 paramc, u64 paramv, u32 depc, ocrEdtDep_t depv[] )
 
     for( i = 0; i < 6; i++ )
         ocrGuidRangeCreate( &rStruct->range[i], numRanks, GUID_USER_EVENT_STICKY );
+
+    //Every block's six send events, created once here, before any task that satisfies or depends on them.
+    u64 b;
+    for( i = 0; i < 6; i++ )
+        for( b = 0; b < numRanks; b++ ) {
+            ocrGuid_t sendEVT;
+            ocrGuidFromIndex( &sendEVT, rStruct->range[i], b );
+            ocrEventCreate( &sendEVT, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+        }
 
     ocrDbRelease( DBKArgs );
     ocrDbRelease( DBKmyRange );

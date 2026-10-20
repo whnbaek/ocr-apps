@@ -21,7 +21,7 @@
 #include "stencil1D.h"
 #include <extensions/ocr-labeling.h>
 
-#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
+#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG
 
 //dss: we need to switch from compile time constants to run time parameters.  Chandra's Stencil codes do that...
 
@@ -41,7 +41,18 @@ typedef struct{
     ocrGuid_t template;
     ocrGuid_t left[2], right[2];
     ocrGuid_t leftrcv[2], rightrcv[2];
+    ocrGuid_t ranges[4];
 } private_t;
+
+/* Every timestep exchanges over labels of its own: range r is the timestep's
+ * toggle (plus 2 for the left-bound ones), and each pair of timesteps takes the
+ * next block of n-1 labels in it. */
+static ocrGuid_t stepLabel( private_t * private, u64 r, u64 timestep, u64 j )
+{
+    ocrGuid_t label;
+    ocrGuidFromIndex( &label, private->ranges[r], (timestep / 2) * (private->n - 1) + j );
+    return label;
+}
 
 
 ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
@@ -86,7 +97,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     if(timestep == 0){
         //initialize step
         if(m==1) {                                              //special single datapoint code.
-            if(leftin == NULL || rightin == NULL) a[0] = 1.0;       //we are right/leftmost.
+            if(node == 0 || node == (n-1)) a[0] = 1.0;          //we are right/leftmost.
                 else a[0] = 0.0;
         }else{
                                                                 //set leftmost
@@ -96,6 +107,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
             for(i = 1; i < m - 1; i++) a[i] = 0.0;
                                                                 //setrightmost
             if(node == (n-1)) a[m-1] = 1.0;
+            else a[m-1] = 0.0;
 
 
         }
@@ -141,9 +153,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
 
         if( private->mynode != 0 )//set left event stuffs.
-            ocrEventCreate( &private->leftrcv[toggle],
-                            OCR_EVENT_STICKY_T,
-                            DEFAULT_LG_PROPS );
+            private->leftrcv[toggle] = stepLabel( private, toggle, timestep, node - 1 );
 
         ocrAddDependence(   private->leftrcv[toggle],
                             child,
@@ -154,9 +164,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
 
         if( private->mynode != (n - 1) )
-            ocrEventCreate( &private->rightrcv[toggle],
-                            OCR_EVENT_STICKY_T,
-                            DEFAULT_LG_PROPS );
+            private->rightrcv[toggle] = stepLabel( private, 2 + toggle, timestep, node );
 
         ocrAddDependence(   private->rightrcv[toggle],
                             child,
@@ -164,10 +172,22 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
                             DB_MODE_RW );
 
 
+        /* The child's receive events for the next timestep, created before the
+         * sends below enable the neighbours that will satisfy them. */
+        if( timestep + 1 < t ){
+            ocrGuid_t next;
+            if( private->mynode != 0 ){
+                next = stepLabel( private, 1 ^ toggle, timestep + 1, node - 1 );
+                ocrEventCreate( &next, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+            }
+            if( private->mynode != (n - 1) ){
+                next = stepLabel( private, 2 + (1 ^ toggle), timestep + 1, node );
+                ocrEventCreate( &next, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+            }
+        }
+
         if( private->mynode != 0 ){                             //send info to the left.
-            ocrEventCreate( &private->left[toggle],
-                            OCR_EVENT_STICKY_T,
-                            DEFAULT_LG_PROPS );
+            private->left[toggle] = stepLabel( private, 2 + toggle, timestep, node - 1 );
             ocrDbRelease( depv[2].guid );
             ocrEventSatisfy(    private->left[toggle],
                                 depv[2].guid );
@@ -176,9 +196,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
         if( private->mynode != n - 1 ){                         //send info to the right.
 
-            ocrEventCreate( &private->right[toggle],
-                            OCR_EVENT_STICKY_T,
-                            DEFAULT_LG_PROPS );
+            private->right[toggle] = stepLabel( private, toggle, timestep, node );
 
             ocrDbRelease( depv[3].guid );
 
@@ -262,6 +280,7 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
     private->n = shared->n;
     private->m = shared->m;
     private->t = shared->t;
+    for( u64 r = 0; r < 4; r++ ) private->ranges[r] = shared->ranges[r];
 
     ocrDbCreate(&dataDb, (void **) &dummy, 2 * shared->m * sizeof(double), 0, NULL_HINT, NO_ALLOC );    //slot 0
         ocrDbCreate(    &sendleftDb,            //slot 2
@@ -452,8 +471,19 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
     for(i = 0; i < 4; i++){
 
         ocrGuidRangeCreate( &(shared->ranges[i]),
-                            shared->n - 1,
+                            (shared->n - 1) * ((shared->t + 1) / 2),
                             GUID_USER_EVENT_STICKY );
+    }
+    /* The first timestep's labels; every later timestep's are created one
+     * timestep ahead by the stencil task whose child names them as receives. */
+    if( shared->t > 0 ){
+        for( i = 0; i + 1 < shared->n; i++ ){
+            ocrGuid_t first;
+            ocrGuidFromIndex( &first, shared->ranges[1], i );
+            ocrEventCreate( &first, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+            ocrGuidFromIndex( &first, shared->ranges[3], i );
+            ocrEventCreate( &first, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+        }
     }
 
 

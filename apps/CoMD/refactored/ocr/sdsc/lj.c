@@ -187,6 +187,14 @@ static ocrGuid_t lj_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     *res_ptr += lj_force_box((box*)depv[1].ptr, (box*)depv[++dep].ptr, sim->bxs.shift[faces(bg,bbg,sim->bxs.grid)], sim->pot.lj.sigma, sim->pot.lj.epsilon, sim->pot.cutoff);
     ++bbg[0]; if(bbg[0] == sim->bxs.grid[0]) bbg[0] = 0;
   }
+  ocrDbRelease(res);
+  /* On a small grid one box fills two neighbour slots; each block is
+   * released once. */
+  for(u32 d = 0; d < depc; ++d) {
+    u32 e = 0;
+    while(e < d && !ocrGuidIsEq(depv[e].guid, depv[d].guid)) ++e;
+    if(e == d) ocrDbRelease(depv[d].guid);
+  }
   ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, 1+paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -200,6 +208,7 @@ static ocrGuid_t lj_red_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[
     sim->e_potential += *(real_t*)depv[b].ptr;
     ocrDbDestroy(depv[b].guid);
   }
+  ocrDbRelease(depv[0].guid);
   ocrEventSatisfy(*(ocrGuid_t *)paramv, NULL_GUID);
 
   return NULL_GUID;

@@ -7,8 +7,12 @@ Copywrite Intel Corporation 2015
 
 */
 
+#ifndef ENABLE_EXTENSION_LABELING
 #define ENABLE_EXTENSION_LABELING
+#endif
+#ifndef ENABLE_EXTENSION_AFFINITY
 #define ENABLE_EXTENSION_AFFINITY
+#endif
 
 #include "ocr.h"
 #include "extensions/ocr-labeling.h" //currently needed for labeled guids
@@ -91,9 +95,11 @@ typedef struct
 
     ocrGuid_t positionEVTs[27]; //Make 27 copies of the local position completion
     ocrGuid_t redistributeEVTs[27];
+    ocrGuid_t forceEVTs[27];
 
     ocrGuid_t nbr_positionEVTs[27]; //Capture neighbors' events
     ocrGuid_t nbr_redistributeEVTs[27];
+    ocrGuid_t nbr_forceEVTs[27];
 
     //ocrGuid_t nbr_linkCellGuids[27];
     //ocrGuid_t nbr_atomDataGuids[27];
@@ -243,8 +249,15 @@ u8 init_simulation( command_t* cmd_p, sharedBlock_t* sbPTR )
     ocrPrintf( "  Link cell atom footprint = %7.3f MB\n\n", linkCellMemTotal);
 
     ocrGuidRangeCreate(&(sbPTR->haloRangeGUID), 27*sbPTR->boxDataStH.b_num, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(sbPTR->vcmReductionRangeGUID), sbPTR->boxDataStH.b_num, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(sbPTR->KeReductionRangeGUID), sbPTR->boxDataStH.b_num, GUID_USER_EVENT_STICKY);
+    //Each halo label is created once here, before the box tasks that satisfy it or depend on it
+    u64 iHalo;
+    for(iHalo = 0; iHalo < 27*(u64)sbPTR->boxDataStH.b_num; iHalo++) {
+        ocrGuid_t haloEVT;
+        ocrGuidFromIndex(&haloEVT, sbPTR->haloRangeGUID, iHalo);
+        ocrEventCreate(&haloEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+    }
+    reductionRangeCreate(&(sbPTR->vcmReductionRangeGUID), sbPTR->boxDataStH.b_num);
+    reductionRangeCreate(&(sbPTR->KeReductionRangeGUID), sbPTR->boxDataStH.b_num);
 
     //ocrGuidRangeCreate(&(sbPTR->positionRangeGuid), sbPTR->boxDataStH.b_num, GUID_USER_EVENT_STICKY);
     //ocrGuidRangeCreate(&(sbPTR->redistributeRangeGuid), sbPTR->boxDataStH.b_num, GUID_USER_EVENT_STICKY);
@@ -918,7 +931,7 @@ ocrGuid_t timestepEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
     dt = 1.0*cmd_p->dt; //TODO
 
-    ocrEdtTemplateCreate( &advancePositionTML, advancePositionEdt, 1, 3 );
+    ocrEdtTemplateCreate( &advancePositionTML, advancePositionEdt, 1, 30 );
 
     ocrEdtCreate( &advancePositionEDT, advancePositionTML,
                   EDT_PARAM_DEF, (u64*) &dt, EDT_PARAM_DEF, NULL,
@@ -934,6 +947,10 @@ ocrGuid_t timestepEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence( DBK_atomData, advancePositionEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_mass, advancePositionEDT, _idep++, DB_MODE_RO );
     ocrAddDependence( advanceVelocityOEVTS, advancePositionEDT, _idep++, DB_MODE_NULL );
+
+    //The neighbors' force pass reads these positions, so they change only after every neighbor's read
+    for( _inbr=0; _inbr <= 26; _inbr++ )
+        ocrAddDependence( pbPTR->nbr_forceEVTs[_inbr], advancePositionEDT, _idep++, DB_MODE_NULL ); //depend on the neighbors
 
     //redistribute atoms
 
@@ -985,6 +1002,9 @@ ocrGuid_t timestepEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrEventCreate( &computeForceOEVTS, OCR_EVENT_STICKY_T, false );
     ocrAddDependence( computeForceOEVT, computeForceOEVTS, 0, DB_MODE_NULL );
 
+    for( _idep=0; _idep <= 26; _idep++ )
+        ocrAddDependence( computeForceOEVTS, pbPTR->forceEVTs[_idep], 0, DB_MODE_NULL ); //Notify the neighbors
+
     _idep = 0;
     //ocrAddDependence( DBK_atomData, computeForceEDT, _idep++, DB_MODE_RW );
 
@@ -1017,7 +1037,8 @@ ocrGuid_t timestepEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
 
     itimestep++;
 
-    if( itimestep%nSteps == 0 )
+    //The last step always reduces, so the run ends on a status row
+    if( itimestep%nSteps == 0 || itimestep == ntimesteps )
     {
         ////Compute Kinetic energy of the system
         ocrGuid_t kineticEnergyTML, kineticEnergyEDT1, kineticEnergyOEVT1, kineticEnergyOEVTS1;
@@ -1058,13 +1079,9 @@ ocrGuid_t timestepEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
             ocrAddDependence( kineticEnergyOEVTS1, printThingsEDT, _idep++, DB_MODE_RW );
         //}
 
-
-    }
-
-    //Trigger wrapup EVT
-    if( itimestep == ntimesteps )
-    {
-
+        //Trigger wrapup EVT: the shutdown follows the last print, not the reduction that feeds it
+        if( itimestep == ntimesteps && iBox == 0 )
+            ocrAddDependence( printThingsOEVTS, pbPTR->finalOnceEVT, 0, DB_MODE_NULL );
     }
 
 #endif
@@ -1142,10 +1159,6 @@ ocrGuid_t timestepLoopEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
         ocrAddDependence( DBK_atomData, timestepLoopEDT, 5, DB_MODE_RW );
         ocrAddDependence( DBK_mass, timestepLoopEDT, 6, DB_MODE_RO );
         ocrAddDependence( timestepOEVTS, timestepLoopEDT, 7, DB_MODE_NULL );
-    }
-    else
-    {
-        if(iBox==0) rpKePTR->returnEVT = pbPTR->finalOnceEVT;
     }
 
     return NULL_GUID;
@@ -1356,6 +1369,9 @@ ocrGuid_t comdEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrEventCreate( &computeForceOEVTS, OCR_EVENT_STICKY_T, false );
     ocrAddDependence( computeForceOEVT, computeForceOEVTS, 0, DB_MODE_NULL );
 
+    for( _idep=0; _idep <= 26; _idep++ )
+        ocrAddDependence( computeForceOEVTS, pbPTR->forceEVTs[_idep], 0, DB_MODE_NULL ); //Notify the neighbors
+
     _idep = 0;
     //ocrAddDependence( DBK_atomData, computeForceEDT, _idep++, DB_MODE_RW );
 
@@ -1451,7 +1467,13 @@ ocrGuid_t comdEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrAddDependence(DBK_linkCell, timestepLoopEDT, 4, DB_MODE_RW);
     ocrAddDependence(DBK_atomData, timestepLoopEDT, 5, DB_MODE_RW);
     ocrAddDependence(DBK_mass, timestepLoopEDT, 6, DB_MODE_RO);
-    ocrAddDependence(kineticEnergyOEVTS1, timestepLoopEDT, 7, DB_MODE_NULL);
+    //A private block carries one reduction at a time: the next launch follows this result's consumer
+    ocrAddDependence(printThingsOEVTS, timestepLoopEDT, 7, DB_MODE_NULL);
+    }
+    else if( iBox == 0 )
+    {
+    //With no steps this print is the last task, so the shutdown follows it
+    ocrAddDependence( printThingsOEVTS, pbPTR->finalOnceEVT, 0, DB_MODE_NULL );
     }
     #endif
 
@@ -1492,6 +1514,7 @@ ocrGuid_t channelInitEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
         PTR_linkCell->nbr_linkCellGuids[i] = eventsPTR[2];
         PTR_linkCell->nbr_atomDataGuids[i] = eventsPTR[3];
         //pbPTR->nbr_massGuids[i] = eventsPTR[4];
+        pbPTR->nbr_forceEVTs[i] = eventsPTR[5];
         //ocrPrintf("Atomg guid %lx %lx\n", PTR_linkCell->nbr_linkCellGuids[i], PTR_linkCell->nbr_atomDataGuids[i]);
     }
 
@@ -1611,6 +1634,7 @@ ocrGuid_t comdInitEdt( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[] )
         //pbPTR->haloSendEVT[i] = UNINITIALIZED_GUID;
         pbPTR->positionEVTs[i] = UNINITIALIZED_GUID;
         pbPTR->redistributeEVTs[i] = UNINITIALIZED_GUID;
+        pbPTR->forceEVTs[i] = UNINITIALIZED_GUID;
     }
 
     ocrGuid_t comdEDT;
@@ -1646,20 +1670,21 @@ ocrGuid_t comdInitEdt( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[] )
                 u32 nbrRank = ( iz*gy + iy ) * gx + ix;
 
                 ocrGuidFromIndex(&(stickyEVT), sbPTR->haloRangeGUID, 27*myrank + ind);//send
-                ocrEventCreate( &stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
                 ocrEventCreateParams( &(pbPTR->positionEVTs[ind]), OCR_EVENT_CHANNEL_T, false, &params );
                 ocrEventCreateParams( &(pbPTR->redistributeEVTs[ind]), OCR_EVENT_CHANNEL_T, false, &params );
+                ocrEventCreateParams( &(pbPTR->forceEVTs[ind]), OCR_EVENT_CHANNEL_T, false, &params );
 
                 ocrGuid_t* eventsPTR;
                 ocrGuid_t eventsDBK;
-                ocrDbCreate( &eventsDBK, (void**) &eventsPTR, 5*sizeof(ocrGuid_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
+                ocrDbCreate( &eventsDBK, (void**) &eventsPTR, 6*sizeof(ocrGuid_t), DB_PROP_NONE, NULL_HINT, NO_ALLOC );
 
                 eventsPTR[0] = pbPTR->positionEVTs[ind]; //channel event for box-i
                 eventsPTR[1] = pbPTR->redistributeEVTs[ind]; //channel event for box-i
                 eventsPTR[2] = DBK_linkCell;
                 eventsPTR[3] = DBK_atomData;
                 eventsPTR[4] = DBK_mass;
+                eventsPTR[5] = pbPTR->forceEVTs[ind]; //channel event for box-i
 
                 ocrDbRelease( eventsDBK );
 
@@ -1667,10 +1692,8 @@ ocrGuid_t comdInitEdt( u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[] )
 
                 //receive
                 ocrGuidFromIndex( &(stickyEVT), sbPTR->haloRangeGUID, 27*nbrRank + 26-ind );
-                ocrEventCreate( &stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
                 //ocrPrintf("s %d r %d se %d re %d s(%d %d %d) r(%d %d %d)\n", myrank, nbrRank, ind, 26-ind, ix0, iy0, iz0, ix, iy, iz);
-                //Collective event create for the neighbors
 
                 ocrAddDependence( stickyEVT, channelInitEDT, 8+ind, DB_MODE_RW ); //TODO
 

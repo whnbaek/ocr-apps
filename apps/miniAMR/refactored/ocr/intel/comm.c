@@ -256,6 +256,7 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
             ocrGuid_t faceOut;
             void * dummy = NULL;
             gasket__ocrDbCreate(&faceOut,  (void **) &dummy, size, __FILE__, __func__, __LINE__, nanny, "faceOut[...]");
+            gasket__ocrDbRelease(faceOut, __FILE__, __func__, __LINE__, nanny, "faceOut[...]");
             ADD_DEPENDENCE(faceOut, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RW, nanny, "faceOut[...]")
             auxDepIdx++;
 #ifndef RELAX_DATABLOCK_SEASONING
@@ -288,6 +289,7 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
             ocrGuid_t faceOut;
             void * dummy = NULL;
             gasket__ocrDbCreate(&faceOut, (void **) &dummy, size, __FILE__, __func__, __LINE__, nanny, "faceOut[...]");
+            gasket__ocrDbRelease(faceOut, __FILE__, __func__, __LINE__, nanny, "faceOut[...]");
             ADD_DEPENDENCE(faceOut, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RW, nanny, "faceOut[...]")
             auxDepIdx++;
 #ifndef RELAX_DATABLOCK_SEASONING
@@ -322,6 +324,7 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
                ocrGuid_t faceOut;
                void * dummy = NULL;
                gasket__ocrDbCreate(&faceOut, (void **) &dummy, size, __FILE__, __func__, __LINE__, nanny, "faceOut[...]");
+               gasket__ocrDbRelease(faceOut, __FILE__, __func__, __LINE__, nanny, "faceOut[...]");
                ADD_DEPENDENCE(faceOut, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx+qrtr], DB_MODE_RW, nanny, "faceOut[...]")
             }
             auxDepIdx+=4;
@@ -439,20 +442,10 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
 #endif
             Face_t * faceOut = myDeps->aux_Dep[auxDepIdx].ptr;
             ocrGuid_t conveyFaceToNeighbor_Event = meta->conveyFaceToNeighbor_Event[axis][pole][0];
-            if (ocrGuidIsNull(conveyFaceToNeighbor_Event)) {                                   // First time.  Use labeled guid.
-               unsigned long index =                                                           // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                  ((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *          // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                     meta->numBaseResBlocks) +                                                 // ... scaled up by number of blocks in the totally-unrefined mesh.
-                    ((((meta->xPos * (control->npy << meta->refinementLevel)) +                // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                       meta->yPos) * (control->npz << meta->refinementLevel)) +                // to the above base. ...
-                     meta->zPos))  *
-                   36) +                                                                       // Then we scale all that by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).
-                  axis * 2 + pole +                                                            // Now select which of the 36 comm events to use: for nbr coarser, 0=W, 1=E, 2=S, 3=N,  4=D,  5=U, ...
-                  (meta->neighborRefinementLevel[axis][pole] < meta->refinementLevel ? 0 : 6); // ... but for nbr at same refinement level:                       6=W, 7=E, 8=S, 9=N, 10=D, 11=U.
-               gasket__ocrGuidFromIndex(&conveyFaceToNeighbor_Event, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor");
-#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
-               gasket__ocrEventCreate(&conveyFaceToNeighbor_Event, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS, __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor_Event[...][...][0]");  // Create the On Deck Event; record it in our meta.
+            if (ocrGuidIsNull(conveyFaceToNeighbor_Event)) {                                    // An open channel always holds its label or an On Deck event.
+               *((int *) 123) = 456;
             }
+            haloConveySent(meta, axis, pole, 0);
             faceOut->dbCommHeader.atBat_Event = conveyFaceToNeighbor_Event;                                           // Convey At Bat Event to neighbor so that she can destroy the event.
             gasket__ocrEventCreate(&meta->conveyFaceToNeighbor_Event[axis][pole][0], OCR_EVENT_STICKY_T, EVT_PROP_TAKES_ARG, __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor_Event[...][...][0]");  // Create the On Deck Event; record it in our meta.
             faceOut->dbCommHeader.onDeck_Event = meta->conveyFaceToNeighbor_Event[axis][pole][0];                     // Convey On Deck Event to neighbor so that she can make her clone depend upon it.
@@ -476,18 +469,10 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
 #endif
                   Face_t * faceOut = myDeps->aux_Dep[auxDepIdx+idep].ptr;
                   ocrGuid_t conveyFaceToNeighbor_Event = meta->conveyFaceToNeighbor_Event[axis][pole][idep];
-                  if (ocrGuidIsNull(conveyFaceToNeighbor_Event)) {                                   // First time.  Use labeled guid.
-                     unsigned long index =                                                           // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                        ((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *          // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                           meta->numBaseResBlocks) +                                                 // ... scaled up by number of blocks in the totally-unrefined mesh.
-                          ((((meta->xPos * (control->npy << meta->refinementLevel)) +                // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                             meta->yPos) * (control->npz << meta->refinementLevel)) +                // to the above base. ...
-                           meta->zPos))  *
-                         36) +                                                                       // Then we scale all that by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).
-                        axis * 8 + pole * 4 + idep + 12;                                             // Now select: 12:15 = W, 16:19 = E, 20:23 = S, 24:27 = N, 28:31 = D, 32:35 = U, neighbor finer.
-                     gasket__ocrGuidFromIndex(&conveyFaceToNeighbor_Event, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor");
-                     gasket__ocrEventCreate(&conveyFaceToNeighbor_Event, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS, __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor_Event[...][...][...]");  // Create the On Deck Event; record it in our meta.
+                  if (ocrGuidIsNull(conveyFaceToNeighbor_Event)) {                              // An open channel always holds its label or an On Deck event.
+                     *((int *) 123) = 456;
                   }
+                  haloConveySent(meta, axis, pole, idep);
                   faceOut->dbCommHeader.atBat_Event = conveyFaceToNeighbor_Event;                                                // Convey At Bat Event to neighbor so that she can destroy the event.
                   gasket__ocrEventCreate(&meta->conveyFaceToNeighbor_Event[axis][pole][idep], OCR_EVENT_STICKY_T, EVT_PROP_TAKES_ARG, __FILE__, __func__, __LINE__, nanny, "conveyFaceToNeighbor_Event[...][...][...]");  // Create the On Deck Event; record it in our meta.
                   faceOut->dbCommHeader.onDeck_Event = meta->conveyFaceToNeighbor_Event[axis][pole][idep];                       // Convey On Deck Event to neighbor so that she can make her clone depend upon it.
@@ -571,32 +556,8 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
 #endif
             ocrGuid_t faceIn = meta->onDeckToReceiveFace_Event[axis][pole][0];
             meta->onDeckToReceiveFace_Event[axis][pole][0] = NULL_GUID;                       // Assure we don't reuse a stale guid later.
-            if (ocrGuidIsNull(faceIn)) {                                                      // First time.  Use labeled guid.
-               int nbr_xPos = meta->xPos >> 1;                                                // For starters, our own position at coarser level is just our position scaled down one level.
-               int nbr_yPos = meta->yPos >> 1;
-               int nbr_zPos = meta->zPos >> 1;
-               int qrtrFaceOfNbrToUse = 999;
-               if (axis == 0) {                                                               // Then neighbor's position is one away, depending on axis and pole; and we need to note which qrtr-face to use.
-                  nbr_xPos += (pole << 1) - 1;                                                // Adjust by -1 or 1.
-                  qrtrFaceOfNbrToUse = ((meta->yPos & 1) << 1) + (meta->zPos & 1);
-               } else if (axis == 1) {
-                  nbr_yPos += (pole << 1) - 1;                                                // Adjust by -1 or 1.
-                  qrtrFaceOfNbrToUse = ((meta->xPos & 1) << 1) + (meta->zPos & 1);
-               } else {
-                  nbr_zPos += (pole << 1) - 1;                                                // Adjust by -1 or 1.
-                  qrtrFaceOfNbrToUse = ((meta->xPos & 1) << 1) + (meta->yPos & 1);
-               }
-               unsigned long index =                                                          // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                  (((((0111111111111111111111L >> (66L - (meta->refinementLevel*3))) *        // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                      meta->numBaseResBlocks) +                                               // ... scaled up by number of blocks in the totally-unrefined mesh.
-                     (((((nbr_xPos) * (control->npy << (meta->refinementLevel-1))) +          // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                        (nbr_yPos)) * (control->npz << (meta->refinementLevel-1))) +          // to the above base. ...
-                      (nbr_zPos))) *                                                          // ...
-                    36) +                                                                     // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                   ((axis * 8 + pole * 4) ^ 4) + qrtrFaceOfNbrToUse + 12);                    // Now select: 12:15 = W, 16:19 = E, 20:23 = S, 24:27 = N, 28:31 = D, 32:35 = U, neighbor finer.
-                                                                                              // BUT note that the "^4" operation is to FLIP POLE: my W comms with nbrs E; etc.
-               gasket__ocrGuidFromIndex(&faceIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "faceIn[...]");
-               gasket__ocrEventCreate  (&faceIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,         __FILE__, __func__, __LINE__, nanny, "faceIn[...]");
+            if (ocrGuidIsNull(faceIn)) {                                                        // An open channel always holds its label or an On Deck event.
+               *((int *) 123) = 456;
             }
             EVT_DEPENDENCE(faceIn, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RO,   nanny, "faceIn[...]")
             auxDepIdx++;
@@ -609,24 +570,8 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
 #endif
             ocrGuid_t faceIn = meta->onDeckToReceiveFace_Event[axis][pole][0];
             meta->onDeckToReceiveFace_Event[axis][pole][0] = NULL_GUID;                       // Assure we don't reuse a stale guid later.
-            if (ocrGuidIsNull(faceIn)) {                                                      // First time.  Use labeled guid.
-               int nbr_xPos = meta->xPos +                                                    // If NOT doing x-axis halo exchange, neighbor's xPos is the same as ours...
-                  ((axis != 0) ? 0 : (pole == 0) ? -1 : 1);                                   // otherwise, it is one off in the direction of the pole being processed.
-               int nbr_yPos = meta->yPos +                                                    // If NOT doing y-axis halo exchange, neighbor's yPos is the same as ours...
-                  ((axis != 1) ? 0 : (pole == 0) ? -1 : 1);                                   // otherwise, it is one off in the direction of the pole being processed.
-               int nbr_zPos = meta->zPos +                                                    // If NOT doing z-axis halo exchange, neighbor's zPos is the same as ours...
-                  ((axis != 2) ? 0 : (pole == 0) ? -1 : 1);                                   // otherwise, it is one off in the direction of the pole being processed.
-               unsigned long index =                                                          // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                  (((((0111111111111111111111L >> (63L - (meta->refinementLevel*3))) *        // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                      meta->numBaseResBlocks) +                                               // ... scaled up by number of blocks in the totally-unrefined mesh.
-                     (((((nbr_xPos) * (control->npy << (meta->refinementLevel))) +            // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                        (nbr_yPos)) * (control->npz << (meta->refinementLevel))) +            // to the above base. ...
-                      (nbr_zPos))) *                                                          // ...
-                    36) +                                                                     // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                   axis * 2 + pole + 6)                                                       // ... select which of 36 to use: 6=W, 7=E, 8=S, 9=N, 10=D, 11=U; nbr is at same refinement level.
-                  ^ 1;                                                                        // BUT FLIP POLE: my W comms with nbrs E; etc.
-               gasket__ocrGuidFromIndex(&faceIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "faceIn[...]");
-               gasket__ocrEventCreate  (&faceIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,         __FILE__, __func__, __LINE__, nanny, "faceIn[...]");
+            if (ocrGuidIsNull(faceIn)) {                                                        // An open channel always holds its label or an On Deck event.
+               *((int *) 123) = 456;
             }
             EVT_DEPENDENCE(faceIn, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx], DB_MODE_RO,   nanny, "faceIn[...]")
             auxDepIdx++;
@@ -642,34 +587,8 @@ void comm(blockClone_Params_t * myParams, ocrEdtDep_t depv[], int const start, i
 #endif
                   ocrGuid_t faceIn = meta->onDeckToReceiveFace_Event[axis][pole][idep];
                   meta->onDeckToReceiveFace_Event[axis][pole][idep] = NULL_GUID;                    // Assure we don't reuse a stale guid later.
-                  if (ocrGuidIsNull(faceIn)) {                                                      // First time.  Use labeled guid.
-                     int nbr_xPos = meta->xPos << 1;                                                // For starters, our own position at finer level is just our position scaled up one level.
-                     int nbr_yPos = meta->yPos << 1;
-                     int nbr_zPos = meta->zPos << 1;
-                     if (axis == 0) {
-                        nbr_xPos += (pole == 0) ? -1 : 2;
-                        nbr_yPos += qrtrHaloLeftRight;
-                        nbr_zPos += qrtrHaloUpDown;
-                     } else if (axis == 1) {
-                        nbr_yPos += (pole == 0) ? -1 : 2;
-                        nbr_xPos += qrtrHaloLeftRight;
-                        nbr_zPos += qrtrHaloUpDown;
-                     } else {
-                        nbr_zPos += (pole == 0) ? -1 : 2;
-                        nbr_xPos += qrtrHaloLeftRight;
-                        nbr_yPos += qrtrHaloUpDown;
-                     }
-                     unsigned long index =                                                          // The first component gets us the index of the base set of 36 applicable for the level: i.e.
-                        (((((0111111111111111111111L >> (60L - (meta->refinementLevel*3))) *        // lvl 0: 0;  lvl 1: 1;  lvl 2: 9 (i.e. 1+8);  lvl 2: 73 (i.e. 1+8+8*8); lvl 3: 585 (i.e. 1+8+8*8+8*8*8) ...
-                            meta->numBaseResBlocks) +                                               // ... scaled up by number of blocks in the totally-unrefined mesh.
-                           (((((nbr_xPos) * (control->npy << (meta->refinementLevel+1))) +          // Here we subscript-linearize the x, y, z position of the block within its refinement level and add it
-                              (nbr_yPos)) * (control->npz << (meta->refinementLevel+1))) +          // to the above base. ...
-                            (nbr_zPos))) *                                                          // ...
-                          36) +                                                                     // ... we multiply by 36 (6 for when nbr coarser; six for when nbr same; 24 for when nbr finer).  Then...
-                         axis * 2 + pole)                                                           // ... select which of 36 to use: 0=W, 1=E, 2=S, 3=N, 4=D, 5=U; nbr's nbr is coarser
-                        ^ 1;                                                                        // BUT FLIP POLE: my W comms with nbrs E; etc.
-                     gasket__ocrGuidFromIndex(&faceIn, meta->labeledGuidRangeForHaloExchange, index, __FILE__, __func__, __LINE__, nanny, "faceIn[...]");
-                     gasket__ocrEventCreate   (&faceIn, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS,        __FILE__, __func__, __LINE__, nanny, "faceIn[...]");
+                  if (ocrGuidIsNull(faceIn)) {                                                  // An open channel always holds its label or an On Deck event.
+                     *((int *) 123) = 456;
                   }
                   EVT_DEPENDENCE(faceIn, meta->blockClone_Edt, blockClone_Deps_t, aux_Dep[auxDepIdx+idep], DB_MODE_RO,   nanny, "faceIn[...]")
                   idep++;

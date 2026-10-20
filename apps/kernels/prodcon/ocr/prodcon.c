@@ -107,14 +107,13 @@ ocrGuid_t consumer(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     ocrGuid_t mapProdGuid = (ocrGuid_t){.guid = (intptr_t)paramv[2]};
     ocrGuid_t mapConsGuid = (ocrGuid_t){.guid = (intptr_t)paramv[3]};
     u64 numThreads = paramv[4];
-    u64 buffer     = paramv[5];
     u64 perThreadSize = paramv[6];
     u64 nTimes     = paramv[7];
     ocrGuid_t evt1 = NULL_GUID;
     ocrGuid_t evt2 = NULL_GUID;
 
-    ocrGuidFromIndex(&evt1, mapProdGuid, buffer*a[0] + iter%buffer);
-    ocrGuidFromIndex(&evt2, mapConsGuid, buffer*tid + iter%buffer);
+    ocrGuidFromIndex(&evt1, mapProdGuid, nTimes*a[0] + iter);
+    ocrGuidFromIndex(&evt2, mapConsGuid, nTimes*tid + iter);
     ocrEventDestroy(evt1);
     ocrEventDestroy(evt2);
     if(tid != (((u64)a[0]+SKEW)%numThreads))
@@ -154,6 +153,8 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrDbCreate(&db_a, (void **)&a, sizeof(double)*perThreadSize,
                              FLAGS, NULL_HINT, NO_ALLOC);
+  // A consumer destroys the block: release it before it is handed on.
+  ocrDbRelease(db_a);
 
   if(times) TIMES(tid, iter) = mysecond();
   ocrGuid_t prod_output, cons_output;
@@ -171,14 +172,24 @@ ocrGuid_t loop(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
   ocrEdtCreate(&edt_prod, tmp_producer, EDT_PARAM_DEF, prod_param, EDT_PARAM_DEF, NULL, PROPERTIES, NULL_HINT, &prod_output);
 
-  ocrGuidFromIndex(&evt1, mapProdGuid, buffer*tid + iter%buffer);
-  ocrEventCreate(&evt1, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
+  ocrGuidFromIndex(&evt1, mapProdGuid, nTimes*tid + iter);
+  ocrEventCreate(&evt1, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
 
-  ocrGuidFromIndex(&evt2, mapConsGuid, buffer*((tid+SKEW) % numThreads) + iter%buffer);
-  ocrEventCreate(&evt2, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
+  // evt2 was created by this thread's previous loop and evt3 by the previous
+  // thread's previous loop (both by mainEdt for iteration 0).
+  ocrGuidFromIndex(&evt2, mapConsGuid, nTimes*((tid+SKEW) % numThreads) + iter);
 
-  ocrGuidFromIndex(&evt3, mapConsGuid, buffer*tid + iter%buffer);
-  ocrEventCreate(&evt3, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
+  ocrGuidFromIndex(&evt3, mapConsGuid, nTimes*tid + iter);
+
+  // The next iteration's evt2, created before this task enables its consumer
+  // and producer: so it precedes both users, this thread's next loop (after the
+  // consumer) and the next thread's next loop (after its consumer has taken this
+  // producer's block).
+  if (iter + 1 < nTimes) {
+    ocrGuid_t evtNext = NULL_GUID;
+    ocrGuidFromIndex(&evtNext, mapConsGuid, nTimes*((tid+SKEW) % numThreads) + iter + 1);
+    ocrEventCreate(&evtNext, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+  }
 
   // Phase 2: wire cons_output's waiters first — it is a ONCE event, so all
   // its uses must be registered before any triggering dependency.
@@ -276,8 +287,14 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[])
     perThreadSize = arraySize / numThreads;
     times = (double *)calloc(numThreads * nTimes, sizeof(double));
 
-    ocrGuidRangeCreate(&mapProdGuid, buffer*numThreads, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&mapConsGuid, buffer*numThreads, GUID_USER_EVENT_STICKY);
+    // One label per thread and iteration: a label is never used for a second event.
+    ocrGuidRangeCreate(&mapProdGuid, numThreads*nTimes, GUID_USER_EVENT_STICKY);
+    ocrGuidRangeCreate(&mapConsGuid, numThreads*nTimes, GUID_USER_EVENT_STICKY);
+    for(i = 0; i<numThreads; i++) {
+        ocrGuid_t evt_cons0 = NULL_GUID;
+        ocrGuidFromIndex(&evt_cons0, mapConsGuid, nTimes*i);
+        ocrEventCreate(&evt_cons0, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+    }
 
     ocrEdtTemplateCreate(&tmp_mainLet, mainLet, MAINLET_PARAMC, 0);
 

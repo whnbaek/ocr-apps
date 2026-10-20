@@ -45,7 +45,9 @@ void spawn_temp(const spawn_ctx* x, u32 lo, u32 hi)
     ocrEdtCreate(&edt, tmp, TP_NPARAM, (u64*)x->arg, 1, NULL, OEVT_COUNTED_PROP(0),
                  edt_at(&edtHNT, x->c, x->rank), &done);
     ocrAddDependence(done, x->join, i-lo, DB_MODE_CONST);
-    ocrAddDependence(x->l->cell[b].bx[0], edt, 0, DB_MODE_RW);
+    ocrGuid_t bx = x->l->cell[b].bx[0];
+    spawn_last(x, i, hi);
+    ocrAddDependence(bx, edt, 0, DB_MODE_RW);
   }
   ocrEdtTemplateDestroy(tmp);
 }
@@ -155,6 +157,9 @@ static ocrGuid_t step_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   res_ptr->pe = pe;
   res_ptr->ke = ke;
   res_ptr->n = out->atoms;
+  ocrDbRelease(res);
+  for(u32 d = 0; d < depc; ++d)
+    ocrDbRelease(depv[d].guid);
   ocrAddDependence(res, guid_load(paramv+ST_PARENT), (u32)paramv[ST_SLOT], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -182,7 +187,6 @@ void spawn_step(const spawn_ctx* x, u32 lo, u32 hi)
     ocrHint_t edtHNT;
     ocrEdtCreate(&edt, tmp, ST_NPARAM, pv, SS_NB + rs.count, NULL, 0,
                  edt_at(&edtHNT, x->c, x->rank), NULL);
-    ocrAddDependence(x->cfg, edt, SS_CFG, DB_MODE_CONST);
     ocrAddDependence(x->l->cell[b].bx[gen], edt, SS_IN, DB_MODE_CONST);
     ocrAddDependence(x->l->cell[b].bx[gen^1], edt, SS_OUT, DB_MODE_RW);
     for(u32 k = 0; k < rs.count; ++k) {
@@ -192,6 +196,8 @@ void spawn_step(const spawn_ctx* x, u32 lo, u32 hi)
                          : hb[tab[r->rank*26 + r->dir] + r->run],
                        edt, SS_NB+k, DB_MODE_CONST);
     }
+    spawn_last(x, i, hi);
+    ocrAddDependence(x->cfg, edt, SS_CFG, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(tmp);
 }

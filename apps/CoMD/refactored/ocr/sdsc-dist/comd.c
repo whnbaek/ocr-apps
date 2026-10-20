@@ -99,6 +99,8 @@ static void step_launch(ocrEdtDep_t depv[], const config* c, u32 k, u8 end, u8 l
   arg[SA_KICK_POST] = real_bits(end && !last ? 0.5*dt : 0.0);
   arg[SA_FLAGS] = (end ? SF_ENERGY : 0) | (last ? 0 : SF_DRIFT);
   profile_start(compute_force_timer, depv[SL_TIMER].ptr);
+  ocrDbRelease(depv[SL_TIMER].guid);
+  ocrDbRelease(depv[SL_SIM].guid);
   if(c->nranks <= 1) {
     fan_launch(PH_STEP, depv[SL_CFG].guid, c, depv[SL_LIST].guid, fin, 1, arg);
     return;
@@ -172,6 +174,8 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   }
 
   profile_start(redistribute_timer, timer_p);
+  ocrDbRelease(timer_i);
+  ocrDbRelease(sim_i);
 
   ocrGuid_t tmp, edt;
   ocrHint_t edtHNT;
@@ -212,6 +216,8 @@ ocrGuid_t init_done_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     if(temp > 0.0) scale = sqrt(c->temperature/temp);
   }
 
+  ocrDbRelease(depv[SL_TIMER].guid);
+  ocrDbRelease(depv[SL_SIM].guid);
   ocrGuid_t next = spine(after_temp_edt, SL_DEPC, 0, NULL, c,
                          depv[SL_TIMER].guid, depv[SL_SIM].guid, DB_MODE_CONST,
                          depv[SL_CFG].guid, depv[SL_LIST].guid);
@@ -250,7 +256,12 @@ ocrGuid_t after_step0_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   timestamp("Starting simulation\n");
   print_status_header();
 
-  spine(top_edt, SL_PHASE, 0, NULL, c,
+  config cc = *c;
+  ocrDbRelease(depv[SL_TIMER].guid);
+  ocrDbRelease(depv[SL_SIM].guid);
+  ocrDbRelease(depv[SL_CFG].guid);
+  ocrDbRelease(depv[SL_LIST].guid);
+  spine(top_edt, SL_PHASE, 0, NULL, &cc,
         depv[SL_TIMER].guid, depv[SL_SIM].guid, DB_MODE_CONST,
         depv[SL_CFG].guid, depv[SL_LIST].guid);
 
@@ -294,7 +305,12 @@ ocrGuid_t bot_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   profile_stop(timestep_timer, depv[SL_TIMER].ptr);
 
   ocrEdt_t fn = sim->step < sim->steps ? top_edt : end_edt;
-  spine(fn, SL_PHASE, 0, NULL, c,
+  config cc = *c;
+  ocrDbRelease(depv[SL_TIMER].guid);
+  ocrDbRelease(depv[SL_SIM].guid);
+  ocrDbRelease(depv[SL_CFG].guid);
+  ocrDbRelease(depv[SL_LIST].guid);
+  spine(fn, SL_PHASE, 0, NULL, &cc,
         depv[SL_TIMER].guid, depv[SL_SIM].guid, DB_MODE_CONST,
         depv[SL_CFG].guid, depv[SL_LIST].guid);
 
@@ -344,6 +360,8 @@ ocrGuid_t end_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   /* Teardown is two phases where there is a halo: the blocks that carried it
    * go back first, then the cells, each reclaimed by the rank that owns it. */
   u8 halo = c->nranks > 1;
+  ocrDbRelease(depv[SL_TIMER].guid);
+  ocrDbRelease(depv[SL_SIM].guid);
   ocrGuid_t next = spine(halo ? halo_freed_edt : release_done_edt, SL_DEPC, 0, NULL, c,
                          depv[SL_TIMER].guid, depv[SL_SIM].guid, DB_MODE_CONST,
                          depv[SL_CFG].guid, depv[SL_LIST].guid);
@@ -357,6 +375,8 @@ ocrGuid_t halo_freed_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   const config* c = (const config*)depv[SL_CFG].ptr;
 
+  ocrDbRelease(depv[SL_TIMER].guid);
+  ocrDbRelease(depv[SL_SIM].guid);
   ocrGuid_t next = spine(release_done_edt, SL_DEPC, 0, NULL, c,
                          depv[SL_TIMER].guid, depv[SL_SIM].guid, DB_MODE_CONST,
                          depv[SL_CFG].guid, depv[SL_LIST].guid);

@@ -105,7 +105,7 @@ void initOcrObjects( rankH_t* PTR_rankH, u64 myRank, u64 nRanks )
 
     ocrDbRelease( PTR_rankH->rpXsReductionDBK );
 
-    ocrGuidRangeCreate( &(PTR_rankH->loopReductionRangeGUID), PTR_in->nthreads, GUID_USER_EVENT_STICKY );
+    reductionRangeCreate( &(PTR_rankH->loopReductionRangeGUID), PTR_in->nthreads );
     ocrEventCreate(&(PTR_rankH->rpLoopReductionEVT), OCR_EVENT_STICKY_T, true );
 
     ocrEventCreate(&(PTR_rankH->loopCompletionLatchEVT), OCR_EVENT_LATCH_T, false );
@@ -353,6 +353,16 @@ ocrGuid_t iterationsPerThreadEdt( EDT_ARGS )
     if( PTR_PRM_iterationsPerThread->lastGeneration )
     {
         DEBUG_PRINTF(("Thread %d reached the end of iterations\n", tid));
+        // Both signals below lead to these tables' destroy, and a signal raised
+        // from the body precedes the epilogue's implicit release.
+        ocrDbRelease( DBK_n_poles );
+        ocrDbRelease( DBK_n_windows );
+        ocrDbRelease( DBK_poles );
+        ocrDbRelease( DBK_windows );
+        ocrDbRelease( DBK_pseudo_K0RS );
+        ocrDbRelease( DBK_num_nucs );
+        ocrDbRelease( DBK_mats_all );
+        ocrDbRelease( DBK_concs_all );
         ocrEventSatisfySlot( PTR_rankH->loopCompletionLatchEVT, NULL_GUID, OCR_EVENT_LATCH_DECR_SLOT );
         reductionLaunch( rpLoopReductionPTR, rpLoopReductionDBK, reductionVars );
     }
@@ -1087,8 +1097,8 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     //Create OCR objects to pass down to the child EDTs
     //for collective operatations among the child EDTs
     globalOcrParamH_t ocrParamH;
-    ocrGuidRangeCreate( &(ocrParamH.perfTimerReductionRangeGUID), nRanks, GUID_USER_EVENT_STICKY );
-    ocrGuidRangeCreate( &(ocrParamH.xsReductionRangeGUID), nRanks, GUID_USER_EVENT_STICKY );
+    reductionRangeCreate( &(ocrParamH.perfTimerReductionRangeGUID), nRanks );
+    reductionRangeCreate( &(ocrParamH.xsReductionRangeGUID), nRanks );
 
     ocrGuid_t wrapUpTML, wrapUpEDT;
     ocrEdtTemplateCreate( &wrapUpTML, wrapUpEdt, 0, 1 );

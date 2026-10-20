@@ -949,6 +949,7 @@ ocrGuid_t refineEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         case WONT_REFINE:
             {
                 ocrEdtCreate( &relaunchGUID, coarsenTML, EDT_PARAM_DEF, NULL, 1, NULL, EDT_PROP_NONE, NULL_HINT, NULL );
+                ocrDbRelease( depv[depc-2].guid );
                 ocrAddDependence( depv[depc-2].guid, relaunchGUID, 0, DB_MODE_RW );
             }
             break;
@@ -1224,6 +1225,7 @@ ocrGuid_t establishNewConnections( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep
      * producer's still-pending release writeback (release-before-handoff). */
     ocrDbRelease( channelListDBK );
     ocrDbRelease( subSetDBK );
+    ocrDbRelease( depv[1].guid );
     ocrAddDependence( channelListDBK, refineGUID, 0, DB_MODE_RW );
     ocrAddDependence( depv[1].guid, refineGUID, 7, DB_MODE_RW );
     ocrAddDependence( subSetDBK, refineGUID, 8, DB_MODE_RW );
@@ -1292,6 +1294,8 @@ ocrGuid_t updateIntentEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[
         ocrEdtTemplateCreate( &newConnectionsTML, establishNewConnections, 0, 2 );
         ocrEdtCreate( &newConnectionsGUID, newConnectionsTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &edtHNT, NULL );
         ocrEdtTemplateDestroy( newConnectionsTML );
+        ocrDbRelease( depv[0].guid );
+        ocrDbRelease( depv[depc-1].guid );
         ocrAddDependence( depv[0].guid, newConnectionsGUID, 0, DB_MODE_RW );
         ocrAddDependence( depv[depc-1].guid, newConnectionsGUID, 1, DB_MODE_RW );
     }
@@ -1622,6 +1626,7 @@ ocrGuid_t refineControlEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv
     ocrEdtCreate( &willRefineGUID, PRM_block->willRefineTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &edtHNT, &willRefineEVT ); //we care about the returnEVT of this Edt.
     ocrEdtCreate( &intentGUID, PRM_block->communicateIntentTML, EDT_PARAM_DEF, NULL, EDT_PARAM_DEF, NULL, EDT_PROP_NONE, &edtHNT, NULL );
 
+    ocrDbRelease( depv[0].guid );
     ocrAddDependence( willRefineEVT, intentGUID, 0, DB_MODE_RW );
     ocrAddDependence( depv[0].guid, intentGUID, 1, DB_MODE_RW );
 

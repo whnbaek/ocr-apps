@@ -192,6 +192,8 @@ typedef struct BlockMeta_t {
                                                              //     capacity of labeled guids used in this OCR version.
    unsigned char finerNeighborNotUnrefiningAndNotTalkingAnyMore; // Bit mask of non-sibling neighbors that have already told me they are finer than me and won't unrefine.  See step 1 and 5 of unrefine code in
                                                                  // refine.c
+   unsigned char neighborChanged;                            // Bit (axis*2+pole): the coarser or same-level neighbor in that direction changes level in the same refine step or unrefine iteration as this block.
+   unsigned int  conveyLabelUnsent;                          // Bit ((axis*2+pole)*4+qrtr): conveyFaceToNeighbor_Event holds a channel label that has not been sent on.
    DbSize_t  dbSize[countof_blockClone_fixedDeps_t];         // Size of the various datablocks manipulated by blockClone_Func EDT (and catalogued in its clone-handling code).
    Clone_t   cloningState;
    ocrGuid_t labeledGuidRangeForHaloExchange;
@@ -220,6 +222,7 @@ typedef struct Block_t {
    unsigned char   neighborRefinementLevel_North;  //                                    North
    unsigned char   neighborRefinementLevel_Up;     //                                    Upward
    unsigned char   finerNeighborNotUnrefiningAndNotTalkingAnyMore; // Bit mask of non-sibling neighbors that have already told me they are finer than me and won't unrefine.  See step 1 and 5 of unrefine code in
+   unsigned char   neighborChanged;                // Used to convey the neighborChanged bits of prong111 to the aggregation of an unrefine (i.e. join).
 } Block_t;
 
 #define sizeof_Block_t (sizeof(Block_t) + ((control->x_block_size + 2) * (control->y_block_size + 2) * (control->z_block_size + 2) * control->num_vars * sizeof(double)))

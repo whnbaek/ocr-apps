@@ -435,6 +435,10 @@ ocrGuid_t timestepEdt( EDT_ARGS )
             createEventHelper( &finalizeOEVTS, 1);
             ocrAddDependence( finalizeOEVT, finalizeOEVTS, 0, DB_MODE_NULL );
 
+            ocrDbRelease(DBK_rankH);
+            ocrDbRelease(rpKeDBK);
+            ocrDbRelease(rpPerfTimerDBK);
+
             _idep = 0;
             ocrAddDependence( DBK_rankH, finalizeEDT, _idep++, DB_MODE_RO ); //TODO
             ocrAddDependence( DBK_sim, finalizeEDT, _idep++, DB_MODE_RW );
@@ -562,7 +566,11 @@ ocrGuid_t printThingsEdt( EDT_ARGS )
     if(iStep!=0) stopTimer(sim->perfTimer, timestepTimer);
 
     if(iStep==sim->nSteps)
+    {
+        //With no timestep the loop is empty: it starts and ends at this print
+        if(sim->nSteps==0) profileStart(sim->perfTimer, loopTimer);
         profileStop(sim->perfTimer, loopTimer);
+    }
 
     int nGlobal = (int) eGlobalPTR[2];
     real_t e_u = eGlobalPTR[0];
@@ -642,6 +650,15 @@ _OCR_TASK_FNC_( timestepLoopEdt )
     createEventHelper( &timestepOEVTS, 1);
     ocrAddDependence( timestepOEVT, timestepOEVTS, 0, DB_MODE_NULL );
 
+    s32 nSteps = PTR_cmd->nSteps;
+    ocrTML_t loopTML = PTR_rankTemplateH->timestepLoopTML;
+    ocrHint_t loopHNT = PTR_rankH->myEdtAffinityHNT;
+
+    ocrDbRelease(DBK_rankH);
+    ocrDbRelease(DBK_sim);
+    ocrDbRelease(depv[2].guid);
+    ocrDbRelease(depv[3].guid);
+
     _idep = 0;
     ocrAddDependence( DBK_rankH, timestepEDT, _idep++, DB_MODE_RO );
     ocrAddDependence( DBK_sim, timestepEDT, _idep++, DB_MODE_RW );
@@ -650,23 +667,21 @@ _OCR_TASK_FNC_( timestepLoopEdt )
 
     itimestep += 1;
 
-    s32 nSteps = PTR_cmd->nSteps;
-
     if( itimestep < nSteps )
     {
         //start next timestep
         ocrGuid_t timestepLoopTML, timestepLoopEDT;
 
 #ifdef ENABLE_SPAWNING_HINT
-        ocrHint_t timestepLoopHNT = PTR_rankH->myEdtAffinityHNT;
+        ocrHint_t timestepLoopHNT = loopHNT;
         ocrSetHintValue(&timestepLoopHNT, OCR_HINT_EDT_SPAWNING, TimestepLoopEdt_PRIORITY);
-        ocrEdtCreate( &timestepLoopEDT, PTR_rankTemplateH->timestepLoopTML,
+        ocrEdtCreate( &timestepLoopEDT, loopTML,
                       EDT_PARAM_DEF, (u64*)&itimestep, EDT_PARAM_DEF, NULL,
                       EDT_PROP_NONE, &timestepLoopHNT, NULL );
 #else
-        ocrEdtCreate( &timestepLoopEDT, PTR_rankTemplateH->timestepLoopTML,
+        ocrEdtCreate( &timestepLoopEDT, loopTML,
                       EDT_PARAM_DEF, (u64*)&itimestep, EDT_PARAM_DEF, NULL,
-                      EDT_PROP_NONE, &PTR_rankH->myEdtAffinityHNT, NULL );
+                      EDT_PROP_NONE, &loopHNT, NULL );
 #endif
 
         _idep = 0;
@@ -768,7 +783,8 @@ void advancePosition(SimFlat* s, int nBoxes, real_t dt)
 
 /// Calculates total kinetic and potential energy across all tasks.  The
 /// local potential energy is a by-product of the force routine.
-void kineticEnergy(SimFlat* s)
+void kineticEnergy(SimFlat* s, ocrDBK_t DBK_rankH, ocrDBK_t DBK_sim, ocrDBK_t DBK_nAtoms,
+                   ocrDBK_t DBK_iSpecies, ocrDBK_t DBK_p)
 {
     DEBUG_PRINTF(( "%s\n", __func__ ));
 
@@ -793,7 +809,15 @@ void kineticEnergy(SimFlat* s)
 
    real_t eSum[2];
    startTimer(s->perfTimer, commReduceTimer);
-   reductionLaunch(s->PTR_rankH->rpKePTR, s->PTR_rankH->rpKeDBK, eLocal);
+   reductionPrivate_t* rpKePTR = s->PTR_rankH->rpKePTR;
+   ocrDBK_t rpKeDBK = s->PTR_rankH->rpKeDBK;
+   // The reduction's result leads to the destroy of the blocks the caller holds.
+   ocrDbRelease(DBK_rankH);
+   ocrDbRelease(DBK_sim);
+   ocrDbRelease(DBK_nAtoms);
+   ocrDbRelease(DBK_iSpecies);
+   ocrDbRelease(DBK_p);
+   reductionLaunch(rpKePTR, rpKeDBK, eLocal);
    //stopTimer(commReduceTimer);
 }
 
@@ -839,7 +863,7 @@ ocrGuid_t kineticEnergyEdt(EDT_ARGS)
     real_t vZero[3] = {0., 0., 0.};
     real_t* newVcm = vZero;
 
-    kineticEnergy(sim);
+    kineticEnergy(sim, DBK_rankH, DBK_sim, DBK_nAtoms, DBK_iSpecies, DBK_p);
 
     return NULL_GUID;
 }

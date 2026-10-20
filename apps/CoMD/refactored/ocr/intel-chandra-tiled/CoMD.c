@@ -673,10 +673,14 @@ _OCR_TASK_FNC_( FNC_initSimulation )
     ////Print things
     ocrGuid_t printThingsEDT, printThingsOEVT, printThingsOEVTS;
 
+    //With no timestep this is the last print: it launches the timer reduction, so it writes that reduction's
+    //block, and its finish scope covers the reduction before the epilogue destroys the block
+    u16 printThingsProp = (nSteps > 0) ? EDT_PROP_NONE : EDT_PROP_FINISH;
+
     OEVT_COUNTED_PRE(printThingsOEVT);
     ocrEdtCreate( &printThingsEDT, printThingsTML,
                   EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
-                  OEVT_COUNTED_PROP(EDT_PROP_NONE), &myEdtAffinityHNT, &printThingsOEVT );
+                  OEVT_COUNTED_PROP(printThingsProp), &myEdtAffinityHNT, &printThingsOEVT );
 
     createEventHelper( &printThingsOEVTS, 1);
     ocrAddDependence( printThingsOEVT, printThingsOEVTS, 0, DB_MODE_NULL );
@@ -685,7 +689,7 @@ _OCR_TASK_FNC_( FNC_initSimulation )
     ocrAddDependence( DBK_rankH, printThingsEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( DBK_sim, printThingsEDT, _idep++, DB_MODE_RW );
     ocrAddDependence( rpKeEVT, printThingsEDT, _idep++, DB_MODE_RO );
-    ocrAddDependence( rpPerfTimerDBK, printThingsEDT, _idep++, DB_MODE_RO );
+    ocrAddDependence( rpPerfTimerDBK, printThingsEDT, _idep++, (nSteps > 0) ? DB_MODE_RO : DB_MODE_RW );
     ocrAddDependence( printSimulationDataOEVTS, printThingsEDT, _idep++, DB_MODE_NULL );
 
     //start timestep loop
@@ -711,6 +715,55 @@ _OCR_TASK_FNC_( FNC_initSimulation )
         ocrAddDependence( printThingsOEVTS, timestepLoopEDT, _idep++, DB_MODE_NULL );
         ocrAddDependence( NULL_GUID, timestepLoopEDT, _idep++, DB_MODE_NULL );
         ocrAddDependence( NULL_GUID, timestepLoopEDT, _idep++, DB_MODE_NULL );
+    }
+    else
+    {
+        //With no timestep the run's epilogue, and the SPMD join that reaches shutdown, follows this print
+        ocrGuid_t printPerformanceResultsOEVTS;
+        createEventHelper( &printPerformanceResultsOEVTS, 1);
+
+        if( id == 0 )
+        {
+        ocrGuid_t printPerformanceResultsTML, printPerformanceResultsEDT, printPerformanceResultsOEVT;
+
+        ocrEdtTemplateCreate( &printPerformanceResultsTML, printPerformanceResultsEdt, 1, 4 );
+
+        OEVT_COUNTED_PRE(printPerformanceResultsOEVT);
+        ocrEdtCreate( &printPerformanceResultsEDT, printPerformanceResultsTML,
+                      EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &printPerformanceResultsOEVT );
+        ocrEdtTemplateDestroy( printPerformanceResultsTML );
+
+        ocrAddDependence( printPerformanceResultsOEVT, printPerformanceResultsOEVTS, 0, DB_MODE_NULL );
+
+        _idep = 0;
+        ocrAddDependence( DBK_rankH, printPerformanceResultsEDT, _idep++, DB_MODE_RO );
+        ocrAddDependence( DBK_sim, printPerformanceResultsEDT, _idep++, DB_MODE_RW );
+        ocrAddDependence( rpPerfTimerEVT, printPerformanceResultsEDT, _idep++, DB_MODE_RO );
+        ocrAddDependence( printThingsOEVTS, printPerformanceResultsEDT, _idep++, DB_MODE_NULL );
+        }
+        else
+            ocrAddDependence( printThingsOEVTS, printPerformanceResultsOEVTS, 0, DB_MODE_RO );
+
+        ocrGuid_t finalizeTML, finalizeEDT, finalizeOEVT, finalizeOEVTS;
+
+        ocrEdtTemplateCreate( &finalizeTML, finalizeEdt, 1, 5 );
+
+        OEVT_COUNTED_PRE(finalizeOEVT);
+        ocrEdtCreate( &finalizeEDT, finalizeTML,
+                      EDT_PARAM_DEF, (u64*) &itimestep, EDT_PARAM_DEF, NULL,
+                      OEVT_COUNTED_PROP(EDT_PROP_FINISH), &myEdtAffinityHNT, &finalizeOEVT );
+        ocrEdtTemplateDestroy( finalizeTML );
+
+        createEventHelper( &finalizeOEVTS, 1);
+        ocrAddDependence( finalizeOEVT, finalizeOEVTS, 0, DB_MODE_NULL );
+
+        _idep = 0;
+        ocrAddDependence( DBK_rankH, finalizeEDT, _idep++, DB_MODE_RO );
+        ocrAddDependence( DBK_sim, finalizeEDT, _idep++, DB_MODE_RW );
+        ocrAddDependence( DBK_pot, finalizeEDT, _idep++, DB_MODE_RW );
+        ocrAddDependence( rpSpmdJoinDBK, finalizeEDT, _idep++, DB_MODE_RW );
+        ocrAddDependence( printPerformanceResultsOEVTS, finalizeEDT, _idep++, DB_MODE_NULL );
     }
 
     return NULL_GUID;
@@ -762,6 +815,7 @@ _OCR_TASK_FNC_( FNC_comdMain )
 
     ocrAddDependence( TS_initSimulation.OET, TS_initSimulation_OEVTS, 0, DB_MODE_NULL );
 
+    ocrDbRelease(DBK_rankH);
 
     _idep = 0;
     ocrAddDependence( DBK_rankH, TS_initSimulation.EDT, _idep++, DB_MODE_RW );
@@ -938,9 +992,7 @@ _OCR_TASK_FNC_( initEdt )
         iz = MOD(iz0+k, gz);
         u32 nbrRank = globalRankFromCoords_Cart3D(ix, iy, iz, gx, gy, gz);
 
-        //Collective event create for sends
         ocrGuidFromIndex(&(stickyEVT), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID, nNbrs*id + nbr);//send
-        ocrEventCreate( &stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
         ocrGuid_t* eventsPTR;
         ocrGuid_t eventsDBK;
@@ -986,7 +1038,6 @@ _OCR_TASK_FNC_( initEdt )
         //Map the sends to receive events
         //receive: (id, nbr) will be the send event from the (nbrRank,nbrImage)
         ocrGuidFromIndex( &(stickyEVT_new), PTR_rankH->globalParamH.ocrParamH.haloRangeGUID, nNbrs*nbrRank + nbrImage );
-        ocrEventCreate( &stickyEVT_new, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG );
 
         //DEBUG_PRINTF(("s %d se %d r %d re %d s(%d %d %d) r(%d %d %d)\n", id, nbr, nbrRank, nbrImage, ix0, iy0, iz0, ix, iy, iz ));
         //ocrPrintf("Send rank %d %d "GUIDF" \n", id, nbr, PTR_rankH->haloSendEVTs[nbr]);
@@ -1145,11 +1196,18 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[] )
     globalOcrParamH_t ocrParamH;
     ocrGuidRangeCreate(&(ocrParamH.haloRangeGUID), 6*nRanks, GUID_USER_EVENT_STICKY);
     //TODO: Either have 6 nbrs or 27 nbrs depending on the halo-exchange implementation
-    ocrGuidRangeCreate(&(ocrParamH.KeReductionRangeGUID), nRanks, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(ocrParamH.VcmReductionRangeGUID),nRanks, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(ocrParamH.maxOccupancyReductionRangeGUID),nRanks, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(ocrParamH.perfTimerReductionRangeGUID),nRanks, GUID_USER_EVENT_STICKY);
-    ocrGuidRangeCreate(&(ocrParamH.spmdJoinReductionRangeGUID),nRanks, GUID_USER_EVENT_STICKY);
+    //Each halo label is created once here, before the rank tasks that satisfy it or depend on it
+    for( u64 iHalo = 0; iHalo < 6*nRanks; ++iHalo )
+    {
+        ocrGuid_t haloEVT;
+        ocrGuidFromIndex( &haloEVT, ocrParamH.haloRangeGUID, iHalo );
+        ocrEventCreate( &haloEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG );
+    }
+    reductionRangeCreate(&(ocrParamH.KeReductionRangeGUID), nRanks);
+    reductionRangeCreate(&(ocrParamH.VcmReductionRangeGUID), nRanks);
+    reductionRangeCreate(&(ocrParamH.maxOccupancyReductionRangeGUID), nRanks);
+    reductionRangeCreate(&(ocrParamH.perfTimerReductionRangeGUID), nRanks);
+    reductionRangeCreate(&(ocrParamH.spmdJoinReductionRangeGUID), nRanks);
 
     ocrEventCreate( &(ocrParamH.EVT_OUT_spmdJoin_reduction), OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG );
 

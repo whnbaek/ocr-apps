@@ -56,6 +56,7 @@ static ocrGuid_t cat_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     }
     ocrDbDestroy(depv[i].guid);
   }
+  ocrDbRelease(out);
   ocrAddDependence(out, guid_load(paramv+CP_PARENT), (u32)paramv[CP_SLOT], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -126,7 +127,10 @@ static ocrGuid_t fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 {
   const mesh* m = (const mesh*)depv[FD_MESH].ptr;
   const mesh* om = depv[FD_OMESH].ptr ? (const mesh*)depv[FD_OMESH].ptr : NULL;
-  const control* c = &m->c;
+  /* A copy: a node that only forwards the directories releases them before
+   * its first hand-off and still needs the record for placement. */
+  control cl = m->c;
+  const control* c = &cl;
   u32 phase = (u32)paramv[FP_PHASE];
   u32 rlo = (u32)paramv[FP_RLO], rhi = (u32)paramv[FP_RHI];
   u32 lo = (u32)paramv[FP_LO], hi = (u32)paramv[FP_HI];
@@ -137,6 +141,8 @@ static ocrGuid_t fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   u32 rank = rlo;
 
   if(rhi - rlo > 1) {
+    for(u32 d = 0; d < FD_DEPC; ++d)
+      if(!ocrGuidIsNull(depv[d].guid)) ocrDbRelease(depv[d].guid);
     u32 k = rhi - rlo < FAN_BRANCH ? rhi - rlo : FAN_BRANCH;
     ocrGuid_t node = node_create(c, collects, 0, k, parent, slot, rank);
     if(ocrGuidIsNull(node)) return NULL_GUID;
@@ -164,6 +170,8 @@ static ocrGuid_t fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
   if(n == 0) {
     /* A rank with nothing to do still has to report, or the phase's collector
      * would wait on a slot nobody ever fills. */
+    for(u32 d = 0; d < FD_DEPC; ++d)
+      if(!ocrGuidIsNull(depv[d].guid)) ocrDbRelease(depv[d].guid);
     ocrGuid_t node = node_create(c, collects, 1, 0, parent, slot, rank);
     (void)node;
     return NULL_GUID;
@@ -173,6 +181,8 @@ static ocrGuid_t fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
      * over the leaf width however deep the recursion runs. */
     u32 u = (n + c->width - 1)/c->width;
     u32 k = u < FAN_BRANCH ? u : FAN_BRANCH;
+    for(u32 d = 0; d < FD_DEPC; ++d)
+      if(!ocrGuidIsNull(depv[d].guid)) ocrDbRelease(depv[d].guid);
     ocrGuid_t node = node_create(c, collects, 0, k, parent, slot, rank);
     if(ocrGuidIsNull(node)) return NULL_GUID;
     ocrGuid_t tmp;

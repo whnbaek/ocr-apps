@@ -34,7 +34,7 @@ However before calling reductionLaunch the user must
       ndata: number of elements to be reduced
       new: set to TRUE for the first call
       reductionOperator: choose which reduction to do (choices in reduction.h)
-      rangeGUID: a set of at least nrank-1 labeled STICKY event GUIDs
+      rangeGUID: made by reductionRangeCreate(&rangeGUID, nrank) in a task that precedes every participant
       returnEVT: an event that each rank will use
          to return the reduced data to the clones.
          Can be reused if made a channel event.

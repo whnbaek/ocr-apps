@@ -141,6 +141,7 @@ static u8 eam_init_setfl(potential* pot, const char* pot_dir, char* pot_name)
     fscanf(file, FMT1, buffer_ptr+i);
 #endif
   init_interpolator(&pot->eam.f, n_rho, 0.0, d_rho, buffer, buffer_ptr);
+  ocrDbRelease(buffer);
 
   ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
   for(u32 i=0; i<nr; ++i)
@@ -155,6 +156,7 @@ static u8 eam_init_setfl(potential* pot, const char* pot_dir, char* pot_name)
     fscanf(file, FMT1, buffer_ptr+i);
 #endif
   init_interpolator(&pot->eam.rho, nr, 0.0, dr, buffer, buffer_ptr);
+  ocrDbRelease(buffer);
 
   ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
   for(u32 i=0; i<nr; ++i)
@@ -172,6 +174,7 @@ static u8 eam_init_setfl(potential* pot, const char* pot_dir, char* pot_name)
     buffer_ptr[i] /= i*dr;
   buffer_ptr[0] = buffer_ptr[1] + (buffer_ptr[1] - buffer_ptr[2]);
   init_interpolator(&pot->eam.phi, nr, 0.0, dr, buffer, buffer_ptr);
+  ocrDbRelease(buffer);
 
   fclose(file);
   return 0;
@@ -269,6 +272,7 @@ static u8 eam_init_funcfl(potential* pot, const char* pot_dir, char* pot_name)
     fscanf(file, FMT1, buffer_ptr+i);
 #endif
   init_interpolator(&pot->eam.f, n_rho, 0.0, d_rho, buffer, buffer_ptr);
+  ocrDbRelease(buffer);
 
   ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
 #ifdef TG_ARCH
@@ -291,6 +295,7 @@ static u8 eam_init_funcfl(potential* pot, const char* pot_dir, char* pot_name)
   }
   buffer_ptr[0] = buffer_ptr[1] + (buffer_ptr[1] - buffer_ptr[2]);
   init_interpolator(&pot->eam.phi, nr, 0.0, dr, buffer, buffer_ptr);
+  ocrDbRelease(buffer);
 
   ocrDbCreate(&buffer, (void**)&buffer_ptr, sizeof(real_t)*(nr+3), 0, NULL_HINT, NO_ALLOC);
 #ifdef TG_ARCH
@@ -308,6 +313,7 @@ static u8 eam_init_funcfl(potential* pot, const char* pot_dir, char* pot_name)
     fscanf(file, FMT1, buffer_ptr+i);
 #endif
   init_interpolator(&pot->eam.rho, nr, 0.0, dr, buffer, buffer_ptr);
+  ocrDbRelease(buffer);
 
   fclose(file);
   return 0;
@@ -505,6 +511,14 @@ ocrGuid_t eam_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ++bbg[0]; if(bbg[0] == sim->bxs.grid[0]) bbg[0] = 0;
   }
 
+  ocrDbRelease(res);
+  /* On a small grid one box fills two neighbour slots; each block is
+   * released once. */
+  for(u32 d = 0; d < depc; ++d) {
+    u32 e = 0;
+    while(e < d && !ocrGuidIsEq(depv[e].guid, depv[d].guid)) ++e;
+    if(e == d) ocrDbRelease(depv[d].guid);
+  }
   ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, 1+paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -525,6 +539,7 @@ ocrGuid_t rho_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     a->U[aa] += fembed;
     *res_ptr += fembed;
   }
+  ocrDbRelease(res);
   ocrAddDependence(res, (ocrGuid_t){.guid = paramv[0]}, 1+paramv[1], DB_MODE_CONST);
 
   return NULL_GUID;

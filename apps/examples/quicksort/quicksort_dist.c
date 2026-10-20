@@ -330,6 +330,8 @@ ocrGuid_t chunkTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
         dest[i] = d;
         count[d]++;
     }
+    //the report leads to the place's join, which destroys the splitter copy
+    ocrDbRelease(depv[0].guid);
 
     ocrGuid_t db;
     u64 *out;
@@ -419,6 +421,9 @@ ocrGuid_t countTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     out[0] = in[0];
     for(i = 0; i < in[1]; i++)
         out[1 + bucketOf(in[2 + i], splitters, nbuckets) - lo]++;
+    //the report leads to the scatter and the join that destroy these two
+    ocrDbRelease(depv[0].guid);
+    ocrDbRelease(depv[1].guid);
     ocrDbRelease(db);
     ocrEventSatisfy(evt, db);
     return NULL_GUID;
@@ -518,6 +523,8 @@ ocrGuid_t scatterTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 // The one edge between filling the place's array and sorting inside it, so the
 // buckets take one dependence each rather than one per arrival.
 ocrGuid_t readyTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
+    //the buckets lead to the join that destroys the array
+    ocrDbRelease(depv[0].guid);
     ocrEventSatisfy((ocrGuid_t){.guid = paramv[0]}, depv[0].guid);
     return NULL_GUID;
 }
@@ -550,6 +557,9 @@ ocrGuid_t bucketTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
         v[3] = total ? a[0] : 0;
         v[4] = total ? a[total-1] : 0;
     }
+    //the verdict leads to the join that destroys the array and the offsets
+    ocrDbRelease(depv[0].guid);
+    ocrDbRelease(depv[1].guid);
     ocrDbRelease(sumDb);
     ocrEventSatisfy(evt, sumDb);
     return NULL_GUID;

@@ -419,11 +419,24 @@ TRACE1("uts_printParams about to create edt for for continuation");
   __old_frame->context.new_pc = __frame->paramv.vars.std.context.old_pc;
   ocrGuid_t __edt_continuation_guid;
   ocrPtrFree(__FRAME);
-  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_frame->context.new_pc.guid,
-                         __old_frame->context.paramc, (uint64_t *)((void *)__old_frame),
-                         __old_frame->context.depc,   (ocrGuid_t *)((void *)__old_frame+ __old_frame->context.paramc*sizeof(uint64_t)),
+  /* the continuation leads to the caller frame's destroy: copy its arguments
+   * out of the frame and release the frame before creating it */
+  uint32_t __old_paramc = __old_frame->context.paramc;
+  uint32_t __old_depc   = __old_frame->context.depc;
+  __continuation_args_t *__old_paramv = (__continuation_args_t *) ALLOC( __old_paramc*sizeof(uint64_t) );
+  CHECK_RET_VAL("ALLOC __old_paramv[]",(__old_paramv == NULL));
+  ocrGuid_t *__old_depv = (ocrGuid_t *) ALLOC( __old_depc*sizeof(ocrGuid_t) );
+  CHECK_RET_VAL("ALLOC __old_depv[]",(__old_depv == NULL));
+  memcpy( __old_paramv, (void *)__old_frame, __old_paramc*sizeof(uint64_t) );
+  memcpy( __old_depv, (void *)__old_frame+ __old_paramc*sizeof(uint64_t), __old_depc*sizeof(ocrGuid_t) );
+  ocrDbRelease(__depv->segment.old_frame.guid);
+  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_paramv->context.new_pc.guid,
+                         __old_paramc, &__old_paramv->paramv[0],
+                         __old_depc,   __old_depv,
                          EDT_PROP_NONE, NULL_HINT, NULL );
   CHECK_RET_VAL("uts_printParams->ocrEdtCreate",__ret_val);
+  FREE(__old_depv);
+  FREE(__old_paramv);
 
 TRACE0("uts_printParams()<>offset_zero");
   return NULL_GUID;
@@ -581,6 +594,9 @@ assert( IS_GUID_EQUAL(__frame->depv.selector.new_frame, __FRAME.guid) );
 
 TRACE1("uts_parseParams about to create edt for uts_parseParams for argv_i");
   ocrGuid_t __edt_uts_parseParams_guid;
+  /* the callee leads to both frames' destroy: release them first */
+  ocrDbRelease(__FRAME.guid);
+  ocrDbRelease(__depv->segment.old_frame.guid);
   __ret_val = ocrEdtCreate(&__edt_uts_parseParams_guid, __template_uts_parseParams.guid,
             WORDS_uts_parseParams_args_t  + 1, &__paramv_0->paramv[0],
             WORDS_uts_parseParams_guids_t + 1, &__depv_0->guids[0],
@@ -653,6 +669,9 @@ assert( IS_GUID_EQUAL(__frame->depv.selector.new_frame, __FRAME.guid) );
 
 TRACE1("uts_parseParams about to create edt for uts_parseParams for argv_i and argv_ip1");
   ocrGuid_t __edt_uts_parseParams_guid;
+  /* the callee leads to both frames' destroy: release them first */
+  ocrDbRelease(__FRAME.guid);
+  ocrDbRelease(__depv->segment.old_frame.guid);
   __ret_val = ocrEdtCreate(&__edt_uts_parseParams_guid, __template_uts_parseParams.guid,
             WORDS_uts_parseParams_args_t  + 2, &__paramv_0->paramv[0],
             WORDS_uts_parseParams_guids_t + 2, &__depv_0->guids[0],
@@ -732,11 +751,24 @@ TRACE1("uts_parseParams about to create edt for continuation");
   __old_frame->context.new_pc = __frame->paramv.vars.std.context.old_pc;
   ocrGuid_t __edt_continuation_guid;
   ocrPtrFree(__FRAME);
-  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_frame->context.new_pc.guid,
-                         __old_frame->context.paramc, (uint64_t *)((void *)__old_frame),
-                         __old_frame->context.depc,   (ocrGuid_t *)((void *)__old_frame+ __old_frame->context.paramc*sizeof(uint64_t)),
+  /* the continuation leads to the caller frame's destroy: copy its arguments
+   * out of the frame and release the frame before creating it */
+  uint32_t __old_paramc = __old_frame->context.paramc;
+  uint32_t __old_depc   = __old_frame->context.depc;
+  __continuation_args_t *__old_paramv = (__continuation_args_t *) ALLOC( __old_paramc*sizeof(uint64_t) );
+  CHECK_RET_VAL("ALLOC __old_paramv[]",(__old_paramv == NULL));
+  ocrGuid_t *__old_depv = (ocrGuid_t *) ALLOC( __old_depc*sizeof(ocrGuid_t) );
+  CHECK_RET_VAL("ALLOC __old_depv[]",(__old_depv == NULL));
+  memcpy( __old_paramv, (void *)__old_frame, __old_paramc*sizeof(uint64_t) );
+  memcpy( __old_depv, (void *)__old_frame+ __old_paramc*sizeof(uint64_t), __old_depc*sizeof(ocrGuid_t) );
+  ocrDbRelease(__depv->segment.old_frame.guid);
+  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_paramv->context.new_pc.guid,
+                         __old_paramc, &__old_paramv->paramv[0],
+                         __old_depc,   __old_depv,
                          EDT_PROP_NONE, NULL_HINT, NULL );
   CHECK_RET_VAL("uts_parseParams->ocrEdtCreate",__ret_val);
+  FREE(__old_depv);
+  FREE(__old_paramv);
 
 TRACE0("uts_parseParams()<>argv_ip1\n");
   return NULL_GUID;
@@ -1295,6 +1327,9 @@ TRACE1("uts_TreeSearch about to pass guids on to uts_TreeSearch");
 TRACE1("uts_TreeSearch about to create edt for uts_TreeSearch");
 
         ocrGuid_t __edt_uts_TreeSearch;
+        /* the callee leads to both frames' destroy: release them first */
+        ocrDbRelease(__FRAME.guid);
+        ocrDbRelease(__depv->segment.old_frame.guid);
         __ret_val = ocrEdtCreate(&__edt_uts_TreeSearch,             __paramv_0.vars.std.context.new_pc.guid,
                                __paramv_0.vars.std.context.paramc, &__paramv_0.paramv[0],
                                __paramv_0.vars.std.context.depc,   &__depv_0.guids[0],
@@ -1361,11 +1396,24 @@ TRACE1("uts_TreeSearch about to create edt for for continuation");
   __old_frame->context.new_pc = __frame->paramv.vars.std.context.old_pc;
   ocrGuid_t __edt_continuation_guid;
   ocrPtrFree(__FRAME);
-  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_frame->context.new_pc.guid,
-                         __old_frame->context.paramc, (uint64_t *)((void *)__old_frame),
-                         __old_frame->context.depc,   (ocrGuid_t *)((void *)__old_frame+ __old_frame->context.paramc*sizeof(uint64_t)),
+  /* the continuation leads to the caller frame's destroy: copy its arguments
+   * out of the frame and release the frame before creating it */
+  uint32_t __old_paramc = __old_frame->context.paramc;
+  uint32_t __old_depc   = __old_frame->context.depc;
+  __continuation_args_t *__old_paramv = (__continuation_args_t *) ALLOC( __old_paramc*sizeof(uint64_t) );
+  CHECK_RET_VAL("ALLOC __old_paramv[]",(__old_paramv == NULL));
+  ocrGuid_t *__old_depv = (ocrGuid_t *) ALLOC( __old_depc*sizeof(ocrGuid_t) );
+  CHECK_RET_VAL("ALLOC __old_depv[]",(__old_depv == NULL));
+  memcpy( __old_paramv, (void *)__old_frame, __old_paramc*sizeof(uint64_t) );
+  memcpy( __old_depv, (void *)__old_frame+ __old_paramc*sizeof(uint64_t), __old_depc*sizeof(ocrGuid_t) );
+  ocrDbRelease(__depv->segment.old_frame.guid);
+  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_paramv->context.new_pc.guid,
+                         __old_paramc, &__old_paramv->paramv[0],
+                         __old_depc,   __old_depv,
                          EDT_PROP_NONE, NULL_HINT, NULL );
   CHECK_RET_VAL("uts_TreeSearch->ocrEdtCreate",__ret_val);
+  FREE(__old_depv);
+  FREE(__old_paramv);
 
 TRACE0("uts_TreeSearch()<>offset_zero");
   return NULL_GUID;
@@ -1483,11 +1531,24 @@ TRACE1("uts_initTreeRoot about to create edt for for continuation");
   __old_frame->context.new_pc = __frame->paramv.vars.std.context.old_pc;
   ocrGuid_t __edt_continuation_guid;
   ocrPtrFree(__FRAME);
-  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_frame->context.new_pc.guid,
-                         __old_frame->context.paramc, (uint64_t *)((void *)__old_frame),
-                         __old_frame->context.depc,   (ocrGuid_t *)((void *)__old_frame+ __old_frame->context.paramc*sizeof(uint64_t)),
+  /* the continuation leads to the caller frame's destroy: copy its arguments
+   * out of the frame and release the frame before creating it */
+  uint32_t __old_paramc = __old_frame->context.paramc;
+  uint32_t __old_depc   = __old_frame->context.depc;
+  __continuation_args_t *__old_paramv = (__continuation_args_t *) ALLOC( __old_paramc*sizeof(uint64_t) );
+  CHECK_RET_VAL("ALLOC __old_paramv[]",(__old_paramv == NULL));
+  ocrGuid_t *__old_depv = (ocrGuid_t *) ALLOC( __old_depc*sizeof(ocrGuid_t) );
+  CHECK_RET_VAL("ALLOC __old_depv[]",(__old_depv == NULL));
+  memcpy( __old_paramv, (void *)__old_frame, __old_paramc*sizeof(uint64_t) );
+  memcpy( __old_depv, (void *)__old_frame+ __old_paramc*sizeof(uint64_t), __old_depc*sizeof(ocrGuid_t) );
+  ocrDbRelease(__depv->segment.old_frame.guid);
+  __ret_val = ocrEdtCreate(&__edt_continuation_guid, __old_paramv->context.new_pc.guid,
+                         __old_paramc, &__old_paramv->paramv[0],
+                         __old_depc,   __old_depv,
                          EDT_PROP_NONE, NULL_HINT, NULL );
   CHECK_RET_VAL("uts_initTreeRoot->ocrEdtCreate",__ret_val);
+  FREE(__old_depv);
+  FREE(__old_paramv);
 
 TRACE0("uts_initTreeRoot()<>offset_zero");
   return NULL_GUID;
@@ -1635,6 +1696,8 @@ TRACE1("uts_main about to pass guids on to uts_parseParams");
   };
 
   ocrGuid_t __edt_uts_parseParams_guid;
+  /* the callee leads to this frame's destroy: release it first */
+  ocrDbRelease(__FRAME.guid);
   __ret_val = ocrEdtCreate(&__edt_uts_parseParams_guid, __template_uts_parseParams.guid,
                          WORDS_uts_main_args_t,  &__paramv_0.paramv[0],
                          WORDS_uts_main_guids_t, &__depv_0.guids[0],
@@ -1676,6 +1739,8 @@ TRACE1("uts_main about to pass guids on to uts_printParams");
 TRACE1("uts_main about to create edt for uts_printParams");
 
   ocrGuid_t __edt_uts_printParams;
+  /* the callee leads to this frame's destroy: release it first */
+  ocrDbRelease(__FRAME.guid);
   __ret_val = ocrEdtCreate(&__edt_uts_printParams,  __paramv_0.vars.std.context.new_pc.guid,
                          __paramv_0.vars.std.context.paramc, &__paramv_0.paramv[0],
                          __paramv_0.vars.std.context.depc,   &__depv_0.guids[0],
@@ -1715,6 +1780,8 @@ TRACE1("uts_main about to pass guids on to uts_initTreeRoot");
 TRACE1("uts_main about to create edt for uts_initTreeRoot");
 
   ocrGuid_t __edt_uts_initTreeRoot;
+  /* the callee leads to this frame's destroy: release it first */
+  ocrDbRelease(__FRAME.guid);
   __ret_val = ocrEdtCreate(&__edt_uts_initTreeRoot, __paramv_0.vars.std.context.new_pc.guid, //__template_uts_initTreeRoot.guid,
                          __paramv_0.vars.std.context.paramc, &__paramv_0.paramv[0],
                          __paramv_0.vars.std.context.depc,   &__depv_0.guids[0],
@@ -1765,6 +1832,8 @@ TRACE1("uts_main about to pass guids on to uts_TreeSearch");
 TRACE1("uts_main about to create edt for uts_TreeSearch");
 
   ocrGuid_t __edt_uts_TreeSearch;
+  /* the callee leads to this frame's destroy: release it first */
+  ocrDbRelease(__FRAME.guid);
   __ret_val = ocrEdtCreate(&__edt_uts_TreeSearch,             __paramv_0.vars.std.context.new_pc.guid,
                          __paramv_0.vars.std.context.paramc, &__paramv_0.paramv[0],
                          __paramv_0.vars.std.context.depc,   &__depv_0.guids[0],

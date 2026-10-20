@@ -132,6 +132,7 @@ void spawn_halo(const spawn_ctx* x, u32 lo, u32 hi)
     ocrEdtCreate(&proxy, xtmp, 0, NULL, 1, NULL, OEVT_COUNTED_PROP(0),
                  edt_at(&edtHNT, c, rank_shift(c, x->rank, d)), &done);
     ocrAddDependence(done, x->join, i-lo, DB_MODE_CONST);
+    spawn_last(x, i, hi);
     ocrAddDependence(packed, proxy, 0, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(ptmp);
@@ -157,7 +158,9 @@ void spawn_halo_free(const spawn_ctx* x, u32 lo, u32 hi)
     ocrEdtCreate(&edt, tmp, 0, NULL, 1, NULL, OEVT_COUNTED_PROP(0),
                  edt_at(&edtHNT, x->c, x->rank), &done);
     ocrAddDependence(done, x->join, i-lo, DB_MODE_CONST);
-    ocrAddDependence(hb[i], edt, 0, DB_MODE_RW);
+    ocrGuid_t h = hb[i];
+    spawn_last(x, i, hi);
+    ocrAddDependence(h, edt, 0, DB_MODE_RW);
   }
   ocrEdtTemplateDestroy(tmp);
 }
@@ -186,7 +189,9 @@ void spawn_release(const spawn_ctx* x, u32 lo, u32 hi)
     ocrEdtCreate(&edt, tmp, GUID_WORDS, pv, 1, NULL, OEVT_COUNTED_PROP(0),
                  edt_at(&edtHNT, x->c, x->rank), &done);
     ocrAddDependence(done, x->join, i-lo, DB_MODE_CONST);
-    ocrAddDependence(x->l->cell[b].bx[0], edt, 0, DB_MODE_RW);
+    ocrGuid_t bx = x->l->cell[b].bx[0];
+    spawn_last(x, i, hi);
+    ocrAddDependence(bx, edt, 0, DB_MODE_RW);
   }
   ocrEdtTemplateDestroy(tmp);
 }

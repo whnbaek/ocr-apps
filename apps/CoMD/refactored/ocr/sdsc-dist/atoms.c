@@ -200,6 +200,8 @@ static ocrGuid_t init_merge_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     }
     tab[c->nranks*26] = acc;
   }
+  ocrDbRelease(out);
+  ocrDbRelease(depv[0].guid);
   ocrAddDependence(out, guid_load(paramv+MP_PARENT), (u32)paramv[MP_SLOT], DB_MODE_CONST);
 
   return NULL_GUID;
@@ -231,7 +233,7 @@ static void init_halo(const config* c, u32 rank, const u32 bdim[3], ocrGuid_t* h
  * block is filled; the second is what the first step writes.  The leaf that
  * opens a brick's range also creates that brick's halo blocks, so each of
  * them appears exactly once and on its owner. */
-static void init_leaf(const config* c, u32 rank, u32 lo, u32 hi,
+static void init_leaf(ocrGuid_t cfg, const config* c, u32 rank, u32 lo, u32 hi,
                       ocrGuid_t parent, u32 slot)
 {
   u32 blo[3], bdim[3];
@@ -270,6 +272,14 @@ static void init_leaf(const config* c, u32 rank, u32 lo, u32 hi,
                  + bx->p[a][2]*bx->p[a][2];
     }
   }
+  for(u32 i = 0; i < n; ++i) {
+    ocrDbRelease(cl->cell[i].bx[0]);
+    ocrDbRelease(cl->cell[i].bx[1]);
+  }
+  for(u32 h = 0; h < nh; ++h)
+    ocrDbRelease(halo_slots(cl)[h]);
+  ocrDbRelease(out);
+  ocrDbRelease(cfg);
   ocrAddDependence(out, parent, slot, DB_MODE_CONST);
 }
 
@@ -319,6 +329,7 @@ static ocrGuid_t init_fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
       ocrGuid_t child;
       ocrEdtCreate(&child, tmp, IP_NPARAM, pv, 1, NULL, 0,
                    edt_at(&edtHNT, c, (u32)pv[IP_RLO]), NULL);
+      if(i+1 == k) ocrDbRelease(depv[0].guid);
       ocrAddDependence(depv[0].guid, child, 0, DB_MODE_CONST);
     }
     ocrEdtTemplateDestroy(tmp);
@@ -327,7 +338,7 @@ static ocrGuid_t init_fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
 
   u32 n = hi - lo;
   if(n <= c->width) {
-    init_leaf(c, rank, lo, hi, parent, slot);
+    init_leaf(depv[0].guid, c, rank, lo, hi, parent, slot);
     return NULL_GUID;
   }
 
@@ -350,6 +361,7 @@ static ocrGuid_t init_fan_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t dep
     ocrGuid_t child;
     ocrEdtCreate(&child, tmp, IP_NPARAM, pv, 1, NULL, 0,
                  edt_at(&edtHNT, c, rank), NULL);
+    if(i+1 == k) ocrDbRelease(depv[0].guid);
     ocrAddDependence(depv[0].guid, child, 0, DB_MODE_CONST);
   }
   ocrEdtTemplateDestroy(tmp);
@@ -367,6 +379,7 @@ void init_launch(ocrGuid_t cfg, const config* c, ocrGuid_t parent, u32 slot)
   guid_store(pv+IP_PARENT, parent);
   ocrEdtTemplateCreate(&tmp, init_fan_edt, IP_NPARAM, 1);
   ocrEdtCreate(&edt, tmp, IP_NPARAM, pv, 1, NULL, 0, edt_at(&edtHNT, c, 0), NULL);
+  ocrDbRelease(cfg);
   ocrAddDependence(cfg, edt, 0, DB_MODE_CONST);
   ocrEdtTemplateDestroy(tmp);
 }

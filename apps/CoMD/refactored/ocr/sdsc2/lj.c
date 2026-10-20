@@ -164,9 +164,17 @@ ocrGuid_t ljforcevel_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     ocrEdtTemplateCreate(&tmp, veluk_edt, sizeof(PRM_veluk_edt_t)/sizeof(u64), 2);
     ocrEdtCreate(&tmpg, tmp, EDT_PARAM_DEF, (u64*)&PRM_veluk_edt, 2, NULL, EDT_PROP_NONE, PICK_1_1(&HNT_edt,PDaffinityGuid), NULL);
     ocrEdtTemplateDestroy(tmp);
+    ocrGuid_t mass_g = sim->pot.mass;
+    /* On a small grid one block fills two neighbour slots; each is released
+     * once. */
+    for(n = 1; n < 28; ++n) {
+      u8 e = 1;
+      while(e < n && !ocrGuidIsEq(depv[e].guid, depv[n].guid)) ++e;
+      if(e == n) ocrDbRelease(depv[n].guid);
+    }
     ocrDbRelease(DBK_atomDataH);
     ocrAddDependence(DBK_atomDataH, tmpg, 0, DB_MODE_RW);
-    ocrAddDependence(sim->pot.mass, tmpg, 1, DB_MODE_RO);
+    ocrAddDependence(mass_g, tmpg, 1, DB_MODE_RO);
     ocrDbDestroy(depv[28].guid);
   }
 

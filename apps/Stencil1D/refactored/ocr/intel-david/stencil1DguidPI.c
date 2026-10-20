@@ -20,7 +20,7 @@
 #include "stencil1D.h"
 #include <extensions/ocr-labeling.h>
 
-#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
+#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG
 
 typedef struct{
     ocrGuid_t wrapup;
@@ -126,6 +126,7 @@ ocrGuid_t stencilEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
             for(i = 1; i < m - 1; i++) a[i] = 0.0;
                                                                 //setrightmost
             if(private->mynode == (n-1)) a[m-1] = 1.0;
+            else a[m-1] = 0.0;
 
 
             }
@@ -343,24 +344,10 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
                         1,
                         DB_MODE_RW );
 
-    if( !ocrGuidIsNull(leftrcv)  )
-    {
-        ocrEventCreate( &leftrcv,
-                        OCR_EVENT_STICKY_T,
-                        DEFAULT_LG_PROPS );
-    }
-
     ocrAddDependence(   leftrcv,
                         stencil,
                         2,
                         DB_MODE_RW );
-
-    if( !ocrGuidIsNull(rightrcv) )
-    {
-        ocrEventCreate( &rightrcv,
-                        OCR_EVENT_STICKY_T,
-                        DEFAULT_LG_PROPS );
-    }
 
     ocrAddDependence(   rightrcv,
                         stencil,
@@ -371,10 +358,6 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
 
     if( !ocrGuidIsNull(leftsend) )
     {
-        ocrEventCreate( &leftsend,
-                        OCR_EVENT_STICKY_T,
-                        DEFAULT_LG_PROPS );
-
         ocrDbRelease( depv[2].guid );
         ocrEventSatisfy(    leftsend,
                             depv[2].guid );
@@ -382,9 +365,6 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
     }
     if( !ocrGuidIsNull(rightsend) )
     {
-        ocrEventCreate( &rightsend,
-                        OCR_EVENT_STICKY_T,
-                        DEFAULT_LG_PROPS );
         ocrDbRelease( depv[3].guid );
         ocrEventSatisfy(    rightsend,
                             depv[3].guid );
@@ -502,6 +482,14 @@ ocrGuid_t realmainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
         ocrGuidRangeCreate( &(shared->ranges[i]),
                             shared->n,
                             GUID_USER_EVENT_STICKY );
+    }
+    /* Created once here, before any stencilInitEdt satisfies or depends on them. */
+    for( i = 1; i < shared->n; i++ ){
+        ocrGuid_t start;
+        ocrGuidFromIndex( &start, shared->ranges[0], i );
+        ocrEventCreate( &start, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+        ocrGuidFromIndex( &start, shared->ranges[1], i );
+        ocrEventCreate( &start, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
     }
 
     ocrGuid_t wrapup, wrapupTemplate;

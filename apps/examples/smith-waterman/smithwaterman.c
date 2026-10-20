@@ -311,6 +311,7 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     for ( index = 0; index < effective_tile_width; ++index ) {
         curr_bottom_row[index] = curr_tile[effective_tile_height][index+1];
     }
+    s32 last_bottom_value = curr_bottom_row[effective_tile_width-1];
     ocrDbRelease(db_guid_i_j_brow);
     ocrGuid_t bottom_row_event_guid = smithWatermanParamvIn->bottom_row_event_guid;
     ocrEventSatisfy(bottom_row_event_guid, db_guid_i_j_brow);
@@ -327,9 +328,9 @@ ocrGuid_t smith_waterman_task ( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t d
     ocrEventDestroy(smithWatermanParamvIn->in_bottom_right_event_guid);
     /* If this is the last tile (bottom right most tile), finish */
     if ( i == n_tiles_height && j == n_tiles_width ) {
-        ocrPrintf("score: %d\n", curr_bottom_row[effective_tile_width-1]);
+        ocrPrintf("score: %d\n", last_bottom_value);
         u32 score = smithWatermanParamvIn->score;
-        VERIFY(curr_bottom_row[effective_tile_width-1] == score, "Expected score: %d\n", score);
+        VERIFY(last_bottom_value == score, "Expected score: %d\n", score);
         ocrShutdown();
     }
     return NULL_GUID;

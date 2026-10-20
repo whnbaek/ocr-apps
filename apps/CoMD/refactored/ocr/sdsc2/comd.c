@@ -63,9 +63,9 @@ ocrGuid_t FNC_preInit( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     u8 insane = init_simulation( cmd_p, simH_p, timers_p );
     ocrDbDestroy( DBK_cmdLineArgs );
 
+    /* The graph wired by mainEdt still acquires the timer and the simulation
+     * block, so a failed initialization leaves them to the shutdown. */
     if( insane ) {
-      ocrDbDestroy( timer_g );
-      ocrDbDestroy( simH_g );
       timestamp( "CoMD ending with initialization error\n");
       ocrShutdown( );
     }
@@ -135,11 +135,13 @@ ocrGuid_t FNC_setUpGraph( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     else
         ocrAddDependence( OETS_init, EDT_finalize, 5, DB_MODE_NULL );
 
-    ocrAddDependence( timer_g, EDT_finalize, 0, DB_MODE_RW );
-    ocrAddDependence( simH_g, EDT_finalize, 1, DB_MODE_RW );
     ocrAddDependence( simH_p->boxDataStH.DBK_linkCellGuidsH, EDT_finalize, 2, DB_MODE_RO );
     ocrAddDependence( simH_p->boxDataStH.DBK_atomDataGuidsH, EDT_finalize, 3, DB_MODE_RO );
     ocrAddDependence( simH_p->pot.mass, EDT_finalize, 4, DB_MODE_RO );
+    ocrDbRelease( timer_g );
+    ocrDbRelease( simH_g );
+    ocrAddDependence( timer_g, EDT_finalize, 0, DB_MODE_RW );
+    ocrAddDependence( simH_g, EDT_finalize, 1, DB_MODE_RW );
 
     ocrDbDestroy( cmd_g );
 
@@ -174,6 +176,10 @@ ocrGuid_t mainEdt( u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
 
     ocrAddDependence( OET_preInit, OET_preInit_Sticky, 0, DB_MODE_NULL );
 
+    ocrDbRelease( DBK_cmdLineArgs );
+    ocrDbRelease( timer_g );
+    ocrDbRelease( cmd_g );
+    ocrDbRelease( simH_g );
     ocrAddDependence( DBK_cmdLineArgs, EDT_preInit, 0, DB_MODE_RO );
     ocrAddDependence( timer_g, EDT_preInit, 1, DB_MODE_RW );
     ocrAddDependence( cmd_g, EDT_preInit, 2, DB_MODE_RW );

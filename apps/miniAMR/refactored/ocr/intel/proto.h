@@ -81,6 +81,19 @@ void stencil_calc                  (u32 depc, ocrEdtDep_t depv[], int var);
 
 // util.c
 double timer(void);
+#define HALO_SLOT_BIT(axis, pole, qrtr) (1u << ((((axis) * 2 + (pole)) * 4) + (qrtr)))
+int haloRoundOf(Control_t * control, int ts);
+int haloRoundCount(Control_t * control);
+unsigned long long haloLabelCount(Control_t * control);
+ocrGuid_t haloLabel(ocrGuid_t range, Control_t * control, int round, int level, int x, int y, int z, int axis, int pole, int qrtr, int outbound);
+void haloLabelsCreate (ocrGuid_t range, Control_t * control, int round, int level, int x, int y, int z, int axis, int pole, int qrtr);
+void haloLabelsDestroy(ocrGuid_t range, Control_t * control, int round, int level, int x, int y, int z, int axis, int pole, int qrtr);
+void haloChannelOpen    (BlockMeta_t * meta, int axis, int pole, int qrtr, ocrGuid_t send, ocrGuid_t receive);
+void haloChannelOpenOwn (BlockMeta_t * meta, Control_t * control, int round, int axis, int pole, int qrtr);
+void haloChannelOpenPeer(BlockMeta_t * meta, Control_t * control, int round, int axis, int pole, int qrtr,
+                         int level, int x, int y, int z, int peerPole, int peerQrtr);
+void haloConveySent (BlockMeta_t * meta, int axis, int pole, int qrtr);
+void haloConveyFlush(BlockMeta_t * meta, int axis, int pole, int qrtr, const char * name);
 u8 gasket__ocrEdtCreate(ocrGuid_t * guid, int whoAmI_slot, ocrGuid_t templateGuid,
                         u32 paramc, u64* paramv, u32 depc, ocrGuid_t *depv,
                         u16 properties, ocrHint_t *affinity, ocrGuid_t *outputEvent,

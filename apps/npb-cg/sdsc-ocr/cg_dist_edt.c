@@ -157,8 +157,18 @@ ocrGuid_t mainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[])
     shared->timing_on = class->on;
     shared->classdb = classid;
     shared->timer = timerid;
-    ocrGuidRangeCreate(&shared->reduceRange, nrank, GUID_USER_EVENT_STICKY);
+    reductionRangeCreate(&shared->reduceRange, nrank);
     ocrGuidRangeCreate(&shared->channelRange, nrank*nrank, GUID_USER_EVENT_STICKY);
+    /* Each pair's labeled event is created once, here, before the rank tasks
+       that satisfy it and depend on it. */
+    u64 src, dst;
+    for(src = 0; src < nrank; ++src)
+        for(dst = 0; dst < nrank; ++dst) {
+            if(src == dst) continue;
+            ocrGuid_t stickyEVT;
+            ocrGuidFromIndex(&stickyEVT, shared->channelRange, src*nrank + dst);
+            ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+        }
 
     ocrDbRelease(classid);
     ocrDbRelease(timerid);
@@ -286,8 +296,8 @@ ocrGuid_t cg_rank_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
     ocrEdtTemplateCreate(&priv->finalTML, cg_final_edt, 0, 6);
 
     /* One channel per ordered pair.  The producer owns the event and publishes
-       its GUID through a labeled sticky event so that the consumer, which
-       cannot see the producer's local creation, can name it. */
+       its GUID through a labeled sticky event (created by mainEdt) so that the
+       consumer, which cannot see the producer's local creation, can name it. */
     ocrGuid_t chanEDT, chanTML;
     ocrEdtTemplateCreate(&chanTML, cg_chan_init_edt, 0, CG_SL_TAIL+nrank+1);
     ocrEdtCreate(&chanEDT, chanTML, 0, NULL, CG_SL_TAIL+nrank+1, NULL, 0, &priv->myHNT, NULL);
@@ -326,11 +336,9 @@ ocrGuid_t cg_rank_init_edt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]
         *slot = priv->sendEVT[j];
         ocrDbRelease(holder);
         ocrGuidFromIndex(&stickyEVT, shared->channelRange, myrank*nrank + j);
-        ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
         ocrEventSatisfy(stickyEVT, holder);
 
         ocrGuidFromIndex(&stickyEVT, shared->channelRange, j*nrank + myrank);
-        ocrEventCreate(&stickyEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
         ocrAddDependence(stickyEVT, chanEDT, CG_SL_TAIL+j, DB_MODE_RO);
     }
 

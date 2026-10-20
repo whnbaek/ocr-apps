@@ -134,6 +134,9 @@ ocrGuid_t dtrsmTask(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     const double *l = (const double*)depv[1].ptr;
     cblas_dtrsm(CblasColMajor, CblasLeft, CblasUpper, CblasTrans, CblasNonUnit,
                 (int)ts, (int)ts, 1.0, l, (int)ts, b, (int)ts);
+    /* the diagonal tile is destroyed by the finisher, which this satisfy
+     * leads to */
+    ocrDbRelease(depv[1].guid);
     ocrDbRelease(depv[0].guid);
     ocrEventSatisfy(outEvt, depv[0].guid);
     return NULL_GUID;
@@ -457,9 +460,10 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     /* A place's names are published through one event, so a place can build its
      * own tasks as soon as every place has named its tiles.  A labeled GUID
      * range would let a place derive the others' names with no exchange at all;
-     * it does not hold here, because creating a labeled guid on this runtime
-     * REPLACES whatever stands at it, so a second creation silently discards
-     * dependences already registered on the first. */
+     * it does not hold here: a name must be created by one task that precedes
+     * every use of it, and creating them all in one task is a serial term no
+     * node count reduces, while an owner's creates reach the other places only
+     * through an exchange like this one. */
     ocrGuid_t *nameEvt = (ocrGuid_t*)malloc(places * sizeof(ocrGuid_t));
     if(nameEvt == NULL) {
         ocrPrintf("cholesky_dist: cannot hold %lu place names\n", places);

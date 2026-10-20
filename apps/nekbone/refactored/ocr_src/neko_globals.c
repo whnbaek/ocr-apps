@@ -14,6 +14,7 @@
 #   define ENABLE_EXTENSION_LABELING // For labeled GUIDs
 #   endif
 #   include "extensions/ocr-labeling.h" // For labeled GUIDs
+#   include "nekos_cubiclattice.h" // For the halo pairing's directions
 #endif
 
 #define XMEMSET(SRC, CHARC, SZ) {unsigned int xmIT; for(xmIT=0; xmIT<SZ; ++xmIT) *((char*)SRC+xmIT)=CHARC;}
@@ -267,6 +268,24 @@ Err_t init_NEKOstatics(NEKOstatics_t * io, void * in_programArgv)
                         IFEB;
                     }
                 }IFEB;
+
+                //Label r of range did is rank r's inbox from its neighbor in direction did: each one
+                //with a neighbor there is created once here, before any rank task satisfies or depends on it.
+                {
+                    Triplet lattice = { io->Rx, io->Ry, io->Rz };
+                    Idz r;
+                    for(i=0; i < NEKbone_regionCount; ++i){
+                        if(i == COI_DIRid) continue;
+                        for(r=0; r < io->Rtotal; ++r){
+                            Triplet neighbor = index_to_coords(r, lattice);
+                            addT(&neighbor, dirId2tripletNB(i));
+                            if( ! isinLattice(neighbor, lattice)) continue;
+                            ocrGuid_t labeledEvt = NULL_GUID;
+                            err = ocrGuidFromIndex( &labeledEvt, io->haloLabeledGuids[i], r ); IFEB;
+                            err = ocrEventCreate( &labeledEvt, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG ); IFEB;
+                        }IFEB;
+                    }IFEB;
+                }
 
                 ocrPrintf("INFO> Use of Channels for halo exchanges is active.\n");
 #           else

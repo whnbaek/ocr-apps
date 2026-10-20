@@ -269,7 +269,6 @@ ocrGuid_t reductionSendChannelEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_
 //send channel events
     ocrGuid_t sendEVT;
     ocrGuidFromIndex(&sendEVT, rpPTR->rangeGUID, rpPTR->myrank-1);
-    u64 errno = ocrEventCreate(&sendEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
     bufferPTR[0] = channelUpEVT;
     bufferPTR[1] = channelDownEVT;
     ocrDbRelease(bufferDBK);
@@ -341,6 +340,7 @@ void reductionRecvUp(reductionPrivate_t * rpPTR, ocrGuid_t reductionPrivateDBK, 
     u64 phaseParam = 1;
     ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, ARITY + 2,
                  NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+    ocrDbRelease(mydataDBK);
     ocrAddDependence(mydataDBK, reductionEDT, SLOT(reduction,mydata), DB_MODE_RW);
     for (i = 0; i < ARITY; i++)
       ocrAddDependence(rpPTR->recvUpEVT[i], reductionEDT,
@@ -420,9 +420,11 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
   if (nrank == 1) { // nothing to do
     if (!ocrGuidIsNull(rpPTR->returnEVT)) {
       /* A DB handed off through a satisfy must be released first: the release
-       * orders the block's writeback ahead of any consumer observing it. */
+       * orders the block's writeback ahead of any consumer observing it.  The
+       * private block goes too: the result may lead to its destroy. */
+      ocrDbRelease(rpDBK);
       ocrDbRelease(DEPV(reduction, mydata, guid));
-      ocrEventSatisfy(rpPTR->returnEVT, DEPV(reduction, mydata, guid));
+      ocrEventSatisfy(returnEVT, DEPV(reduction, mydata, guid));
     }
     return NULL_GUID;
   }
@@ -431,7 +433,7 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
     mydataPTR = DEPV(reduction,mydata,ptr);
 
     if(rpPTR->new == 1) { //create channel events and use labeled GUIDs to initialize tree
-        u64 errno, i, src;
+        u64 i, src;
         ocrGuid_t reductionEDT;
         ocrGuid_t recvEVT;
         rpPTR->new = 0;
@@ -451,6 +453,7 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
         u64 phaseParam = 0;
         ocrEdtCreate(&reductionEDT, rpPTR->reductionTML, 1, &phaseParam, 2,
                      NULL, EDT_PROP_NONE, &rpPTR->myAffinity, NULL);
+        ocrDbRelease(DEPV(reduction,mydata,guid));
         ocrAddDependence(DEPV(reduction,mydata,guid), reductionEDT, SLOT(reduction,mydata), DB_MODE_RW);
 
         ocrGuid_t SendOutputEVT = NULL_GUID;
@@ -477,10 +480,8 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
             for(i=0;i<ARITY;i++) {
                 src = myrank*ARITY+i+1;
                 if(src < nrank) {
-                    // Distributed creation of labeled sticky event
+                    // The child's labeled sticky event, created by reductionRangeCreate
                     ocrGuidFromIndex(&recvEVT, rpPTR->rangeGUID, src-1);
-                    errno = ocrEventCreate(&recvEVT, OCR_EVENT_STICKY_T, GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
-                    //TODO shoudn't we check errno here ?
                     // This event will be satisfied with the Channel's event GUID to receive from
                     ocrAddDependence(recvEVT, reductionRecvChannelEDT, SLOTARRAY(reductionRecvChannel,buffer,i), DB_MODE_RO);
                 } else {
@@ -596,6 +597,22 @@ ocrGuid_t reductionEdt(u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]) {
         ocrEventSatisfy(returnEVT, DEPV(reduction,mydata,guid));
         return NULL_GUID;
     } // end outermost switch
+}
+
+/*
+ * Reserves the labels a reduction's nrank participants share and creates each
+ * of them, once.  The participants only name these events, so the task that
+ * calls this must precede every participant's first reductionLaunch, e.g. by
+ * handing rangeGUID to the tasks it creates.
+ */
+void reductionRangeCreate(ocrGuid_t * rangeGUID, u64 nrank) {
+    u64 i;
+    ocrGuidRangeCreate(rangeGUID, nrank, GUID_USER_EVENT_STICKY);
+    for(i=1;i<nrank;i++) {
+        ocrGuid_t evt;
+        ocrGuidFromIndex(&evt, *rangeGUID, i-1);
+        ocrEventCreate(&evt, OCR_EVENT_STICKY_T, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+    }
 }
 
 /*

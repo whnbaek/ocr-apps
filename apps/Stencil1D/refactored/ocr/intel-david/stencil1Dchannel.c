@@ -8,7 +8,7 @@
 #endif
 #include<extensions/ocr-labeling.h>
 
-#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG
+#define DEFAULT_LG_PROPS GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG
 #include<extensions/ocr-affinity.h>
 
 //this macro is used to refer to dependencies
@@ -279,23 +279,19 @@ ocrGuid_t stencilInitEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[]
 
     ocrGuid_t stencilEdtGUID;
 
-    /*------------------CREATE LABELED EVENTs---------------*/
+    /*-------------------NAME LABELED EVENTs---------------*/
     ocrGuid_t sendLeftEVT = NULL_GUID, sendRightEVT = NULL_GUID;
     ocrGuid_t rcvLeftEVT = NULL_GUID, rcvRightEVT = NULL_GUID;
 
     if( myrank > 0 ){ //Set the left sending and receiving events.
         ocrGuidFromIndex( &sendLeftEVT, sharedPTR->startDirs[0], myrank );
         ocrGuidFromIndex( &rcvLeftEVT, sharedPTR->startDirs[1], myrank - 1 );
-        ocrEventCreate( &sendLeftEVT, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
-        ocrEventCreate( &rcvLeftEVT, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
     }
     if( myrank < nrank - 1 ){ //Set the right sending and receiving events.
         ocrGuidFromIndex( &sendRightEVT, sharedPTR->startDirs[1], myrank );
         ocrGuidFromIndex( &rcvRightEVT, sharedPTR->startDirs[0], myrank + 1 );
-        ocrEventCreate( &sendRightEVT, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
-        ocrEventCreate( &rcvRightEVT, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
     }
-    /*--------------LABELED EVENTS CREATED----------------*/
+    /*---------------LABELED EVENTS NAMED-----------------*/
 
     /*-------------------CREATE CHANNELS------------------*/
     ocrEventParams_t params;
@@ -434,6 +430,14 @@ ocrGuid_t realMainEdt( u32 paramc, u64 * paramv, u32 depc, ocrEdtDep_t depv[] )
 
     ocrGuidRangeCreate( &(sharedPTR->startDirs[0]), nrank, GUID_USER_EVENT_STICKY );
     ocrGuidRangeCreate( &(sharedPTR->startDirs[1]), nrank, GUID_USER_EVENT_STICKY );
+    /* Created once here, before any stencilInitEdt satisfies or depends on them. */
+    for( i = 0; i + 1 < nrank; i++ ){
+        ocrGuid_t lgEVT;
+        ocrGuidFromIndex( &lgEVT, sharedPTR->startDirs[0], i + 1 );
+        ocrEventCreate( &lgEVT, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+        ocrGuidFromIndex( &lgEVT, sharedPTR->startDirs[1], i );
+        ocrEventCreate( &lgEVT, OCR_EVENT_STICKY_T, DEFAULT_LG_PROPS );
+    }
 
     ocrEdtTemplateCreate( &stencilInitDBsTML, stencilInitDBsEdt, 2, 1 );
 

@@ -33,7 +33,7 @@ However before calling reductionLaunch the user must
     new: set to TRUE for the first call
     all: set to TRUE if everyone is getting the result back.  if false only rank 0s event is satisfied
     reductionOperator: choose which reduction to do (choices in reduction1.h)
-    rangeGUID: a set of at least nrank-1 labeled STICKY event GUIDs
+    rangeGUID: made by reductionRangeCreate(&rangeGUID, nrank) in a task that precedes every participant
     returnEVT: a channel event, different for each rank used to return the result
 4. make the clone depend on the returnEVT
 
@@ -383,7 +383,7 @@ launch parallel init with myrank as a parameter
     sharedPTR->ndata = ndata;
     sharedPTR->maxtimestep = maxtimestep;
 
-    ocrGuidRangeCreate(&(sharedPTR->reductionRangeGUID), nrank, GUID_USER_EVENT_STICKY);
+    reductionRangeCreate(&(sharedPTR->reductionRangeGUID), nrank);
     timestamp_t initStart;
     get_time(&initStart);
     wrapupPRM_t wrapupPRM;
