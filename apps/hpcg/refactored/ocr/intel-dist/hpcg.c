@@ -84,6 +84,12 @@ compiles the piece out.
 #define HPCG_TWO_LEVEL_REDUCTION
 #endif
 
+/* HPCG_FIXED_ITERATIONS drops the rtr/rtr0 < 1e-13 exit, so CG runs exactly
+ * maxIter iterations whatever the residual does -- the official benchmark's
+ * timed phase does the same (tolerance 0).  Off, the run can stop early, and
+ * how early moves with the grid and the tile count, so work stops being a
+ * function of the size alone.  Rank 0 then prints "CG iterations: <n>". */
+
 #ifndef NO_AFFINITY
 #define AFFINITY
 #endif
@@ -1670,8 +1676,16 @@ if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d finishing \n", myrank, timestep, ph
 if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d global rtr %f \n", myrank, timestep, phase, *returnPTR);
         if(pbPTR->debug > 0 && myrank==0) ocrPrintf("time %d rtr %f \n", timestep, *returnPTR);
         if(timestep==0) pbPTR->rtr0 = *returnPTR;
+#ifdef HPCG_FIXED_ITERATIONS
+           else if(timestep == pbPTR->maxIter) {
+#else
            else if(*returnPTR/pbPTR->rtr0 < 1e-13 || timestep == pbPTR->maxIter) {
+#endif
 if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d finishing \n", myrank, timestep, phase);
+#ifdef HPCG_FIXED_ITERATIONS
+//the line a campaign checks: the count actually run, from one tile
+        if(myrank==0) ocrPrintf("CG iterations: %d\n", timestep);
+#endif
 
 for(i=0;i<pbPTR->maxIter;i++)
     for(j=0;j<PHASES;j++)
