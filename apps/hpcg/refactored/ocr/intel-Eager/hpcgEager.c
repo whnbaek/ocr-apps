@@ -1704,7 +1704,11 @@ if(pbPTR->debug > 0) ocrPrintf("CG%d T%d P%d local rtz %e \n", myrank, timestep,
 //update p
         z = (double *) (((u64) ptr) + pbPTR->vector_offset[0][Z]);
         p = (double *) (((u64) ptr) + pbPTR->vector_offset[0][P]);
-        for(i=0;i<pbPTR->mt[0];i++) p[i] = z[i] + beta*p[i];
+//p holds no value before the first iteration, which takes z alone
+        if(timestep == 0)
+            for(i=0;i<pbPTR->mt[0];i++) p[i] = z[i];
+        else
+            for(i=0;i<pbPTR->mt[0];i++) p[i] = z[i] + beta*p[i];
 #endif
 
 //compute Ap
